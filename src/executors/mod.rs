@@ -43,6 +43,15 @@ pub struct ExecutorRequest {
     pub provider_specific_data: Option<Value>,
 }
 
+fn retry_policy(status: u16) -> (usize, std::time::Duration) {
+    match status {
+        502 => (3, std::time::Duration::from_secs(3)),
+        503 => (3, std::time::Duration::from_secs(2)),
+        504 => (2, std::time::Duration::from_secs(3)),
+        _ => (0, std::time::Duration::ZERO),
+    }
+}
+
 /// Sends a translated request and leaves the upstream body unbuffered.
 /// The response exposes both `status()` and `bytes_stream()`, including on errors.
 pub async fn execute(
@@ -367,10 +376,19 @@ pub async fn execute(
     {
         builder = builder.bearer_auth(token);
     }
-    let response = builder
-        .body(serde_json::to_vec(&request.body)?)
-        .send()
-        .await?;
+    let outgoing = builder.body(serde_json::to_vec(&request.body)?).build()?;
+    let mut attempts = 0;
+    let response = loop {
+        let cloned = outgoing.try_clone().context("upstream request cannot be retried")?;
+        let result = client.execute(cloned).await;
+        let status = result.as_ref().map(|r| r.status().as_u16()).unwrap_or(502);
+        let (limit, delay) = retry_policy(status);
+        if attempts >= limit || result.as_ref().is_err_and(|e| e.is_timeout()) {
+            break result?;
+        }
+        attempts += 1;
+        tokio::time::sleep(delay).await;
+    };
     if provider.id == "minimax-code" && matches!(response.status().as_u16(), 402 | 403) {
         let status = response.status();
         let headers = response.headers().clone();
@@ -864,6 +882,30 @@ mod tests {
         let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
         assert_eq!(result["uri"], "/api/chat");
         assert_eq!(result["body"]["model"], "model");
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn retries_transient_upstream_status() {
+        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+        let count = Arc::new(AtomicUsize::new(0));
+        let seen = count.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/api/chat", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(move || {
+                let seen = seen.clone();
+                async move {
+                    if seen.fetch_add(1, Ordering::SeqCst) == 0 { StatusCode::SERVICE_UNAVAILABLE } else { StatusCode::OK }
+                }
+            }))).await.unwrap()
+        });
+        let response = execute(&reqwest::Client::new(), ExecutorRequest {
+            provider: "ollama-local".into(), model: "model".into(), body: json!({}), base_url: Some(url), ..Default::default()
+        }).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+        assert_eq!(retry_policy(429).0, 0);
         task.abort();
     }
 
