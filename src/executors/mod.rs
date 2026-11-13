@@ -34,6 +34,13 @@ pub async fn execute(
         "muse-web" => return Err(muse_web::unsupported()),
         _ => {}
     }
+    let mut vertex_project = None;
+    if matches!(provider.id.as_str(), "vertex" | "vertex-partner") {
+        if let Some((token, project)) = vertex::refresh(client, request.api_key.as_deref()).await? {
+            request.access_token = Some(token);
+            vertex_project = project;
+        }
+    }
     let azure_endpoint =
         std::env::var("AZURE_ENDPOINT").unwrap_or_else(|_| "https://api.openai.com".into());
     let vertex_endpoint = "https://aiplatform.googleapis.com";
@@ -52,6 +59,7 @@ pub async fn execute(
         vertex::url(
             endpoint,
             provider.id == "vertex-partner",
+            vertex_project.as_deref(),
             &request.model,
             request.stream,
             request.api_key.as_deref(),
