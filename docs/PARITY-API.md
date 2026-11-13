@@ -97,8 +97,8 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` depends on an
 | /api/oauth/zed/auto-import | GET | todo |
 | /api/oauth/zed/import | POST | todo |
 | /api/pricing | DELETE, GET, PATCH | todo |
-| /api/prompt-injection | DELETE, GET, PUT | todo |
-| /api/prompt-injection/stats | GET | todo |
+| /api/prompt-injection | DELETE, GET, PUT | done |
+| /api/prompt-injection/stats | GET | done |
 | /api/provider-nodes/[id] | DELETE, PUT | todo |
 | /api/provider-nodes | GET, POST | todo |
 | /api/provider-nodes/validate | POST | todo |

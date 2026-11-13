@@ -4,10 +4,13 @@ use axum::Router;
 
 use crate::server::AppState;
 
+mod tools_prompt_injection;
 mod tools_token_saver;
 
 pub fn management() -> Router<AppState> {
-    Router::new().merge(tools_token_saver::router())
+    Router::new()
+        .merge(tools_token_saver::router())
+        .merge(tools_prompt_injection::router())
 }
 
 pub fn v1() -> Router<AppState> {
