@@ -579,6 +579,41 @@ impl ChatHooks for Hooks {
             None
         })
     }
+    fn get_token_saver_config<'a>(&'a self, model: &'a str) -> BoxFuture<'a, Option<crate::handlers::chat_core::TokenSaverConfig>> {
+        Box::pin(async move {
+            let db = self.state.db.lock().ok()?;
+            let settings = crate::db::settings_get(&db).ok()?;
+            let token_saver_enabled = settings.get("tokenSaverEnabled").and_then(Value::as_bool).unwrap_or(false);
+            let rtk_enabled = settings.get("rtkEnabled").and_then(Value::as_bool).unwrap_or(true);
+            let caveman_enabled = settings.get("cavemanEnabled").and_then(Value::as_bool).unwrap_or(false);
+            let caveman_level = settings.get("cavemanLevel").and_then(Value::as_str).map(str::to_owned);
+            let ponytail_enabled = settings.get("ponytailEnabled").and_then(Value::as_bool).unwrap_or(false);
+            let ponytail_level = settings.get("ponytailLevel").and_then(Value::as_str).map(str::to_owned);
+
+            let by_model = crate::db::kv_get(&db, "briefMode", "byModel")
+                .ok().flatten().and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                .and_then(|v| v.get(model).and_then(Value::as_str).map(str::to_owned));
+            let by_key = self.api_key_id.as_deref().and_then(|kid| {
+                crate::db::kv_get(&db, "briefMode", "byKey")
+                    .ok().flatten().and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                    .and_then(|v| v.get(kid).and_then(Value::as_str).map(str::to_owned))
+            });
+            let global_brief = crate::db::kv_get(&db, "briefMode", "global")
+                .ok().flatten().and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                .and_then(|v| v.as_str().map(str::to_owned));
+            let brief_level = by_model.or(by_key).or(global_brief);
+
+            Some(crate::handlers::chat_core::TokenSaverConfig {
+                token_saver_enabled,
+                rtk_enabled,
+                caveman_enabled,
+                caveman_level,
+                brief_level,
+                ponytail_enabled,
+                ponytail_level,
+            })
+        })
+    }
     fn get_combo_models<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Option<Vec<String>>> {
         Box::pin(async move {
             let db = self.state.db.lock().ok()?;

@@ -14,19 +14,21 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 
 pub fn router() -> Router<AppState> {
+    use crate::handlers::media;
+    // Media endpoints use the full ports in handlers::media (provider routing, multipart, TTS voices).
     Router::new()
-        .route("/v1/embeddings", post(embeddings))
-        .route("/v1/images/generations", post(images_generations))
-        .route("/v1/videos/generations", post(videos_generations))
-        .route("/v1/videos/edits", post(videos_edits))
-        .route("/v1/videos/extensions", post(videos_extensions))
-        .route("/v1/videos/{id}", get(videos_get))
-        .route("/v1/audio/speech", post(audio_speech))
-        .route("/v1/audio/transcriptions", post(audio_transcriptions))
+        .route("/v1/embeddings", post(media::embeddings::create_embeddings))
+        .route("/v1/images/generations", post(media::images::image_generations))
+        .route("/v1/videos/generations", post(media::videos::video_generations))
+        .route("/v1/videos/edits", post(media::videos::video_edits))
+        .route("/v1/videos/extensions", post(media::videos::video_extensions))
+        .route("/v1/videos/{id}", get(media::videos::video_status))
+        .route("/v1/audio/speech", post(media::tts::audio_speech))
+        .route("/v1/audio/transcriptions", post(media::stt::audio_transcriptions))
         .route("/v1/audio/voices", get(audio_voices))
         .route("/v1/search", post(web_search))
         .route("/v1/web/fetch", post(web_fetch))
-        .route("/v1/systemone", post(systemone))
+        .route("/v1/systemone", post(media::systemone::handle_systemone))
         .route("/v1/api/chat", post(ollama_chat))
         .route("/v1/responses/compact", post(responses_compact))
 }
@@ -517,7 +519,7 @@ mod tests {
         .await;
         assert_eq!(st, StatusCode::BAD_REQUEST);
 
-        // /v1/embeddings without provider credentials -> 503
+        // /v1/embeddings without provider credentials -> 400 (upstream memberFailover)
         let (st, _) = call(
             app.clone(),
             Request::builder()
@@ -530,7 +532,7 @@ mod tests {
                 .unwrap(),
         )
         .await;
-        assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(st, StatusCode::BAD_REQUEST);
 
         // /v1/audio/voices valid provider -> 200 list
         let (st, voices) = call(
