@@ -10,6 +10,7 @@ mod iflow;
 mod kimchi;
 mod muse_web;
 mod opencode;
+mod opencode_go;
 mod vertex;
 mod xiaomi_tokenplan;
 
@@ -76,7 +77,11 @@ pub async fn execute(
         })
         .or(provider.base_url.as_deref())
         .with_context(|| format!("provider {} has no endpoint", provider.id))?;
-    let mut url = if provider.id == "opencode" {
+    let responses =
+        provider.id == "opencode-go" && opencode_go::is_responses(&provider.id, &request.model);
+    let mut url = if responses {
+        opencode_go::url(endpoint)?
+    } else if provider.id == "opencode" {
         opencode::url(endpoint, &request.model)?
     } else if provider.id == "xiaomi-tokenplan" {
         xiaomi_tokenplan::url(endpoint, request.model.ends_with("-claude"))?
@@ -150,6 +155,9 @@ pub async fn execute(
     if provider.id == "opencode" {
         opencode::prepare(&mut request.body, &request.model);
     }
+    if responses {
+        opencode_go::prepare(&mut request.body, &request.model);
+    }
     if provider.id == "github" && !github_claude {
         github::prepare(&request.model, &mut request.body)?;
     }
@@ -179,6 +187,9 @@ pub async fn execute(
             .header("x-session-affinity", session)
             .header("x-session-id", session)
             .bearer_auth("public");
+    }
+    if provider.id == "opencode-go" {
+        builder = builder.header("x-opencode-session", opencode::session());
     }
     if tokenplan_claude {
         builder = builder.header("anthropic-version", "2023-06-01");
@@ -255,6 +266,40 @@ mod tests {
         routing::post,
     };
     use serde_json::json;
+
+    #[tokio::test]
+    async fn opencode_go_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/v1/chat/completions",
+            listener.local_addr().unwrap()
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(mock)))
+                .await
+                .unwrap()
+        });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "opencode-go".into(),
+                model: "muse-spark-test".into(),
+                body: json!({"input":[{"type":"reasoning"}],"max_tokens":100}),
+                stream: true,
+                api_key: Some("test".into()),
+                access_token: None,
+                base_url: Some(url),
+            },
+        )
+        .await
+        .unwrap();
+        let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(result["uri"], "/v1/responses");
+        assert_eq!(result["body"]["store"], false);
+        assert_eq!(result["body"]["max_output_tokens"], 100);
+        assert_eq!(result["body"]["input"], json!([]));
+        task.abort();
+    }
 
     #[tokio::test]
     async fn opencode_mock_request() {

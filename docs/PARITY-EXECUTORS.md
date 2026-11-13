@@ -34,7 +34,7 @@ Status is deliberately conservative: partial means the upstream executor has beh
 | minimax-code.js | pending | |
 | muse-web.js | unsupported | Browser automation required. |
 | ollama-local.js | partial | Default URL works, host override differs. |
-| opencode-go.js | pending | |
+| opencode-go.js | partial | Responses path and basic normalization; per-conversation sessions and full input/tool sanitization remain. |
 | opencode-zen.js | pending | |
 | opencode.js | partial | Routes, headers, session and quota/overload handling; fingerprint tools, per-conversation sessions, TLS impersonation and Responses translation remain. |
 | orcarouter.js | partial | Basic transport and status passthrough. Reset parsing missing. |
