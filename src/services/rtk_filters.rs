@@ -6,6 +6,44 @@ pub fn read_numbered(input: &str) -> String {
     truncate(input, true)
 }
 
+pub fn search_list(input: &str) -> String {
+    let mut lines = input.split('\n');
+    let header = lines.next().unwrap_or("");
+    let paths: Vec<_> = lines
+        .filter_map(|line| line.trim().strip_prefix("- "))
+        .collect();
+    if paths.is_empty() {
+        return input.into();
+    }
+    let mut directories = std::collections::BTreeMap::<&str, Vec<&str>>::new();
+    for path in &paths {
+        let (dir, name) = match path.rfind('/') {
+            Some(i) => (if i == 0 { "/" } else { &path[..i] }, &path[i + 1..]),
+            None => (".", *path),
+        };
+        directories.entry(dir).or_default().push(name);
+    }
+    let mut out = format!(
+        "{header}\n{} files in {} dirs:\n\n",
+        paths.len(),
+        directories.len()
+    );
+    for (dir, names) in directories.iter().take(20) {
+        out.push_str(&format!("{dir}/ ({}):\n", names.len()));
+        for name in names.iter().take(10) {
+            out.push_str(&format!("  {name}\n"));
+        }
+        if names.len() > 10 {
+            out.push_str(&format!("  +{}\n", names.len() - 10));
+        }
+        out.push('\n');
+    }
+    if directories.len() > 20 {
+        out.push_str(&format!("+{} more dirs\n", directories.len() - 20));
+    }
+    out.trim_end_matches('\n').to_owned()
+}
+
 pub fn grep(input: &str) -> String {
     let mut files = std::collections::BTreeMap::<&str, Vec<(&str, &str)>>::new();
     let mut total = 0;
@@ -233,6 +271,13 @@ pub fn dedup_log(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn search_list_groups_paths() {
+        assert_eq!(
+            search_list("Result of search in '.' (total 2 files):\n- src/a\n- src/b"),
+            "Result of search in '.' (total 2 files):\n2 files in 1 dirs:\n\nsrc/ (2):\n  a\n  b"
+        );
+    }
     #[test]
     fn grep_groups_matches_and_preserves_colons() {
         assert_eq!(
