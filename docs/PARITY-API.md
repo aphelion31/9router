@@ -67,13 +67,13 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `
 | /api/media-providers/tts/inworld/voices | GET | done |
 | /api/media-providers/tts/minimax/voices | GET | done |
 | /api/media-providers/tts/voices | GET | done |
-| /api/models/alias | DELETE, GET, PUT | partial |
-| /api/models/availability | GET, POST | stub501 |
-| /api/models/catalog-sync | GET, POST | stub501 |
-| /api/models/custom | DELETE, GET, PATCH, POST | stub501 |
-| /api/models/disabled | DELETE, GET, POST | partial |
-| /api/models | GET, PUT | stub501 |
-| /api/models/test | POST | stub501 |
+| /api/models/alias | DELETE, GET, PUT | done |
+| /api/models/availability | GET, POST | done |
+| /api/models/catalog-sync | GET, POST | done |
+| /api/models/custom | DELETE, GET, PATCH, POST | done |
+| /api/models/disabled | DELETE, GET, POST | done |
+| /api/models | GET, PUT | done |
+| /api/models/test | POST | done |
 | /api/monitoring | GET | done |
 | /api/notifications | GET, POST | done |
 | /api/oauth/[provider]/[action] | GET, POST | done |
