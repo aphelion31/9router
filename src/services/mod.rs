@@ -6,6 +6,7 @@ pub mod grok_cli_models;
 pub mod kimchi_models;
 pub mod latency_stats;
 pub mod minimax_code_lease;
+pub mod model_markers;
 pub mod nous;
 pub mod rtk_filters;
 pub mod stream_helpers;
