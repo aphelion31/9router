@@ -19,11 +19,11 @@ Status: **in progress**. Partial entries cover only the functions named, not ful
 | `open-sse/rtk/filters/ls.js` | Not ported |
 | `open-sse/rtk/filters/buildOutput.js` | Not ported |
 | `open-sse/rtk/applyFilter.js` | Ported: `services::rtk_filters::safe_apply` |
-| `open-sse/rtk/flakyGuard.js` | Partial: response classification, no stream inspection |
+| `open-sse/rtk/flakyGuard.js` | Ported: `services::flaky_guard` (classification, SSE end verdict, bounded probe, replay buffer) |
 | `open-sse/rtk/autodetect.js` | Not ported |
 | `open-sse/rtk/caveman.js` | Not ported |
 | `open-sse/rtk/cavemanPrompts.js` | Not ported |
-| `open-sse/rtk/constants.js` | Partial: filter constants embedded in implementations |
+| `open-sse/rtk/constants.js` | Ported: `services::rtk_constants` |
 | `open-sse/rtk/headroom.js` | Not ported |
 | `open-sse/rtk/index.js` | Not ported |
 | `open-sse/rtk/registry.js` | Not ported |
@@ -36,12 +36,12 @@ Status: **in progress**. Partial entries cover only the functions named, not ful
 
 | JavaScript source | Status |
 | --- | --- |
-| `open-sse/services/clinepassModels.js` | Partial: discovery and merging, header parity incomplete |
-| `open-sse/services/copilotModels.js` | Partial: catalog filtering, discovery and refresh pending |
+| `open-sse/services/clinepassModels.js` | Ported: `services::clinepass_models` (live discovery, free-tier merge, cache, headers) |
+| `open-sse/services/copilotModels.js` | Ported: `services::copilot_models` (live catalog, 401 token refresh retry, cache) |
 | `open-sse/services/cursorModels.js` | Partial: protobuf catalog parsing and selection, discovery pending |
-| `open-sse/services/grokCliModels.js` | Partial: model parsing, no live discovery or refresh |
-| `open-sse/services/kimchiModels.js` | Partial: normalization and URL, no discovery or cache |
-| `open-sse/services/kiroModels.js` | Partial: variant expansion, discovery and refresh pending |
+| `open-sse/services/grokCliModels.js` | Ported: `services::grok_cli_models` (live discovery, 401 refresh, identity headers, cache) |
+| `open-sse/services/kimchiModels.js` | Ported: `services::kimchi_models` (metadata discovery, auth, cache) |
+| `open-sse/services/kiroModels.js` | Ported: `services::kiro_models` (ListAvailableModels discovery, fingerprint headers, 401 refresh, cache) |
 | `open-sse/services/qoderModels.js` | Partial: PAT identification and catalog visibility |
 | `open-sse/services/capacityAdapter.js` | Ported: pool selection and history stripping (`services::capacity_adapter::strip_history_for_context`) |
 | `open-sse/services/emptyFailover.js` | Ported: classification and buffered stream peek (`services::empty_failover::peek_chunks`); deadline and reader reconstruction stay with the async caller |
