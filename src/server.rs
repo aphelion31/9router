@@ -577,7 +577,7 @@ fn api_key_id(s: &AppState, headers: &HeaderMap) -> Option<String> {
 }
 
 /// Random 128-bit hex request ID.
-fn uuid_like() -> String {
+pub(crate) fn uuid_like() -> String {
     use ring::rand::SecureRandom;
     let mut b = [0u8; 16];
     let _ = ring::rand::SystemRandom::new().fill(&mut b);
@@ -704,6 +704,29 @@ mod tests {
         assert!(bcrypt::verify("securepassword", stored["password"].as_str().unwrap()).unwrap());
         let response = app.oneshot(Request::post("/api/locale").header("content-type", "application/json").body(Body::from(r#"{"locale":"en"}"#)).unwrap()).await.unwrap();
         assert_eq!(response.status(), 401);
+    }
+    #[tokio::test]
+    async fn management_node_and_combo_crud() {
+        let app = test_router();
+        let request = |method: &str, path: &str, data: Value| Request::builder().method(method).uri(path)
+            .header("cookie", format!("auth_token={}", token())).header("content-type", "application/json")
+            .body(Body::from(data.to_string())).unwrap();
+        let res = app.clone().oneshot(request("POST", "/api/provider-nodes", json!({"name":"Example", "prefix":"ex", "apiType":"chat"}))).await.unwrap();
+        assert_eq!(res.status(), 201);
+        let node: Value = serde_json::from_slice(&to_bytes(res.into_body(), 10000).await.unwrap()).unwrap();
+        let id = node["node"]["id"].as_str().unwrap();
+        let path = format!("/api/provider-nodes/{id}");
+        let res = app.clone().oneshot(request("PUT", &path, json!({"name":"Changed","prefix":"new","apiType":"chat","baseUrl":"https://example.com"}))).await.unwrap();
+        assert_eq!(res.status(), 200);
+        let res = app.clone().oneshot(request("DELETE", &path, json!({}))).await.unwrap();
+        assert_eq!(res.status(), 200);
+        let res = app.clone().oneshot(request("POST", "/api/combos", json!({"name":"test","models":["openai/model"]}))).await.unwrap();
+        assert_eq!(res.status(), 201);
+        let combo: Value = serde_json::from_slice(&to_bytes(res.into_body(), 10000).await.unwrap()).unwrap();
+        let path = format!("/api/combos/{}", combo["id"].as_str().unwrap());
+        assert_eq!(app.clone().oneshot(request("PUT", &path, json!({"models":[]}))).await.unwrap().status(), 400);
+        assert_eq!(app.clone().oneshot(request("GET", &path, json!({}))).await.unwrap().status(), 200);
+        assert_eq!(app.oneshot(request("DELETE", &path, json!({}))).await.unwrap().status(), 200);
     }
     /// Starts a mock OpenAI-compatible upstream. Non-stream and stream responses are chosen by
     /// the request's `stream` flag. Returns its base URL.
