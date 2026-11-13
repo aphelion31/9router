@@ -100,6 +100,10 @@ pub fn verify_password(db: &Connection, candidate: &str) -> bool {
     let Some(expected) = expected else {
         return false;
     };
+    // Upstream 9router-pro stores bcrypt hashes; env/plain values compare in constant time.
+    if expected.starts_with("$2") {
+        return bcrypt::verify(candidate, &expected).unwrap_or(false);
+    }
     let a = candidate.as_bytes();
     let b = expected.as_bytes();
     if a.len() != b.len() {
@@ -114,4 +118,17 @@ pub fn auth_cookie_header(token: &str) -> String {
 
 pub fn clear_auth_cookie_header() -> &'static str {
     "auth_token=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+}
+
+#[cfg(test)]
+mod bcrypt_tests {
+    #[test]
+    fn verifies_upstream_bcrypt_hash() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrate(&db).unwrap();
+        let hash = bcrypt::hash("s3cret", 4).unwrap();
+        crate::db::kv_set(&db, "settings", "password", &hash).unwrap();
+        assert!(super::verify_password(&db, "s3cret"));
+        assert!(!super::verify_password(&db, "wrong"));
+    }
 }
