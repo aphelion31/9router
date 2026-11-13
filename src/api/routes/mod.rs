@@ -12,7 +12,7 @@ mod mgmt_auth;
 mod mgmt_keys;
 mod mgmt_misc;
 mod mgmt_models;
-mod mgmt_providers;
+pub(crate) mod mgmt_providers;
 mod mgmt_settings;
 mod mgmt_system;
 

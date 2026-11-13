@@ -764,6 +764,10 @@ async fn provider_models(State(s): State<AppState>, Path(id): Path<String>) -> R
         return Json(json!({ "provider": provider, "models": [] })).into_response();
     }
 
+    let live = live_models(provider, &conn, true).await;
+    if let Some(models) = live.filter(|m| !m.is_empty()) {
+        return Json(json!({ "provider": provider, "models": models })).into_response();
+    }
     let models: Vec<Value> = crate::providers::lookup(provider)
         .map(|p| {
             p.models
@@ -778,6 +782,42 @@ async fn provider_models(State(s): State<AppState>, Path(id): Path<String>) -> R
         })
         .unwrap_or_default();
     Json(json!({ "provider": provider, "models": models })).into_response()
+}
+
+pub(crate) async fn live_models(provider: &str, conn: &Value, force: bool) -> Option<Vec<Value>> {
+    use crate::services::{clinepass_models, copilot_models, cursor_models, grok_cli_models, kimchi_models, kiro_models, qoder_models};
+    let client = reqwest::Client::new();
+    let psd = &conn["providerSpecificData"];
+    let access = conn["accessToken"].as_str().filter(|s| !s.is_empty()).unwrap_or("");
+    let api_key = conn["apiKey"].as_str().filter(|s| !s.is_empty()).unwrap_or("");
+    let token = if access.is_empty() { api_key } else { access };
+    match provider {
+        "qoder" | "qoder-cn" => {
+            let catalog = qoder_models::resolve_qoder_models(conn, force, Some(qoder_models::qoder_region_of(Some(provider)))).await?;
+            Some(if force { catalog.models } else { qoder_models::routable_qoder_models_from_catalog(&catalog) })
+        }
+        "cursor" => cursor_models::resolve_cursor_models(&client, conn, force).await?["models"].as_array().cloned(),
+        "cline" | "clinepass" => clinepass_models::resolve_cline_models(&client, token, access.is_empty(), provider == "clinepass").await,
+        "kiro" => kiro_models::resolve_kiro_models(&client, psd["profileArn"].as_str().unwrap_or(""), access, conn["id"].as_str().unwrap_or(access), None).await,
+        "grok-cli" => grok_cli_models::resolve_grok_cli_models(&client, access, None, conn["email"].as_str(), psd["userId"].as_str()).await,
+        "github" => copilot_models::resolve_copilot_models(&client, psd["copilotToken"].as_str().unwrap_or(token), None).await,
+        "kimchi" => kimchi_models::resolve_kimchi_models(&client, psd["endpoint"].as_str(), token).await,
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod live_catalog_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn missing_credentials_fall_back_for_each_catalog() {
+        for provider in ["qoder", "qoder-cn", "cursor", "cline", "clinepass", "kiro", "grok-cli", "github", "kimchi"] {
+            let conn = json!({"provider": provider});
+            assert!(live_models(provider, &conn, false).await.is_none(), "{provider}");
+            assert!(live_models(provider, &conn, true).await.is_none(), "{provider}");
+        }
+    }
 }
 
 fn read_provider_overrides(db: &rusqlite::Connection) -> Map<String, Value> {
