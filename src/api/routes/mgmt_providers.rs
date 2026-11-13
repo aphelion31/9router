@@ -521,6 +521,86 @@ mod node_validation_tests {
             );
         }
     }
+
+    #[tokio::test]
+    async fn provider_nodes_crud_lifecycle() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrate(&db).unwrap();
+        let state = AppState {
+            db: Arc::new(Mutex::new(db)),
+            executor: Arc::new(crate::api::executor::HttpExecutor(reqwest::Client::new())),
+            jwt_secret: None,
+        };
+        let app = routes().with_state(state);
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::post("/api/provider-nodes")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"name":"My Node","prefix":"my","type":"openai-compatible","apiType":"chat","baseUrl":"https://api.example.com/v1"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let created: Value = serde_json::from_slice(
+            &axum::body::to_bytes(res.into_body(), 10000).await.unwrap(),
+        )
+        .unwrap();
+        let id = created["node"]["id"].as_str().unwrap().to_string();
+        assert!(id.starts_with("openai-compatible-chat-"));
+
+        let res = app
+            .clone()
+            .oneshot(Request::get("/api/provider-nodes").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let listed: Value = serde_json::from_slice(
+            &axum::body::to_bytes(res.into_body(), 10000).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(listed["nodes"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["nodes"][0]["id"], id);
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::put(format!("/api/provider-nodes/{id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"name":"My Node 2","prefix":"my2","apiType":"responses","baseUrl":"https://api2.example.com/v1"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let updated: Value = serde_json::from_slice(
+            &axum::body::to_bytes(res.into_body(), 10000).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(updated["node"]["name"], "My Node 2");
+        assert_eq!(updated["node"]["prefix"], "my2");
+
+        let res = app
+            .oneshot(
+                Request::delete(format!("/api/provider-nodes/{id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let deleted: Value = serde_json::from_slice(
+            &axum::body::to_bytes(res.into_body(), 10000).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(deleted["success"], true);
+    }
 }
 
 fn node(db: &rusqlite::Connection, id: &str) -> rusqlite::Result<Option<Value>> {

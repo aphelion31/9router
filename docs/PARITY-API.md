@@ -99,9 +99,9 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `
 | /api/pricing | DELETE, GET, PATCH | done |
 | /api/prompt-injection | DELETE, GET, PUT | done |
 | /api/prompt-injection/stats | GET | done |
-| /api/provider-nodes/[id] | DELETE, PUT | partial |
-| /api/provider-nodes | GET, POST | partial |
-| /api/provider-nodes/validate | POST | stub501 |
+| /api/provider-nodes/[id] | DELETE, PUT | done |
+| /api/provider-nodes | GET, POST | done |
+| /api/provider-nodes/validate | POST | done |
 | /api/providers/[id]/models | GET | stub501 |
 | /api/providers/[id]/overrides | GET, PUT | stub501 |
 | /api/providers/[id] | DELETE, GET, PUT | partial |
