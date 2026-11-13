@@ -231,7 +231,7 @@ mod tests {
         let models = resolve_grok_cli_models_at(&client, &url, "stale", Some("fresh"), Some("a@b.c"), Some("u1"))
             .await
             .unwrap();
-        assert_eq!(models[0]["contextLength"], 1);
+        assert_eq!(models[0]["contextLength"].as_f64(), Some(1.0));
         let seen = handle.await.unwrap();
         assert!(seen[0].contains("Bearer stale"));
         assert!(seen[1].contains("Bearer fresh"));
