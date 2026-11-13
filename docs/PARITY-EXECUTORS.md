@@ -8,15 +8,15 @@ Status is deliberately conservative: partial means the upstream executor has beh
 | azure.js | partial | Provider-specific connection settings not wired. |
 | base.js | partial | Generic HTTP transport exists, retry and refresh parity incomplete. |
 | bedrock.js | partial | Environment SigV4, Claude/xAI event stream supported. AWS profile/SSO and full error parity missing. |
-| browserExecutableCheck.js | pending | Browser helper. |
+| browserExecutableCheck.js | ported | `src/executors/browser_executable_check.rs` (missing browser/display classification, Chrome executable resolution) |
 | chatgpt-web.js | unsupported | Browser automation required. |
-| chatgptWebTools.js | pending | Browser helper. |
+| chatgptWebTools.js | ported | `src/executors/chatgpt_web_tools.rs` (tool prompt injection, nonce-bound `<tool>` parsing, SSE replay) |
 | codebuddy-cn.js | partial | Forced streaming, agent system-prompt neutralization, and reasoning_summary implemented; code 6004 reset parsing pending in error layer. |
 | codebuddy-intl.js | partial | Forced streaming, reasoning_summary, and CodeBuddy message normalization implemented; code 6004 reset parsing pending in error layer. |
 | codex.js | partial | Basic request shaping exists. |
 | commandcode.js | partial | CLI identity headers, forced streaming, and NDJSON-to-SSE decoder implemented; upstream retry loop pending. |
 | cursor.js | pending | |
-| deepseek-web-done-terminator.js | pending | |
+| deepseek-web-done-terminator.js | ported | `src/executors/deepseek_web_done_terminator.rs` (FinishOnce guard and DrainWindow scheduler) |
 | deepseek-web.js | pending | |
 | default.js | partial | Generic transport exists, provider quirks missing. |
 | devin-cli.js | partial | Explicitly refuses execution: upstream auto-approves host shell and filesystem access; ACP sandbox and permissions required. |
@@ -29,7 +29,7 @@ Status is deliberately conservative: partial means the upstream executor has beh
 | iflow.js | partial | Request signing implemented. |
 | index.js | partial | Executor dispatch incomplete. |
 | kimchi.js | partial | Request normalization ported; dynamic model metadata and shared reasoning injection not yet available. |
-| kiro.js | pending | |
+| kiro.js | ported | `src/executors/kiro.rs` (auth-aware endpoint fallback, CodeWhisperer/Q/Kiro headers, AWS EventStream-to-SSE, integrity gate & bounded repair retry) |
 | mimo-free.js | partial | Bootstrap, marker and auth retry; configure MIMO_FREE_CLIENT_ID; JWT caching omitted. |
 | minimax-code.js | partial | Quota response normalization; desktop lease and OAuth token refresh unavailable. |
 | muse-web.js | unsupported | Browser automation required. |
