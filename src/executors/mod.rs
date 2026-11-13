@@ -4,6 +4,7 @@ use serde_json::Value;
 mod azure;
 pub(crate) mod bedrock;
 mod chatgpt_web;
+mod codebuddy_intl;
 mod gemini_cli;
 mod gemini_web;
 mod github;
@@ -162,6 +163,9 @@ pub async fn execute(
             builder = builder.header(name, value);
         }
     }
+    if provider.id == "codebuddy-intl" {
+        codebuddy_intl::prepare(&mut request.body)?;
+    }
     if provider.id == "iflow" {
         for (name, value) in iflow::prepare(
             &mut request.body,
@@ -172,7 +176,7 @@ pub async fn execute(
             builder = builder.header(name, value);
         }
     }
-    if request.stream || provider.id == "codex" {
+    if request.stream || matches!(provider.id.as_str(), "codex" | "codebuddy-intl") {
         builder = builder.header(reqwest::header::ACCEPT, "text/event-stream");
     }
     if provider.id == "azure" {
@@ -629,6 +633,53 @@ mod tests {
         assert_eq!(
             result["headers"]["x-goog-api-client"],
             "google-genai-sdk/1.41.0 gl-node/v22.19.0"
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn codebuddy_intl_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/v2/chat/completions",
+            listener.local_addr().unwrap()
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(mock)))
+                .await
+                .unwrap()
+        });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "codebuddy-intl".into(),
+                model: "claude-sonnet-4".into(),
+                body: json!({
+                    "reasoning_effort": "high",
+                    "messages": [
+                        {"role": "system", "content": "custom"},
+                        {"role": "developer", "content": "dev"},
+                        {"role": "user", "content": "hello"}
+                    ]
+                }),
+                stream: false,
+                api_key: Some("cb-key".into()),
+                base_url: Some(url),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(result["authorization"], "Bearer cb-key");
+        assert_eq!(result["body"]["stream"], true);
+        assert_eq!(result["body"]["reasoning_summary"], "auto");
+        assert_eq!(
+            result["body"]["messages"],
+            json!([
+                {"role": "system", "content": "You are CodeBuddy Code."},
+                {"role": "user", "content": [{"type": "text", "text": "hello"}]}
+            ])
         );
         task.abort();
     }

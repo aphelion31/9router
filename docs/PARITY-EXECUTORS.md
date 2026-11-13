@@ -12,7 +12,7 @@ Status is deliberately conservative: partial means the upstream executor has beh
 | chatgpt-web.js | unsupported | Browser automation required. |
 | chatgptWebTools.js | pending | Browser helper. |
 | codebuddy-cn.js | pending | |
-| codebuddy-intl.js | pending | |
+| codebuddy-intl.js | partial | Forced streaming, reasoning_summary, and CodeBuddy message normalization implemented; code 6004 reset parsing pending in error layer. |
 | codex.js | partial | Basic request shaping exists. |
 | commandcode.js | pending | |
 | cursor.js | pending | |
