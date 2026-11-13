@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Provider Detail — 9Router</title>
+  <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body data-page="provider-detail">
+  <div class="layout">
+    <aside class="sidebar"></aside>
+    <main class="main">
+      <div id="error-banner" class="banner banner-error hidden" role="alert" aria-live="polite"></div>
+      <header class="page-header">
+        <div>
+          <a href="/dashboard/providers" class="muted text-sm">&larr; Back to Providers</a>
+          <h1 id="pd-title" class="page-title mt-12">Provider</h1>
+          <p id="pd-subtitle" class="page-subtitle">Connections, models, and overrides</p>
+        </div>
+        <button id="pd-refresh" type="button" class="btn">Refresh</button>
+      </header>
+
+      <section class="card" aria-labelledby="pd-conn-heading">
+        <h2 id="pd-conn-heading" class="card-title">Connections</h2>
+        <form id="pd-add-form" class="row mb-12">
+          <input id="pd-conn-name" type="text" placeholder="Connection name" aria-label="Connection name">
+          <input id="pd-conn-key" type="password" placeholder="API Key" aria-label="API Key" style="flex:1;min-width:200px">
+          <button type="submit" class="btn btn-primary">Add API Key</button>
+        </form>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Name</th><th>Connection ID</th><th>Priority</th><th>Status</th><th>Actions</th></tr>
+            </thead>
+            <tbody id="pd-conns-tbody">
+              <tr><td colspan="5" class="mono">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="pd-models-heading">
+        <h2 id="pd-models-heading" class="card-title">Disabled Models</h2>
+        <form id="pd-disable-form" class="row mb-12">
+          <input id="pd-model-id" type="text" placeholder="Model ID to disable (e.g. gpt-4o)" aria-label="Model ID" style="flex:1">
+          <button type="submit" class="btn">Disable Model</button>
+        </form>
+        <div id="pd-disabled-list" class="row"></div>
+      </section>
+
+      <section class="card" aria-labelledby="pd-overrides-heading">
+        <h2 id="pd-overrides-heading" class="card-title">Provider Overrides (JSON)</h2>
+        <div class="field">
+          <label for="pd-overrides-json">Headers / Base URL / Request Overrides</label>
+          <textarea id="pd-overrides-json" class="mono" rows="5" placeholder="{}"></textarea>
+        </div>
+        <button id="pd-save-overrides" type="button" class="btn btn-primary">Save Overrides</button>
+      </section>
+    </main>
+  </div>
+  <script src="/dashboard/app.js"></script>
+  <script>
+    window.__NR.pages["provider-detail"] = async function () {
+      var nr = window.__NR;
+      var providerId = nr.pathSegment(0);
+      document.getElementById("pd-title").textContent = "Provider: " + (providerId || "-");
+
+      var connsTbody = document.getElementById("pd-conns-tbody");
+      var disabledEl = document.getElementById("pd-disabled-list");
+      var overridesEl = document.getElementById("pd-overrides-json");
+
+      async function loadAll() {
+        connsTbody.innerHTML = '<tr><td colspan="5" class="mono">Loading...</td></tr>';
+        try {
+          var data = await nr.apiFetch("/api/providers?provider=" + encodeURIComponent(providerId));
+          var list = Array.isArray(data.connections) ? data.connections : [];
+          list = list.filter(function (c) { return !c.provider || c.provider === providerId; });
+          if (list.length === 0) {
+            connsTbody.innerHTML = '<tr><td colspan="5">No connections for this provider.</td></tr>';
+          } else {
+            connsTbody.innerHTML = "";
+            list.forEach(function (c) {
+              var tr = document.createElement("tr");
+              var active = c.isActive !== false;
+              tr.innerHTML =
+                "<td>" + nr.escapeHtml(c.name || "(unnamed)") + "</td>" +
+                '<td class="mono">' + nr.escapeHtml(c.id || "-") + "</td>" +
+                "<td>" + nr.escapeHtml(c.priority != null ? String(c.priority) : "-") + "</td>" +
+                '<td><span class="badge ' + (active ? "badge-ok" : "badge-off") + '">' + (active ? "Active" : "Paused") + "</span></td>" +
+                '<td class="row">' +
+                  '<button type="button" class="btn btn-sm toggle-btn">' + (active ? "Pause" : "Enable") + "</button>" +
+                  '<button type="button" class="btn btn-sm btn-danger del-btn">Delete</button>' +
+                "</td>";
+              tr.querySelector(".toggle-btn").addEventListener("click", async function () {
+                await nr.apiFetch("/api/providers/" + encodeURIComponent(c.id), {
+                  method: "PUT",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ isActive: !active })
+                });
+                loadAll();
+              });
+              tr.querySelector(".del-btn").addEventListener("click", async function () {
+                await nr.apiFetch("/api/providers/" + encodeURIComponent(c.id), { method: "DELETE" });
+                loadAll();
+              });
+              connsTbody.appendChild(tr);
+            });
+          }
+        } catch (err) {
+          connsTbody.innerHTML = '<tr><td colspan="5">Unable to load connections.</td></tr>';
+          nr.showBanner("Failed to load connections: " + err.message, "error");
+        }
+
+        try {
+          var d = await nr.apiFetch("/api/models/disabled?providerAlias=" + encodeURIComponent(providerId));
+          var models = Array.isArray(d.models) ? d.models : (Array.isArray(d.disabled) ? d.disabled : []);
+          if (models.length === 0) {
+            disabledEl.innerHTML = '<span class="muted text-sm">No disabled models.</span>';
+          } else {
+            disabledEl.innerHTML = "";
+            models.forEach(function (m) {
+              var mid = typeof m === "string" ? m : (m.id || m.model || "");
+              var span = document.createElement("span");
+              span.className = "badge badge-warn";
+              span.innerHTML = nr.escapeHtml(mid) + ' <button type="button" class="btn btn-sm" style="margin-left:6px;padding:1px 6px" aria-label="Re-enable ' + nr.escapeHtml(mid) + '">&times;</button>';
+              span.querySelector("button").addEventListener("click", async function () {
+                await nr.apiFetch("/api/models/disabled?providerAlias=" + encodeURIComponent(providerId) + "&id=" + encodeURIComponent(mid), { method: "DELETE" });
+                loadAll();
+              });
+              disabledEl.appendChild(span);
+            });
+          }
+        } catch (e) {
+          disabledEl.innerHTML = '<span class="muted text-sm">Disabled models endpoint unavailable.</span>';
+        }
+
+        try {
+          var ov = await nr.apiFetch("/api/providers/" + encodeURIComponent(providerId) + "/overrides");
+          overridesEl.value = JSON.stringify(ov.overrides || ov || {}, null, 2);
+        } catch (e) {
+          overridesEl.value = "{}";
+        }
+      }
+
+      document.getElementById("pd-add-form").addEventListener("submit", async function (e) {
+        e.preventDefault();
+        var name = document.getElementById("pd-conn-name").value.trim();
+        var apiKey = document.getElementById("pd-conn-key").value.trim();
+        if (!apiKey) { nr.showBanner("API Key is required.", "error"); return; }
+        try {
+          await nr.apiFetch("/api/providers", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ provider: providerId, authMethod: "api_key", apiKey: apiKey, name: name || providerId })
+          });
+          document.getElementById("pd-conn-name").value = "";
+          document.getElementById("pd-conn-key").value = "";
+          nr.showBanner("Connection added.", "success");
+          loadAll();
+        } catch (err) {
+          nr.showBanner("Failed to add connection: " + err.message, "error");
+        }
+      });
+
+      document.getElementById("pd-disable-form").addEventListener("submit", async function (e) {
+        e.preventDefault();
+        var mid = document.getElementById("pd-model-id").value.trim();
+        if (!mid) return;
+        try {
+          await nr.apiFetch("/api/models/disabled", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ providerAlias: providerId, modelId: mid })
+          });
+          document.getElementById("pd-model-id").value = "";
+          loadAll();
+        } catch (err) {
+          nr.showBanner("Failed to disable model: " + err.message, "error");
+        }
+      });
+
+      document.getElementById("pd-save-overrides").addEventListener("click", async function () {
+        try {
+          var parsed = JSON.parse(overridesEl.value || "{}");
+          await nr.apiFetch("/api/providers/" + encodeURIComponent(providerId) + "/overrides", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(parsed)
+          });
+          nr.showBanner("Overrides saved.", "success");
+        } catch (err) {
+          nr.showBanner("Failed to save overrides: " + err.message, "error");
+        }
+      });
+
+      document.getElementById("pd-refresh").addEventListener("click", loadAll);
+      await loadAll();
+    };
+  </script>
+</body>
+</html>

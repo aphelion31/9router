@@ -84,7 +84,11 @@ fn make_router_with_db(
         .route("/dashboard", get(dashboard::overview_page))
         .route("/dashboard/endpoint", get(dashboard::endpoint_page))
         .route("/dashboard/providers", get(dashboard::providers_page))
+        .route("/dashboard/providers/new", get(dashboard::providers_new_page))
+        .route("/dashboard/providers/{id}", get(dashboard::provider_detail_page))
         .route("/dashboard/combos", get(dashboard::combos_page))
+        .route("/dashboard/usage", get(dashboard::usage_page))
+        .route("/dashboard/quota", get(dashboard::quota_page))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             dashboard_page_auth,

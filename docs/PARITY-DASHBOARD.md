@@ -9,10 +9,10 @@ Status of dashboard pages ported from `9router-pro/src/app/(dashboard)/dashboard
 | 2 | Endpoint & Key | `/dashboard/endpoint` | Done | `endpoint.html` |
 | 3 | Providers | `/dashboard/providers` | Done | `providers.html` |
 | 4 | Combos | `/dashboard/combos` | Done | `combos.html` |
-| 5 | Providers New | `/dashboard/providers/new` | Pending | Group 1 |
-| 6 | Provider Detail | `/dashboard/providers/{id}` | Pending | Group 1 |
-| 7 | Usage | `/dashboard/usage` | Pending | Group 1 |
-| 8 | Provider Quota | `/dashboard/quota` | Pending | Group 1 |
+| 5 | Providers New | `/dashboard/providers/new` | Done | `providers_new.html` |
+| 6 | Provider Detail | `/dashboard/providers/{id}` | Done | `provider_detail.html` |
+| 7 | Usage | `/dashboard/usage` | Done | `usage.html` |
+| 8 | Provider Quota | `/dashboard/quota` | Done | `quota.html` |
 | 9 | Token Saver | `/dashboard/token-saver` | Pending | Group 2 |
 | 10 | Prompt Injection | `/dashboard/prompt-injection` | Pending | Group 2 |
 | 11 | Profile & Settings | `/dashboard/profile` | Pending | Group 2 |

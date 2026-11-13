@@ -11,7 +11,11 @@ const LOGIN_HTML: &str = include_str!("login.html");
 const OVERVIEW_HTML: &str = include_str!("overview.html");
 const ENDPOINT_HTML: &str = include_str!("endpoint.html");
 const PROVIDERS_HTML: &str = include_str!("providers.html");
+const PROVIDERS_NEW_HTML: &str = include_str!("providers_new.html");
+const PROVIDER_DETAIL_HTML: &str = include_str!("provider_detail.html");
 const COMBOS_HTML: &str = include_str!("combos.html");
+const USAGE_HTML: &str = include_str!("usage.html");
+const QUOTA_HTML: &str = include_str!("quota.html");
 const STYLE_CSS: &str = include_str!("style.css");
 const APP_JS: &str = include_str!("app.js");
 
@@ -31,8 +35,24 @@ pub async fn providers_page() -> Html<&'static str> {
     Html(PROVIDERS_HTML)
 }
 
+pub async fn providers_new_page() -> Html<&'static str> {
+    Html(PROVIDERS_NEW_HTML)
+}
+
+pub async fn provider_detail_page() -> Html<&'static str> {
+    Html(PROVIDER_DETAIL_HTML)
+}
+
 pub async fn combos_page() -> Html<&'static str> {
     Html(COMBOS_HTML)
+}
+
+pub async fn usage_page() -> Html<&'static str> {
+    Html(USAGE_HTML)
+}
+
+pub async fn quota_page() -> Html<&'static str> {
+    Html(QUOTA_HTML)
 }
 
 pub async fn style_css() -> Response {
