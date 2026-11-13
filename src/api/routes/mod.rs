@@ -10,6 +10,7 @@ use serde_json::json;
 use crate::server::AppState;
 
 mod v1_count_tokens;
+mod v1_stubs;
 mod v1_usage;
 
 pub fn management() -> Router<AppState> {
@@ -20,6 +21,7 @@ pub fn v1() -> Router<AppState> {
     Router::new()
         .merge(v1_count_tokens::router())
         .merge(v1_usage::router())
+        .merge(v1_stubs::router())
 }
 
 /// 501 for routes whose upstream service is not ported yet.
