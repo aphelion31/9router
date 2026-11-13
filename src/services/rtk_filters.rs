@@ -1,3 +1,5 @@
+use crate::services::rtk_constants as caps;
+
 pub fn smart_truncate(input: &str) -> String {
     truncate(input, false)
 }
@@ -53,13 +55,13 @@ pub fn git_diff(diff: &str, max_lines: usize) -> String {
                 } else {
                     removed += 1;
                 }
-                if shown < 100 {
+                if shown < caps::GIT_DIFF_HUNK_MAX_LINES {
                     result.push(format!("  {line}"));
                     shown += 1;
                 } else {
                     skipped += 1;
                 }
-            } else if shown > 0 && shown < 100 && !line.starts_with('\\') {
+            } else if shown > 0 && shown < caps::GIT_DIFF_HUNK_MAX_LINES && !line.starts_with('\\') {
                 result.push(format!("  {line}"));
                 shown += 1;
             }
@@ -105,18 +107,18 @@ pub fn search_list(input: &str) -> String {
         paths.len(),
         directories.len()
     );
-    for (dir, names) in directories.iter().take(20) {
+    for (dir, names) in directories.iter().take(caps::SEARCH_LIST_TOTAL_DIR_MAX) {
         out.push_str(&format!("{dir}/ ({}):\n", names.len()));
-        for name in names.iter().take(10) {
+        for name in names.iter().take(caps::SEARCH_LIST_PER_DIR_MAX) {
             out.push_str(&format!("  {name}\n"));
         }
-        if names.len() > 10 {
-            out.push_str(&format!("  +{}\n", names.len() - 10));
+        if names.len() > caps::SEARCH_LIST_PER_DIR_MAX {
+            out.push_str(&format!("  +{}\n", names.len() - caps::SEARCH_LIST_PER_DIR_MAX));
         }
         out.push('\n');
     }
-    if directories.len() > 20 {
-        out.push_str(&format!("+{} more dirs\n", directories.len() - 20));
+    if directories.len() > caps::SEARCH_LIST_TOTAL_DIR_MAX {
+        out.push_str(&format!("+{} more dirs\n", directories.len() - caps::SEARCH_LIST_TOTAL_DIR_MAX));
     }
     out.trim_end_matches('\n').to_owned()
 }
@@ -143,11 +145,11 @@ pub fn grep(input: &str) -> String {
     let mut out = format!("{total} matches in {}F:\n\n", files.len());
     for (file, matches) in files {
         out.push_str(&format!("[file] {file} ({}):\n", matches.len()));
-        for (number, content) in matches.iter().take(10) {
+        for (number, content) in matches.iter().take(caps::GREP_PER_FILE_MAX) {
             out.push_str(&format!("  {number:>4}: {}\n", content.trim()));
         }
-        if matches.len() > 10 {
-            out.push_str(&format!("  +{}\n", matches.len() - 10));
+        if matches.len() > caps::GREP_PER_FILE_MAX {
+            out.push_str(&format!("  +{}\n", matches.len() - caps::GREP_PER_FILE_MAX));
         }
         out.push('\n');
     }
@@ -174,17 +176,17 @@ pub fn find(input: &str) -> String {
         directories.entry(directory).or_default().push(name);
     }
     let mut out = format!("{} files in {} dirs:\n\n", lines.len(), directories.len());
-    for (dir, files) in directories.iter().take(20) {
+    for (dir, files) in directories.iter().take(caps::FIND_TOTAL_DIR_MAX) {
         out.push_str(&format!("{}/  ({})\n", dir.replace('\\', "/"), files.len()));
-        for file in files.iter().take(10) {
+        for file in files.iter().take(caps::FIND_PER_DIR_MAX) {
             out.push_str(&format!("  {file}\n"));
         }
-        if files.len() > 10 {
-            out.push_str(&format!("  +{}\n", files.len() - 10));
+        if files.len() > caps::FIND_PER_DIR_MAX {
+            out.push_str(&format!("  +{}\n", files.len() - caps::FIND_PER_DIR_MAX));
         }
     }
-    if directories.len() > 20 {
-        out.push_str(&format!("\n+{} more dirs\n", directories.len() - 20));
+    if directories.len() > caps::FIND_TOTAL_DIR_MAX {
+        out.push_str(&format!("\n+{} more dirs\n", directories.len() - caps::FIND_TOTAL_DIR_MAX));
     }
     out
 }
@@ -280,11 +282,11 @@ pub fn tree(input: &str) -> String {
     while lines.last().is_some_and(|line| line.trim().is_empty()) {
         lines.pop();
     }
-    if lines.len() > 200 {
+    if lines.len() > caps::TREE_MAX_LINES {
         return format!(
             "{}\n... +{} more lines",
-            lines[..200].join("\n"),
-            lines.len() - 200
+            lines[..caps::TREE_MAX_LINES].join("\n"),
+            lines.len() - caps::TREE_MAX_LINES
         );
     }
     lines.join("\n")
@@ -292,17 +294,17 @@ pub fn tree(input: &str) -> String {
 
 fn truncate(input: &str, numbered: bool) -> String {
     let lines: Vec<_> = input.split('\n').collect();
-    if lines.len() < 250 {
+    if lines.len() < caps::SMART_TRUNCATE_MIN_LINES {
         return input.to_owned();
     }
     let suffix = if numbered { " (file continues)" } else { "" };
-    let mut result = lines[..120].join("\n");
+    let mut result = lines[..caps::SMART_TRUNCATE_HEAD].join("\n");
     result.push_str(&format!(
         "\n... +{} lines truncated{}\n",
-        lines.len() - 180,
+        lines.len() - caps::SMART_TRUNCATE_HEAD - caps::SMART_TRUNCATE_TAIL,
         suffix
     ));
-    result.push_str(&lines[lines.len() - 60..].join("\n"));
+    result.push_str(&lines[lines.len() - caps::SMART_TRUNCATE_TAIL..].join("\n"));
     result
 }
 
@@ -336,7 +338,7 @@ pub fn dedup_log(input: &str) -> String {
         out.push(line.to_owned());
         previous = Some(line);
         count = 1;
-        if out.len() >= 2000 {
+        if out.len() >= caps::DEDUP_LINE_MAX {
             out.push("... (truncated at 2000 lines)".to_owned());
             return out.join("\n");
         }

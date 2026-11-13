@@ -74,6 +74,10 @@ impl KeyRateLimiter {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let entry = state.keys.get_mut(key)?;
         prune(entry, now);
+        Self::check(entry, limits, now)
+    }
+
+    fn check(entry: &Entry, limits: Limits, now: u64) -> Option<Verdict> {
         if limits.max_concurrent > 0 && entry.slots.len() >= limits.max_concurrent {
             return Some(Verdict {
                 kind: "concurrency",
@@ -111,6 +115,20 @@ impl KeyRateLimiter {
             }
         }
         None
+    }
+    pub fn try_admit(&self, key: &str, limits: Limits, now: u64) -> Result<Slot, Verdict> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = state.keys.entry(key.to_owned()).or_default();
+        prune(entry, now);
+        if let Some(verdict) = Self::check(entry, limits, now) {
+            return Err(verdict);
+        }
+        state.next_id = state.next_id.wrapping_add(1);
+        let id = state.next_id;
+        let entry = state.keys.get_mut(key).expect("entry just inserted");
+        entry.times.push_back(now);
+        entry.slots.insert(id, now);
+        Ok(Slot { state: self.state.clone(), key: key.to_owned(), id })
     }
     pub fn admit(&self, key: &str, now: u64) -> Slot {
         if key.is_empty() {

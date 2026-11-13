@@ -1,4 +1,4 @@
-use crate::{api::routes::obs_events::percentile, server::AppState};
+use crate::server::AppState;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -784,77 +784,17 @@ async fn usage_latency(
             .ok(),
         _ => None,
     };
-    let mut totals: Vec<f64> = Vec::new();
-    let mut ttfts: Vec<f64> = Vec::new();
-    let mut by_provider: HashMap<String, (Vec<f64>, Vec<f64>)> = HashMap::new();
-
-    let (sql, param): (&str, Vec<String>) = if let Some(s) = since {
-        (
-            "SELECT data FROM requestDetails WHERE timestamp >= ?1 ORDER BY timestamp DESC LIMIT 5000",
-            vec![s],
-        )
-    } else {
-        (
-            "SELECT data FROM requestDetails ORDER BY timestamp DESC LIMIT 5000",
-            vec![],
-        )
-    };
-    let p_refs: Vec<&dyn rusqlite::ToSql> =
-        param.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
-    if let Ok(mut stmt) = db.prepare(sql)
-        && let Ok(rows) = stmt.query_map(p_refs.as_slice(), |r| r.get::<_, String>(0))
-    {
-        for ds in rows.flatten() {
-            if let Ok(d) = serde_json::from_str::<Value>(&ds)
-                && let Some(total) = d.pointer("/latency/total").and_then(Value::as_f64)
-                && total > 0.0
-            {
-                let ttft = d
-                    .pointer("/latency/ttft")
-                    .and_then(Value::as_f64)
-                    .filter(|&v| v > 0.0);
-                totals.push(total);
-                if let Some(t) = ttft {
-                    ttfts.push(t);
-                }
-                let p = d
-                    .get("provider")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown")
-                    .to_string();
-                let entry = by_provider.entry(p).or_default();
-                entry.0.push(total);
-                if let Some(t) = ttft {
-                    entry.1.push(t);
-                }
-            }
-        }
-    }
-    totals.sort_by(|a, b| a.total_cmp(b));
-    ttfts.sort_by(|a, b| a.total_cmp(b));
-    let mut bp_out = serde_json::Map::new();
-    for (p, (mut tots, mut ts)) in by_provider {
-        tots.sort_by(|a, b| a.total_cmp(b));
-        ts.sort_by(|a, b| a.total_cmp(b));
-        bp_out.insert(
-            p,
-            json!({
-                "samples": tots.len(),
-                "totalP50": percentile(&tots, 50.0),
-                "totalP95": percentile(&tots, 95.0),
-                "ttftP50": percentile(&ts, 50.0),
-            }),
-        );
-    }
+    let stats = crate::services::latency_stats::get_latency_stats(&db, since.as_deref(), 5000)
+        .unwrap_or_else(|_| crate::services::latency_stats::compute_latency_stats(&[]));
     let obs = is_observability_enabled(&db);
     no_store_json(
         StatusCode::OK,
         json!({
             "period": period,
-            "samples": totals.len(),
-            "ttft": { "samples": ttfts.len(), "p50": percentile(&ttfts, 50.0), "p95": percentile(&ttfts, 95.0) },
-            "total": { "samples": totals.len(), "p50": percentile(&totals, 50.0), "p95": percentile(&totals, 95.0) },
-            "byProvider": bp_out,
+            "samples": stats.samples,
+            "ttft": stats.ttft,
+            "total": stats.total,
+            "byProvider": stats.by_provider,
             "observabilityEnabled": obs,
         }),
     )

@@ -395,14 +395,17 @@ pub fn lift_reasoning_aliases(delta: &mut Value) {
 
 pub fn sanitize_tool_id(id: &str) -> String {
     id.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
         .collect()
+}
+
+#[cfg(test)]
+#[test]
+fn tool_ids_are_sanitized_consistently() {
+    let mut messages = vec![json!({"role":"assistant","tool_calls":[{"id":"call.a","function":{"name":"x"}}]}), json!({"role":"tool","tool_call_id":"call.a"})];
+    ensure_tool_call_ids(&mut messages);
+    assert_eq!(messages[0]["tool_calls"][0]["id"], "calla");
+    assert_eq!(messages[1]["tool_call_id"], "calla");
 }
 
 pub fn ensure_tool_call_ids(messages: &mut Vec<Value>) {
@@ -410,10 +413,26 @@ pub fn ensure_tool_call_ids(messages: &mut Vec<Value>) {
     let mut counter: u64 = 0;
 
     for msg in messages.iter_mut() {
+        if let Some(id) = msg.get_mut("tool_call_id") && let Some(raw) = id.as_str() {
+            let clean = sanitize_tool_id(raw);
+            if !clean.is_empty() { *id = Value::String(clean); }
+        }
+        if let Some(blocks) = msg.get_mut("content").and_then(Value::as_array_mut) {
+            for block in blocks {
+                let field = match block["type"].as_str() { Some("tool_use") => "id", Some("tool_result") => "tool_use_id", _ => continue };
+                if let Some(id) = block.get_mut(field) && let Some(raw) = id.as_str() {
+                    let clean = sanitize_tool_id(raw);
+                    if !clean.is_empty() { *id = Value::String(clean); }
+                }
+            }
+        }
         let is_assistant = msg.get("role").and_then(|r| r.as_str()) == Some(role::ASSISTANT);
         if is_assistant {
             if let Some(tcs) = msg.get_mut("tool_calls").and_then(|v| v.as_array_mut()) {
                 for tc in tcs.iter_mut() {
+                    if let Some(id) = tc.get_mut("id") && let Some(raw) = id.as_str() {
+                        *id = Value::String(sanitize_tool_id(raw));
+                    }
                     let has_id = tc
                         .get("id")
                         .and_then(|v| v.as_str())

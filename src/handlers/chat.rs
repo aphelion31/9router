@@ -52,12 +52,7 @@ pub fn parse_model_target(model_str: &str) -> Option<ModelTarget> {
 
 /// Strip `[1m]`-style context markers from model names before resolution.
 pub fn strip_model_context_marker(model: &str) -> &str {
-    if let Some(idx) = model.rfind('[')
-        && model.ends_with(']')
-    {
-        return &model[..idx];
-    }
-    model
+    crate::services::model_markers::strip_model_context_marker(model).0
 }
 
 pub fn error_response(status: u16, message: &str) -> Response {
@@ -75,6 +70,61 @@ pub fn error_response(status: u16, message: &str) -> Response {
         .header("access-control-allow-origin", "*")
         .body(Body::from(body))
         .unwrap_or_else(|_| Response::new(Body::empty()))
+}
+
+fn upstream_error_response(status: u16, message: &str, headers: &[(String, String)]) -> Response {
+    let mut response = error_response(status, message);
+    for (name, value) in crate::services::upstream_headers::upstream_response_headers(
+        headers.iter().map(|(name, value)| (name.as_str(), value.as_str())),
+    ) {
+        if let (Ok(name), Ok(value)) = (axum::http::HeaderName::from_bytes(name.as_bytes()), axum::http::HeaderValue::from_str(&value)) {
+            response.headers_mut().insert(name, value);
+        }
+    }
+    response
+}
+
+async fn peek_combo_response(response: Response) -> (Response, bool) {
+    use futures_core::Stream;
+    use std::{collections::VecDeque, pin::Pin, task::{Context, Poll}};
+    struct Replay {
+        head: VecDeque<Result<axum::body::Bytes, axum::Error>>,
+        tail: axum::body::BodyDataStream,
+    }
+    impl Stream for Replay {
+        type Item = Result<axum::body::Bytes, axum::Error>;
+        fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            if let Some(chunk) = self.head.pop_front() { return Poll::Ready(Some(chunk)); }
+            Pin::new(&mut self.tail).poll_next(cx)
+        }
+    }
+    let (parts, body) = response.into_parts();
+    let mut tail = body.into_data_stream();
+    let mut head = VecDeque::new();
+    let mut state = crate::services::empty_failover::StreamState::default();
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(crate::config::EMPTY_PEEK_DEADLINE_MS);
+    let mut ended = false;
+    let mut size = 0usize;
+    while size < 1024 * 1024 && !state.saw_content {
+        match tokio::time::timeout_at(deadline, std::future::poll_fn(|cx| Pin::new(&mut tail).poll_next(cx))).await {
+            Ok(Some(Ok(bytes))) => {
+                size += bytes.len();
+                let mut text = std::mem::take(&mut state.pending);
+                text.push_str(&String::from_utf8_lossy(&bytes));
+                crate::services::empty_failover::scan_sse_buffer(&text, &mut state);
+                head.push_back(Ok(bytes));
+            }
+            Ok(None) => { ended = true; break; }
+            Ok(Some(Err(error))) => { head.push_back(Err(error)); break; }
+            Err(_) => break,
+        }
+    }
+    if ended && !state.pending.is_empty() {
+        let pending = format!("{}\n", std::mem::take(&mut state.pending));
+        crate::services::empty_failover::scan_sse_buffer(&pending, &mut state);
+    }
+    let empty = ended && !state.saw_content && !state.finish_reason.as_deref().is_some_and(crate::services::empty_failover::is_no_retry_finish);
+    (Response::from_parts(parts, Body::from_stream(Replay { head, tail })), empty)
 }
 
 /// Hooks for credential lookup, persistence, and account failover in `handle_chat`.
@@ -121,6 +171,14 @@ pub trait ChatHooks: Send + Sync {
 
     fn get_token_saver_config<'a>(&'a self, _model: &'a str) -> BoxFuture<'a, Option<TokenSaverConfig>> {
         Box::pin(async { None })
+    }
+
+    fn anti_flaky_config<'a>(&'a self) -> BoxFuture<'a, (bool, u8)> {
+        Box::pin(async { (true, 2) })
+    }
+
+    fn prompt_injections<'a>(&'a self, _model: &'a str) -> BoxFuture<'a, Vec<Value>> {
+        Box::pin(async { Vec::new() })
     }
 
     fn on_account_error<'a>(
@@ -204,6 +262,11 @@ pub async fn handle_chat(
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
 
+    let client_headers = headers.iter().filter_map(|(name, value)| {
+        value.to_str().ok().map(|value| (name.as_str().to_owned(), value.to_owned()))
+    }).collect();
+    let client_tool = crate::services::client_detector::detect_client_tool(&client_headers, &body)
+        .map(str::to_owned);
     let started = Instant::now();
     let targets_len = targets.len();
     let cooldowns: &Cooldowns = routing::cooldown::global();
@@ -217,6 +280,10 @@ pub async fn handle_chat(
 
     let mut last_status = 503;
     let mut last_error = "All accounts unavailable".to_string();
+    let mut last_headers = Vec::new();
+    let mut last_flaky = None;
+    let mut flaky_attempts = 0;
+    let (anti_flaky_enabled, max_flaky_retries) = hooks.anti_flaky_config().await;
 
     for target in targets {
         let mut excluded = HashSet::new();
@@ -290,25 +357,52 @@ pub async fn handle_chat(
                 endpoint_path: endpoint_path.map(str::to_string),
                 accept_header: accept_header.clone(),
                 user_agent: user_agent.clone(),
-                client_tool: None,
+                client_tool: client_tool.clone(),
                 provider_session_id: None,
                 first_response_timeout,
                 token_saver,
+                prompt_injections: hooks.prompt_injections(&format!("{}/{}", target.provider, target.model)).await,
             };
 
             match handle_chat_core(options, executor, &core_hooks).await {
                 ChatCoreResult::Success(resp) => {
                     cooldowns.clear(&conn_id);
+                    let resp = if targets_len > 1 && body["stream"] == true {
+                        let (resp, empty) = peek_combo_response(resp).await;
+                        if empty {
+                            last_flaky = Some(resp);
+                            break;
+                        }
+                        resp
+                    } else { resp };
+                    if anti_flaky_enabled && max_flaky_retries > 0 && body["stream"] != true {
+                        let (parts, response_body) = resp.into_parts();
+                        match axum::body::to_bytes(response_body, usize::MAX).await {
+                            Ok(bytes) => {
+                                let flaky = crate::services::flaky_guard::judge_finished_text(&String::from_utf8_lossy(&bytes)).is_some();
+                                let resp = Response::from_parts(parts, Body::from(bytes));
+                                if flaky && flaky_attempts < max_flaky_retries {
+                                    flaky_attempts += 1;
+                                    last_flaky = Some(resp);
+                                    excluded.insert(conn_id);
+                                    continue;
+                                }
+                                return resp;
+                            }
+                            Err(_) => return error_response(502, "Failed to read upstream response"),
+                        }
+                    }
                     return resp;
                 }
                 ChatCoreResult::Error {
                     status,
                     message,
-                    headers: _,
+                    headers,
                     retry_after,
                 } => {
                     last_status = status;
                     last_error = message.clone();
+                    last_headers = headers;
                     if status == 504 && targets_len > 1 {
                         // Stalled member: skip it for this combo for the grace window.
                         cooldowns.set(
@@ -335,7 +429,7 @@ pub async fn handle_chat(
                         now_ms(),
                     );
                     if verdict == Verdict::RequestScoped {
-                        return error_response(status, &message);
+                        return upstream_error_response(status, &message, &last_headers);
                     }
                     if verdict == Verdict::Overload && overload_attempts < OVERLOAD_MAX_ATTEMPTS {
                         overload_attempts += 1;
@@ -343,7 +437,7 @@ pub async fn handle_chat(
                         continue;
                     }
                     if !hooks.on_account_error(&conn_id, status, &message).await {
-                        return error_response(status, &message);
+                        return upstream_error_response(status, &message, &last_headers);
                     }
                     match verdict {
                         Verdict::Fixed(d) => cooldowns.set(&conn_id, d),
@@ -365,7 +459,7 @@ pub async fn handle_chat(
         }
     }
 
-    error_response(last_status, &last_error)
+    last_flaky.unwrap_or_else(|| upstream_error_response(last_status, &last_error, &last_headers))
 }
 
 #[cfg(test)]
@@ -454,8 +548,107 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn claude_client_tools_are_deduplicated_before_execution() {
+        let executor = FakeExecutor::new(|req, _| {
+            let tools = req.body["tools"].as_array().unwrap();
+            assert_eq!(tools.len(), 1);
+            assert_eq!(tools[0]["function"]["name"], "mcp__exa__web_search_exa");
+            Ok(ExecutorResponse {
+                status: 200,
+                headers: vec![],
+                body: ExecutorBody::Json(json!({"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]})),
+                url: None,
+                response_format: None,
+            })
+        });
+        let body = json!({
+            "model":"openai/gpt-4o", "stream":false,
+            "messages":[{"role":"user","content":"hello"}],
+            "tools":[
+                {"type":"function","function":{"name":"WebSearch","parameters":{"type":"object"}}},
+                {"type":"function","function":{"name":"mcp__exa__web_search_exa","parameters":{"type":"object"}}}
+            ]
+        });
+        let mut headers = HeaderMap::new();
+        headers.insert("user-agent", "claude-cli".parse().unwrap());
+        let hooks: Arc<dyn ChatHooks> = Arc::new(SingleCredHooks { credentials: test_creds("dedup-test") });
+        let response = handle_chat(body, &headers, Some("/v1/chat/completions"), &executor, hooks).await;
+        assert_eq!(response.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn chat_errors_forward_only_approved_upstream_headers() {
+        let executor = FakeExecutor::new(|_, _| Ok(ExecutorResponse {
+            status: 400,
+            headers: vec![("Retry-After".into(), "7".into()), ("Set-Cookie".into(), "secret".into())],
+            body: ExecutorBody::Json(json!({"error":{"message":"bad request"}})),
+            url: None,
+            response_format: None,
+        }));
+        let hooks: Arc<dyn ChatHooks> = Arc::new(SingleCredHooks { credentials: test_creds("header-test") });
+        let response = handle_chat(json!({"model":"openai/gpt-4o","messages":[{"role":"user","content":"hello"}]}), &HeaderMap::new(), Some("/v1/chat/completions"), &executor, hooks).await;
+        assert_eq!(response.status(), 400);
+        assert_eq!(response.headers()["retry-after"], "7");
+        assert!(!response.headers().contains_key("set-cookie"));
+    }
+
+    #[tokio::test]
+    async fn flaky_empty_completion_retries_another_account() {
+        struct TwoAccounts;
+        impl ChatHooks for TwoAccounts {
+            fn get_credentials<'a>(&'a self, _: &'a str, _: &'a str, excluded: &'a HashSet<String>) -> BoxFuture<'a, Option<Credentials>> {
+                Box::pin(async move { ["flaky-a", "flaky-b"].into_iter().find(|id| !excluded.contains(*id)).map(test_creds) })
+            }
+        }
+        let executor = FakeExecutor::new(|_, attempt| Ok(ExecutorResponse {
+            status: 200, headers: vec![],
+            body: ExecutorBody::Json(json!({"choices":[{"message":{"role":"assistant","content":if attempt == 0 { "" } else { "recovered" }},"finish_reason":"stop"}]})),
+            url: None, response_format: None,
+        }));
+        let response = handle_chat(json!({"model":"openai/gpt-4o","stream":false,"messages":[{"role":"user","content":"hello"}]}), &HeaderMap::new(), Some("/v1/chat/completions"), &executor, Arc::new(TwoAccounts)).await;
+        assert_eq!(executor.attempt.load(Ordering::SeqCst), 2);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("recovered"));
+    }
+
+    #[tokio::test]
+    async fn combo_peek_replays_content_and_preserves_filter_refusals() {
+        for (text, expected) in [
+            ("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n", true),
+            ("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"content_filter\"}]}\n\n", false),
+            ("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n", false),
+        ] {
+            let (response, empty) = peek_combo_response(Response::new(Body::from(text))).await;
+            assert_eq!(empty, expected);
+            assert_eq!(&to_bytes(response.into_body(), usize::MAX).await.unwrap()[..], text.as_bytes());
+        }
+    }
+
+    #[tokio::test]
+    async fn configured_prompt_and_chat_turns_reach_executor() {
+        struct Inject;
+        impl ChatHooks for Inject {
+            fn get_credentials<'a>(&'a self, _: &'a str, _: &'a str, _: &'a HashSet<String>) -> BoxFuture<'a, Option<Credentials>> {
+                Box::pin(async { Some(test_creds("injection-test")) })
+            }
+            fn prompt_injections<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Vec<Value>> {
+                Box::pin(async { vec![json!({"content":"instruction"}), json!({"mode":"chat","turns":[{"role":"user","content":"example"}]})] })
+            }
+        }
+        let executor = FakeExecutor::new(|req, _| {
+            assert_eq!(req.body["messages"][0]["content"], "instruction");
+            assert_eq!(req.body["messages"][1]["content"], "example\n\nhello");
+            Ok(ExecutorResponse { status: 200, headers: vec![], body: ExecutorBody::Json(json!({"choices":[{"message":{"content":"ok"}}]})), url: None, response_format: None })
+        });
+        let response = handle_chat(json!({"model":"openai/gpt-4o","stream":false,"messages":[{"role":"user","content":"hello"}]}), &HeaderMap::new(), Some("/v1/chat/completions"), &executor, Arc::new(Inject)).await;
+        assert_eq!(response.status(), 200);
+    }
+
     #[test]
     fn source_format_detection_covers_all_major_formats() {
+        assert_eq!(strip_model_context_marker("openai/model[1M]"), "openai/model");
+        assert_eq!(strip_model_context_marker("openai/model[custom]"), "openai/model[custom]");
         assert_eq!(
             detect_format(&json!({ "messages": [{ "role": "user", "content": "hi" }] })),
             FORMAT_OPENAI
