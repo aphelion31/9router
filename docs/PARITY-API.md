@@ -102,20 +102,20 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `
 | /api/provider-nodes/[id] | DELETE, PUT | done |
 | /api/provider-nodes | GET, POST | done |
 | /api/provider-nodes/validate | POST | done |
-| /api/providers/[id]/models | GET | stub501 |
-| /api/providers/[id]/overrides | GET, PUT | stub501 |
-| /api/providers/[id] | DELETE, GET, PUT | partial |
-| /api/providers/[id]/test-models | POST | stub501 |
-| /api/providers/[id]/test | POST | stub501 |
-| /api/providers/bulk-proxy | POST | stub501 |
-| /api/providers/client | GET | stub501 |
-| /api/providers/kilo/free-models | GET | stub501 |
-| /api/providers | GET, PATCH, POST | partial (PATCH, summary and pagination stub501) |
-| /api/providers/suggested-models | GET | stub501 |
-| /api/providers/test-batch | POST | stub501 |
-| /api/providers/test-batch/stop | POST | stub501 |
-| /api/providers/validate | POST | stub501 |
-| /api/providers/web-login | DELETE, GET, POST | stub501 |
+| /api/providers/[id]/models | GET | done |
+| /api/providers/[id]/overrides | GET, PUT | done |
+| /api/providers/[id] | DELETE, GET, PUT | done |
+| /api/providers/[id]/test-models | POST | done |
+| /api/providers/[id]/test | POST | done |
+| /api/providers/bulk-proxy | POST | done |
+| /api/providers/client | GET | done |
+| /api/providers/kilo/free-models | GET | done |
+| /api/providers | GET, PATCH, POST | done |
+| /api/providers/suggested-models | GET | done |
+| /api/providers/test-batch | POST | done |
+| /api/providers/test-batch/stop | POST | done |
+| /api/providers/validate | POST | done |
+| /api/providers/web-login | DELETE, GET, POST | unsupported (live browser login) |
 | /api/proxy-pools/[id] | DELETE, GET, PUT | done |
 | /api/proxy-pools/[id]/test | POST | done |
 | /api/proxy-pools/cloudflare-deploy | POST | 501 |
