@@ -48,12 +48,12 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` depends on an
 | /api/combos/[id]/references | GET | todo |
 | /api/combos/[id] | DELETE, GET, PUT | todo |
 | /api/combos | GET, POST | todo |
-| /api/headroom/extras | DELETE, GET, POST | todo |
-| /api/headroom/proxy/[...path] | (verify manually) | todo |
-| /api/headroom/restart | POST | todo |
-| /api/headroom/start | POST | todo |
-| /api/headroom/status | GET | todo |
-| /api/headroom/stop | POST | todo |
+| /api/headroom/extras | DELETE, GET, POST | 501 |
+| /api/headroom/proxy/[...path] | (verify manually) | done |
+| /api/headroom/restart | POST | 501 |
+| /api/headroom/start | POST | 501 |
+| /api/headroom/status | GET | done |
+| /api/headroom/stop | POST | 501 |
 | /api/health | GET | todo |
 | /api/init | GET | todo |
 | /api/keys/[id] | DELETE, GET, PUT | todo |
