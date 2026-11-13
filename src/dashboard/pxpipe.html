@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PxPipe — 9Router</title>
+  <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body data-page="pxpipe">
+  <div class="layout">
+    <aside class="sidebar"></aside>
+    <main class="main">
+      <div id="error-banner" class="banner banner-error hidden" role="alert" aria-live="polite"></div>
+      <header class="page-header">
+        <div>
+          <h1 class="page-title">PxPipe</h1>
+          <p class="page-subtitle">Proxy pipeline status, health check, and request logs</p>
+        </div>
+        <div class="row">
+          <button id="px-health" type="button" class="btn">Run Health Check</button>
+          <button id="px-refresh" type="button" class="btn btn-primary">Refresh</button>
+        </div>
+      </header>
+
+      <div class="grid">
+        <div class="card"><div class="stat-label">Pipeline Status</div><div id="px-status" class="stat-value">-</div></div>
+        <div class="card"><div class="stat-label">Requests Handled</div><div id="px-reqs" class="stat-value">-</div></div>
+        <div class="card"><div class="stat-label">Error Rate</div><div id="px-err" class="stat-value">-</div></div>
+      </div>
+
+      <section class="card" aria-labelledby="px-log-heading">
+        <h2 id="px-log-heading" class="card-title">Recent PxPipe Logs</h2>
+        <pre id="px-logs" class="log-box">Loading...</pre>
+      </section>
+    </main>
+  </div>
+  <script src="/dashboard/app.js"></script>
+  <script>
+    window.__NR.pages["pxpipe"] = async function () {
+      var nr = window.__NR;
+      async function load() {
+        try {
+          var st = await nr.apiFetch("/api/pxpipe/status");
+          document.getElementById("px-status").textContent = st.running || st.status === "ok" ? "Online" : (st.status || "Offline");
+        } catch (e) {
+          document.getElementById("px-status").textContent = "Offline";
+        }
+        try {
+          var stats = await nr.apiFetch("/api/pxpipe/stats");
+          document.getElementById("px-reqs").textContent = nr.fmtNum(stats.totalRequests || stats.requests || 0);
+          document.getElementById("px-err").textContent = (stats.errorRate != null ? stats.errorRate + "%" : "0%");
+        } catch (e) {
+          document.getElementById("px-reqs").textContent = "0";
+          document.getElementById("px-err").textContent = "0%";
+        }
+        try {
+          var logs = await nr.apiFetch("/api/pxpipe/logs?limit=50");
+          document.getElementById("px-logs").textContent = JSON.stringify(logs, null, 2);
+        } catch (err) {
+          document.getElementById("px-logs").textContent = "PxPipe logs unavailable: " + err.message;
+        }
+      }
+
+      document.getElementById("px-health").addEventListener("click", async function () {
+        try {
+          var res = await nr.apiFetch("/api/pxpipe/health", { method: "POST" });
+          nr.showBanner("Health check: " + (res.status || (res.ok ? "ok" : "failed")), res.ok ? "success" : "error");
+          load();
+        } catch (err) {
+          nr.showBanner("Health check failed: " + err.message, "error");
+        }
+      });
+
+      document.getElementById("px-refresh").addEventListener("click", load);
+      await load();
+    };
+  </script>
+</body>
+</html>

@@ -93,6 +93,10 @@ fn make_router_with_db(
         .route("/dashboard/prompt-injection", get(dashboard::prompt_injection_page))
         .route("/dashboard/profile", get(dashboard::profile_page))
         .route("/dashboard/skills", get(dashboard::skills_page))
+        .route("/dashboard/pxpipe", get(dashboard::pxpipe_page))
+        .route("/dashboard/proxy-pools", get(dashboard::proxy_pools_page))
+        .route("/dashboard/mitm", get(dashboard::mitm_page))
+        .route("/dashboard/automation", get(dashboard::automation_page))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             dashboard_page_auth,

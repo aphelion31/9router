@@ -17,10 +17,10 @@ Status of dashboard pages ported from `9router-pro/src/app/(dashboard)/dashboard
 | 10 | Prompt Injection | `/dashboard/prompt-injection` | Done | `prompt_injection.html` |
 | 11 | Profile & Settings | `/dashboard/profile` | Done | `profile.html` |
 | 12 | Skills | `/dashboard/skills` | Done | `skills.html` |
-| 13 | PxPipe | `/dashboard/pxpipe` | Pending | Group 3 |
-| 14 | Proxy Pools | `/dashboard/proxy-pools` | Pending | Group 3 |
-| 15 | MITM | `/dashboard/mitm` | Pending | Group 3 |
-| 16 | Automation | `/dashboard/automation` | Pending | Group 3 |
+| 13 | PxPipe | `/dashboard/pxpipe` | Done | `pxpipe.html` |
+| 14 | Proxy Pools | `/dashboard/proxy-pools` | Done | `proxy_pools.html` |
+| 15 | MITM | `/dashboard/mitm` | Done | `mitm.html` |
+| 16 | Automation | `/dashboard/automation` | Done | `automation.html` |
 | 17 | CLI Tools | `/dashboard/cli-tools` | Pending | Group 4 |
 | 18 | CLI Tool Detail | `/dashboard/cli-tools/{toolId}` | Pending | Group 4 |
 | 19 | Basic Chat | `/dashboard/basic-chat` | Pending | Group 4 |

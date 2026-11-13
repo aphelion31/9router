@@ -20,6 +20,10 @@ const TOKEN_SAVER_HTML: &str = include_str!("token_saver.html");
 const PROMPT_INJECTION_HTML: &str = include_str!("prompt_injection.html");
 const PROFILE_HTML: &str = include_str!("profile.html");
 const SKILLS_HTML: &str = include_str!("skills.html");
+const PXPIPE_HTML: &str = include_str!("pxpipe.html");
+const PROXY_POOLS_HTML: &str = include_str!("proxy_pools.html");
+const MITM_HTML: &str = include_str!("mitm.html");
+const AUTOMATION_HTML: &str = include_str!("automation.html");
 const STYLE_CSS: &str = include_str!("style.css");
 const APP_JS: &str = include_str!("app.js");
 
@@ -73,6 +77,22 @@ pub async fn profile_page() -> Html<&'static str> {
 
 pub async fn skills_page() -> Html<&'static str> {
     Html(SKILLS_HTML)
+}
+
+pub async fn pxpipe_page() -> Html<&'static str> {
+    Html(PXPIPE_HTML)
+}
+
+pub async fn proxy_pools_page() -> Html<&'static str> {
+    Html(PROXY_POOLS_HTML)
+}
+
+pub async fn mitm_page() -> Html<&'static str> {
+    Html(MITM_HTML)
+}
+
+pub async fn automation_page() -> Html<&'static str> {
+    Html(AUTOMATION_HTML)
 }
 
 pub async fn style_css() -> Response {
