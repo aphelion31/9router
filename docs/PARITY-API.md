@@ -18,33 +18,33 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` depends on an
 | /api/auth/saml/test | POST | todo |
 | /api/auth/status | GET | todo |
 | /api/auth/totp | GET, POST | todo |
-| /api/cli-tools/all-statuses | GET | todo |
-| /api/cli-tools/antigravity-mitm/alias | GET, PUT | todo |
-| /api/cli-tools/antigravity-mitm | DELETE, GET, PATCH, POST | todo |
-| /api/cli-tools/claude-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/cline-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/codewhale-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/codex-profiles | DELETE, GET, POST | todo |
-| /api/cli-tools/codex-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/copilot-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/cowork-mcp-registry | GET | todo |
-| /api/cli-tools/cowork-mcp-tools | POST | todo |
-| /api/cli-tools/cowork-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/crush-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/deepseek-tui-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/devin-settings | GET | todo |
-| /api/cli-tools/droid-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/forge-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/grok-build-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/hermes-profiles | GET | todo |
-| /api/cli-tools/hermes-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/jcode-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/kilo-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/omp-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/openclaw-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/opencode-settings | DELETE, GET, PATCH, POST | todo |
-| /api/cli-tools/pi-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/smelt-settings | DELETE, GET, POST | todo |
+| /api/cli-tools/all-statuses | GET | done |
+| /api/cli-tools/antigravity-mitm/alias | GET, PUT | done |
+| /api/cli-tools/antigravity-mitm | DELETE, GET, PATCH, POST | 501 |
+| /api/cli-tools/claude-settings | DELETE, GET, POST | done |
+| /api/cli-tools/cline-settings | DELETE, GET, POST | done |
+| /api/cli-tools/codewhale-settings | DELETE, GET, POST | done |
+| /api/cli-tools/codex-profiles | DELETE, GET, POST | done |
+| /api/cli-tools/codex-settings | DELETE, GET, POST | done |
+| /api/cli-tools/copilot-settings | DELETE, GET, POST | done |
+| /api/cli-tools/cowork-mcp-registry | GET | done |
+| /api/cli-tools/cowork-mcp-tools | POST | done |
+| /api/cli-tools/cowork-settings | DELETE, GET, POST | done |
+| /api/cli-tools/crush-settings | DELETE, GET, POST | done |
+| /api/cli-tools/deepseek-tui-settings | DELETE, GET, POST | done |
+| /api/cli-tools/devin-settings | GET | done |
+| /api/cli-tools/droid-settings | DELETE, GET, POST | done |
+| /api/cli-tools/forge-settings | DELETE, GET, POST | done |
+| /api/cli-tools/grok-build-settings | DELETE, GET, POST | done |
+| /api/cli-tools/hermes-profiles | GET | done |
+| /api/cli-tools/hermes-settings | DELETE, GET, POST | done |
+| /api/cli-tools/jcode-settings | DELETE, GET, POST | done |
+| /api/cli-tools/kilo-settings | DELETE, GET, POST | done |
+| /api/cli-tools/omp-settings | DELETE, GET, POST | done |
+| /api/cli-tools/openclaw-settings | DELETE, GET, POST | done |
+| /api/cli-tools/opencode-settings | DELETE, GET, PATCH, POST | done |
+| /api/cli-tools/pi-settings | DELETE, GET, POST | done |
+| /api/cli-tools/smelt-settings | DELETE, GET, POST | done |
 | /api/combos/[id]/references | GET | todo |
 | /api/combos/[id] | DELETE, GET, PUT | todo |
 | /api/combos | GET, POST | todo |
