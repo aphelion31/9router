@@ -3,13 +3,13 @@ use crate::{
     dashboard,
     handlers::{
         BoxFuture, Credentials,
-        chat::{self, ChatHooks},
+        chat::{self, ChatHooks, UsageRecord},
     },
 };
 use axum::{
     Json, Router,
     body::Body,
-    extract::{OriginalUri, Path, State},
+    extract::{OriginalUri, Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Redirect, Response},
@@ -19,7 +19,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -59,7 +59,7 @@ fn make_router(db: Connection, jwt_secret: Option<Vec<u8>>) -> Router {
         )
         .route("/api/providers", get(providers))
         .route("/api/combos", get(combos))
-        .route("/api/settings", get(settings))
+        .route("/api/settings", get(settings).put(save_settings))
         .route("/api/usage", get(usage))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -412,19 +412,71 @@ async fn combos(State(s): State<AppState>) -> Response {
         None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
-async fn settings() -> Json<Value> {
-    Json(json!({}))
+/// Usage totals for the last `days` (default 7, max 366).
+async fn usage(State(s): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let days = q.get("days").and_then(|d| d.parse::<u32>().ok()).unwrap_or(7).clamp(1, 366);
+    let Ok(db) = s.db.lock() else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let since: Result<String, _> = db.query_row(
+        "SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now', ?1)",
+        [format!("-{days} days")],
+        |r| r.get(0),
+    );
+    match since.ok().and_then(|since| crate::db::usage_summary(&db, &since).ok()) {
+        Some(summary) => Json(summary).into_response(),
+        None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
-async fn usage() -> Json<Value> {
-    Json(json!({}))
+/// Settings document (`settings` row 1). Empty object when never saved.
+async fn settings(State(s): State<AppState>) -> Response {
+    match s.db.lock().ok().and_then(|db| crate::db::settings_get(&db).ok()) {
+        Some(v) => Json(v).into_response(),
+        None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+/// Replaces the settings document. Body must be a JSON object.
+async fn save_settings(State(s): State<AppState>, Json(body): Json<Value>) -> Response {
+    if !body.is_object() {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    match s.db.lock().ok().and_then(|db| crate::db::settings_put(&db, &body).ok()) {
+        Some(()) => Json(body).into_response(),
+        None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 async fn models() -> Json<Value> {
     Json(
         json!({"object":"list","data":crate::providers::all().iter().flat_map(|p|p.models.iter().map(move |m|json!({"id":format!("{}/{}",p.id,m.id),"object":"model","owned_by":p.id}))).collect::<Vec<_>>()}),
     )
 }
-struct Hooks(AppState);
+/// Per-request chat hooks. `api_key_id` is the `apiKeys.id` of the caller, if known.
+struct Hooks {
+    state: AppState,
+    api_key_id: Option<String>,
+}
 impl ChatHooks for Hooks {
+    fn on_usage_record<'a>(&'a self, r: UsageRecord) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            let Ok(db) = self.state.db.lock() else { return };
+            let row = crate::db::UsageRow {
+                timestamp: String::new(),
+                provider: r.provider,
+                model: r.model,
+                connection_id: r.connection_id,
+                api_key: self.api_key_id.clone(),
+                endpoint: None,
+                prompt_tokens: r.prompt_tokens as i64,
+                completion_tokens: r.completion_tokens as i64,
+                status: r.status as i64,
+                latency_ms: r.latency_ms as i64,
+                request_id: uuid_like(),
+            };
+            if let Err(err) = crate::db::usage_insert(&db, &row) {
+                tracing::warn!("usage insert failed: {err}");
+            }
+        })
+    }
     fn get_credentials<'a>(
         &'a self,
         provider: &'a str,
@@ -432,7 +484,7 @@ impl ChatHooks for Hooks {
         excluded: &'a HashSet<String>,
     ) -> BoxFuture<'a, Option<Credentials>> {
         Box::pin(async move {
-            let db = self.0.db.lock().ok()?;
+            let db = self.state.db.lock().ok()?;
             let mut st=db.prepare("SELECT id,name,data FROM providerConnections WHERE provider=?1 AND isActive=1 ORDER BY priority ASC").ok()?;
             let rows = st
                 .query_map([provider], |r| {
@@ -463,7 +515,7 @@ impl ChatHooks for Hooks {
     }
     fn get_combo_models<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Option<Vec<String>>> {
         Box::pin(async move {
-            let db = self.0.db.lock().ok()?;
+            let db = self.state.db.lock().ok()?;
             let models: String = db
                 .query_row("SELECT models FROM combos WHERE name=?1", [name], |r| {
                     r.get(0)
@@ -473,18 +525,50 @@ impl ChatHooks for Hooks {
         })
     }
 }
+/// Resolves the request's API key to its `apiKeys.id` for usage attribution.
+fn api_key_id(s: &AppState, headers: &HeaderMap) -> Option<String> {
+    let key = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .or_else(|| {
+            headers
+                .get("x-api-key")
+                .or_else(|| headers.get("x-goog-api-key"))
+                .and_then(|v| v.to_str().ok())
+        })?;
+    s.db.lock()
+        .ok()?
+        .query_row("SELECT id FROM apiKeys WHERE key=?1", [key], |r| r.get(0))
+        .optional()
+        .ok()
+        .flatten()
+}
+
+/// Random 128-bit hex request ID.
+fn uuid_like() -> String {
+    use ring::rand::SecureRandom;
+    let mut b = [0u8; 16];
+    let _ = ring::rand::SystemRandom::new().fill(&mut b);
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
 async fn completion(
     State(s): State<AppState>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
+    let hooks = Hooks {
+        api_key_id: api_key_id(&s, &headers),
+        state: s.clone(),
+    };
     chat::handle_chat(
         body,
         &headers,
         Some(uri.path()),
         s.executor.as_ref(),
-        Arc::new(Hooks(s.clone())),
+        Arc::new(hooks),
     )
     .await
 }
@@ -501,12 +585,16 @@ async fn gemini(
         return StatusCode::BAD_REQUEST.into_response();
     };
     obj.insert("model".into(), json!(model));
+    let hooks = Hooks {
+        api_key_id: api_key_id(&s, &headers),
+        state: s.clone(),
+    };
     chat::handle_chat(
         body,
         &headers,
         Some("/v1beta/models"),
         s.executor.as_ref(),
-        Arc::new(Hooks(s.clone())),
+        Arc::new(hooks),
     )
     .await
 }

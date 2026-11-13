@@ -15,7 +15,19 @@ use crate::routing::classify::{
     overload_delay,
 };
 use crate::routing::{self, cooldown::Cooldowns};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// One upstream attempt, written to usage history by the server.
+#[derive(Debug, Clone, Default)]
+pub struct UsageRecord {
+    pub connection_id: Option<String>,
+    pub provider: String,
+    pub model: String,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub status: u16,
+    pub latency_ms: u64,
+}
 
 #[derive(Debug, Clone)]
 pub struct ModelTarget {
@@ -87,6 +99,10 @@ pub trait ChatHooks: Send + Sync {
         _new_creds: RefreshedCredentials,
     ) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async { Ok(()) })
+    }
+
+    fn on_usage_record<'a>(&'a self, _record: UsageRecord) -> BoxFuture<'a, ()> {
+        Box::pin(async {})
     }
 
     fn on_request_success<'a>(
@@ -172,6 +188,7 @@ pub async fn handle_chat(
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
 
+    let started = Instant::now();
     let cooldowns: &Cooldowns = routing::cooldown::global();
     if targets.len() > 1 {
         let names: Vec<String> = targets.iter().map(|t| format!("{}/{}", t.provider, t.model)).collect();
@@ -209,12 +226,30 @@ pub async fn handle_chat(
             let hooks_for_success = Arc::clone(&hooks);
             let conn_id_success = conn_id.clone();
             let model_success = target.model.clone();
+            let hooks_for_usage = Arc::clone(&hooks);
+            let usage_base = UsageRecord {
+                connection_id: Some(conn_id.clone()),
+                provider: target.provider.clone(),
+                model: target.model.clone(),
+                ..Default::default()
+            };
 
             let core_hooks = ChatCoreHooks {
                 on_credentials_refreshed: Some(Arc::new(move |new_creds| {
                     let h = Arc::clone(&hooks_for_refresh);
                     let cid = conn_id_refresh.clone();
                     Box::pin(async move { h.on_credentials_refreshed(&cid, new_creds).await })
+                })),
+                on_usage: Some(Arc::new(move |prompt_tokens, completion_tokens| {
+                    let h = Arc::clone(&hooks_for_usage);
+                    let record = UsageRecord {
+                        prompt_tokens,
+                        completion_tokens,
+                        status: 200,
+                        latency_ms: started.elapsed().as_millis() as u64,
+                        ..usage_base.clone()
+                    };
+                    Box::pin(async move { h.on_usage_record(record).await })
                 })),
                 on_request_success: Some(Arc::new(move || {
                     let h = Arc::clone(&hooks_for_success);
@@ -249,6 +284,16 @@ pub async fn handle_chat(
                 } => {
                     last_status = status;
                     last_error = message.clone();
+                    hooks
+                        .on_usage_record(UsageRecord {
+                            connection_id: Some(conn_id.clone()),
+                            provider: target.provider.clone(),
+                            model: target.model.clone(),
+                            status,
+                            latency_ms: started.elapsed().as_millis() as u64,
+                            ..Default::default()
+                        })
+                        .await;
                     let verdict = classify(&target.provider, status, &message, now_ms());
                     if verdict == Verdict::RequestScoped {
                         return error_response(status, &message);
