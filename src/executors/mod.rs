@@ -4,6 +4,7 @@ use serde_json::Value;
 mod azure;
 mod chatgpt_web;
 mod gemini_web;
+mod github;
 mod iflow;
 mod muse_web;
 mod vertex;
@@ -96,9 +97,24 @@ pub async fn execute(
         body.entry("instructions")
             .or_insert_with(|| "You are a helpful assistant.".into());
     }
+    if provider.id == "github" {
+        github::prepare(&request.model, &mut request.body)?;
+    }
     let mut builder = client
         .post(url)
         .header(reqwest::header::CONTENT_TYPE, "application/json");
+    if provider.id == "github" {
+        builder = builder
+            .header("copilot-integration-id", "vscode-chat")
+            .header("editor-version", "vscode/1.110.0")
+            .header("editor-plugin-version", "copilot-chat/0.38.0")
+            .header("user-agent", "GitHubCopilotChat/0.38.0")
+            .header("openai-intent", "conversation-panel")
+            .header("x-github-api-version", "2025-04-01")
+            .header("x-vscode-user-agent-library-version", "electron-fetch")
+            .header("x-initiator", "user")
+            .header("anthropic-version", "2023-06-01");
+    }
     if provider.id == "iflow" {
         for (name, value) in iflow::prepare(
             &mut request.body,
@@ -244,6 +260,24 @@ mod tests {
                 _ => assert_eq!(result["authorization"], "Bearer secret"),
             }
         }
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn github_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/chat/completions", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(mock)))
+                .await
+                .unwrap()
+        });
+        let response = execute(&reqwest::Client::new(), ExecutorRequest { provider: "github".into(), model: "gpt-5".into(), body: json!({"max_tokens": 123, "reasoning_effort":"none", "messages": [{"role":"user", "content":[{"type":"thinking", "text":"hello"}]}]}), stream: false, api_key: None, access_token: Some("secret".into()), base_url: Some(url) }).await.unwrap();
+        let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(result["authorization"], "Bearer secret");
+        assert_eq!(result["body"]["max_completion_tokens"], 123);
+        assert_eq!(result["body"]["reasoning_effort"], Value::Null);
+        assert_eq!(result["body"]["messages"][0]["content"][0]["type"], "text");
         task.abort();
     }
 
