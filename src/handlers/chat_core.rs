@@ -743,6 +743,18 @@ fn parse_sse_text_to_last_json(text: &str) -> Option<Value> {
     last
 }
 
+/// Upstream headers we may copy onto our own response. Framing, hop-by-hop and encoding
+/// headers describe the upstream connection; forwarding them (e.g. `transfer-encoding:
+/// chunked` on a fixed-length JSON body) makes the HTTP layer drop the response.
+fn forwardable_header(name: &str) -> bool {
+    const SKIP: &[&str] = &[
+        "content-type", "content-length", "transfer-encoding", "connection", "keep-alive",
+        "content-encoding", "upgrade", "proxy-connection", "te", "trailer",
+        "access-control-allow-origin", "cache-control", "date",
+    ];
+    !SKIP.iter().any(|h| name.eq_ignore_ascii_case(h))
+}
+
 fn build_json_response(status: u16, headers: &[(String, String)], body: &Value) -> Response {
     let bytes = serde_json::to_vec(body).unwrap_or_else(|_| b"{}".to_vec());
     let mut builder = Response::builder()
@@ -750,8 +762,7 @@ fn build_json_response(status: u16, headers: &[(String, String)], body: &Value) 
         .header("content-type", "application/json")
         .header("access-control-allow-origin", "*");
     for (k, v) in headers {
-        if !k.eq_ignore_ascii_case("content-type")
-            && !k.eq_ignore_ascii_case("content-length")
+        if forwardable_header(k)
             && let (Ok(name), Ok(val)) = (
                 HeaderName::from_bytes(k.as_bytes()),
                 HeaderValue::from_str(v),
@@ -773,8 +784,7 @@ fn build_sse_response(headers: &[(String, String)], body: Body) -> Response {
         .header("connection", "keep-alive")
         .header("access-control-allow-origin", "*");
     for (k, v) in headers {
-        if !k.eq_ignore_ascii_case("content-type")
-            && !k.eq_ignore_ascii_case("content-length")
+        if forwardable_header(k)
             && let (Ok(name), Ok(val)) = (
                 HeaderName::from_bytes(k.as_bytes()),
                 HeaderValue::from_str(v),
@@ -1083,4 +1093,22 @@ pub async fn handle_chat_core(
     };
     let body = translate_sse_to_body(rx, resp_format, source_format);
     ChatCoreResult::Success(build_sse_response(&provider_resp.headers, body))
+}
+
+#[cfg(test)]
+mod header_tests {
+    use super::*;
+
+    #[test]
+    fn hop_by_hop_headers_are_not_forwarded() {
+        let upstream = vec![
+            ("transfer-encoding".to_string(), "chunked".to_string()),
+            ("connection".to_string(), "keep-alive".to_string()),
+            ("x-request-id".to_string(), "abc".to_string()),
+        ];
+        let res = build_json_response(200, &upstream, &json!({"ok": true}));
+        assert!(res.headers().get("transfer-encoding").is_none());
+        assert!(res.headers().get("connection").is_none());
+        assert_eq!(res.headers().get("x-request-id").unwrap(), "abc");
+    }
 }

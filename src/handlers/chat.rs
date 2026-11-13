@@ -93,6 +93,12 @@ pub trait ChatHooks: Send + Sync {
         Box::pin(async { None })
     }
 
+    /// Map a user-defined provider-node prefix (e.g. `nr`) to its node id
+    /// (`openai-compatible-chat-...`). Built-in provider ids/aliases are never passed here.
+    fn resolve_node_prefix<'a>(&'a self, _prefix: &'a str) -> BoxFuture<'a, Option<String>> {
+        Box::pin(async { None })
+    }
+
     fn on_credentials_refreshed<'a>(
         &'a self,
         _connection_id: &'a str,
@@ -168,7 +174,13 @@ pub async fn handle_chat(
         obj.insert("model".to_string(), json!(model_str));
     }
 
-    let mut targets = if let Some(t) = parse_model_target(&model_str) {
+    let mut targets = if let Some(mut t) = parse_model_target(&model_str) {
+        // Upstream getModelInfo: a non-reserved prefix may name a provider node.
+        if providers::lookup(&t.provider).is_none()
+            && let Some(node_id) = hooks.resolve_node_prefix(&t.provider).await
+        {
+            t.provider = node_id;
+        }
         vec![t]
     } else if let Some(combo_models) = hooks.get_combo_models(&model_str).await {
         combo_models
