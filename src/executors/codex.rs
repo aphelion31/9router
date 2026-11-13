@@ -85,7 +85,7 @@ pub fn normalize_codex_tools(body: &mut Map<String, Value>) {
     if let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) {
         let mut out = Vec::with_capacity(tools.len());
         for tool in tools.drain(..) {
-            let Some(mut obj) = tool.as_object().cloned() else {
+            let Some(obj) = tool.as_object().cloned() else {
                 continue;
             };
             let tool_type = obj.get("type").and_then(Value::as_str).unwrap_or("");

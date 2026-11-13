@@ -1,11 +1,10 @@
 //! Ported `/v1/*` media, embeddings, search, fetch, systemone, ollama-chat, and compact routes.
 use crate::providers;
 use crate::server::AppState;
-use crate::services::systemone_router;
 use axum::{
     Json, Router,
     body::Body,
-    extract::{OriginalUri, Path, Query, State},
+    extract::{OriginalUri, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -35,15 +34,6 @@ pub fn router() -> Router<AppState> {
 
 fn err(status: StatusCode, msg: &str, typ: &str) -> Response {
     (status, Json(json!({ "error": { "message": msg, "type": typ } }))).into_response()
-}
-
-fn split_provider_model(model_str: &str) -> (&str, &str) {
-    if let Some((alias, model)) = model_str.split_once('/') {
-        let p = providers::lookup(alias).map(|p| p.id.as_str()).unwrap_or(alias);
-        (p, model)
-    } else {
-        ("openai", model_str)
-    }
 }
 
 fn active_credential(state: &AppState, provider: &str) -> Option<(String, Option<String>)> {
@@ -112,167 +102,6 @@ async fn forward_json(
                 out.headers_mut().insert(header::CONTENT_TYPE, hv);
             }
             out
-        }
-        Err(e) => err(StatusCode::BAD_GATEWAY, &e.to_string(), "upstream_error"),
-    }
-}
-
-async fn forward_provider_json(
-    state: &AppState,
-    provider: &str,
-    path: &str,
-    method: reqwest::Method,
-    body: Option<Value>,
-) -> Response {
-    let Some((token, base_override)) = active_credential(state, provider) else {
-        return err(
-            StatusCode::SERVICE_UNAVAILABLE,
-            &format!("No active credentials for provider: {provider}"),
-            "unavailable_error",
-        );
-    };
-    let base = provider_base_url(provider, base_override);
-    let url = format!("{base}{path}");
-    forward_json(state, method, &url, &token, body).await
-}
-
-async fn embeddings(State(s): State<AppState>, Json(mut body): Json<Value>) -> Response {
-    let Some(model_str) = body["model"].as_str().filter(|m| !m.is_empty()).map(str::to_string) else {
-        return err(StatusCode::BAD_REQUEST, "Missing model", "invalid_request_error");
-    };
-    if body.get("input").is_none_or(Value::is_null) {
-        return err(StatusCode::BAD_REQUEST, "Missing required field: input", "invalid_request_error");
-    }
-    let (provider, model) = split_provider_model(&model_str);
-    body["model"] = json!(model);
-    forward_provider_json(&s, provider, "/embeddings", reqwest::Method::POST, Some(body)).await
-}
-
-async fn images_generations(State(s): State<AppState>, Json(mut body): Json<Value>) -> Response {
-    let Some(model_str) = body["model"].as_str().filter(|m| !m.is_empty()).map(str::to_string) else {
-        return err(StatusCode::BAD_REQUEST, "Missing model", "invalid_request_error");
-    };
-    if body["prompt"].as_str().is_none_or(str::is_empty) {
-        return err(StatusCode::BAD_REQUEST, "Missing required field: prompt", "invalid_request_error");
-    }
-    let (provider, model) = split_provider_model(&model_str);
-    body["model"] = json!(model);
-    forward_provider_json(&s, provider, "/images/generations", reqwest::Method::POST, Some(body)).await
-}
-
-async fn videos_generations(State(s): State<AppState>, Json(mut body): Json<Value>) -> Response {
-    let Some(model_str) = body["model"].as_str().filter(|m| !m.is_empty()).map(str::to_string) else {
-        return err(StatusCode::BAD_REQUEST, "Missing model", "invalid_request_error");
-    };
-    if body["prompt"].as_str().is_none_or(str::is_empty) {
-        return err(StatusCode::BAD_REQUEST, "Missing required field: prompt", "invalid_request_error");
-    }
-    let (provider, model) = split_provider_model(&model_str);
-    body["model"] = json!(model);
-    forward_provider_json(&s, provider, "/videos/generations", reqwest::Method::POST, Some(body)).await
-}
-
-async fn videos_edits(State(s): State<AppState>, Json(mut body): Json<Value>) -> Response {
-    let Some(model_str) = body["model"].as_str().filter(|m| !m.is_empty()).map(str::to_string) else {
-        return err(StatusCode::BAD_REQUEST, "Missing model", "invalid_request_error");
-    };
-    let (provider, model) = split_provider_model(&model_str);
-    body["model"] = json!(model);
-    forward_provider_json(&s, provider, "/videos/edits", reqwest::Method::POST, Some(body)).await
-}
-
-async fn videos_extensions(State(s): State<AppState>, Json(mut body): Json<Value>) -> Response {
-    let Some(model_str) = body["model"].as_str().filter(|m| !m.is_empty()).map(str::to_string) else {
-        return err(StatusCode::BAD_REQUEST, "Missing model", "invalid_request_error");
-    };
-    let (provider, model) = split_provider_model(&model_str);
-    body["model"] = json!(model);
-    forward_provider_json(&s, provider, "/videos/extensions", reqwest::Method::POST, Some(body)).await
-}
-
-async fn videos_get(
-    State(s): State<AppState>,
-    Path(id): Path<String>,
-    Query(q): Query<HashMap<String, String>>,
-) -> Response {
-    let provider = q.get("provider").map(String::as_str).unwrap_or("xai");
-    forward_provider_json(
-        &s,
-        provider,
-        &format!("/videos/{id}"),
-        reqwest::Method::GET,
-        None,
-    )
-    .await
-}
-
-async fn audio_speech(State(s): State<AppState>, Json(mut body): Json<Value>) -> Response {
-    let Some(model_str) = body["model"].as_str().filter(|m| !m.is_empty()).map(str::to_string) else {
-        return err(StatusCode::BAD_REQUEST, "Missing model", "invalid_request_error");
-    };
-    if body["input"].as_str().is_none_or(str::is_empty) {
-        return err(StatusCode::BAD_REQUEST, "Missing required field: input", "invalid_request_error");
-    }
-    let (provider, model) = split_provider_model(&model_str);
-    body["model"] = json!(model);
-    forward_provider_json(&s, provider, "/audio/speech", reqwest::Method::POST, Some(body)).await
-}
-
-async fn audio_transcriptions(
-    State(s): State<AppState>,
-    headers: HeaderMap,
-    body_bytes: axum::body::Bytes,
-) -> Response {
-    let ct = headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("application/json");
-    if ct.contains("application/json") {
-        let Ok(mut body) = serde_json::from_slice::<Value>(&body_bytes) else {
-            return err(StatusCode::BAD_REQUEST, "Invalid JSON body", "invalid_request_error");
-        };
-        let Some(model_str) = body["model"].as_str().filter(|m| !m.is_empty()).map(str::to_string) else {
-            return err(StatusCode::BAD_REQUEST, "Missing model", "invalid_request_error");
-        };
-        let (provider, model) = split_provider_model(&model_str);
-        body["model"] = json!(model);
-        return forward_provider_json(
-            &s,
-            provider,
-            "/audio/transcriptions",
-            reqwest::Method::POST,
-            Some(body),
-        )
-        .await;
-    }
-
-    let provider = headers
-        .get("x-provider")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("openai");
-    let Some((token, base_override)) = active_credential(&s, provider) else {
-        return err(
-            StatusCode::SERVICE_UNAVAILABLE,
-            &format!("No active credentials for provider: {provider}"),
-            "unavailable_error",
-        );
-    };
-    let url = format!("{}/audio/transcriptions", provider_base_url(provider, base_override));
-    match s
-        .executor
-        .0
-        .post(url)
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .header(header::CONTENT_TYPE, ct)
-        .body(body_bytes)
-        .send()
-        .await
-    {
-        Ok(resp) => {
-            let status = StatusCode::from_u16(resp.status().as_u16())
-                .unwrap_or(StatusCode::BAD_GATEWAY);
-            let bytes = resp.bytes().await.unwrap_or_default();
-            (status, bytes).into_response()
         }
         Err(e) => err(StatusCode::BAD_GATEWAY, &e.to_string(), "upstream_error"),
     }
@@ -410,36 +239,6 @@ async fn web_fetch(State(s): State<AppState>, Json(body): Json<Value>) -> Respon
         }
         Err(e) => err(StatusCode::BAD_GATEWAY, &e.to_string(), "upstream_error"),
     }
-}
-
-async fn systemone(
-    State(s): State<AppState>,
-    OriginalUri(uri): OriginalUri,
-    headers: HeaderMap,
-    Json(mut body): Json<Value>,
-) -> Response {
-    if body["model"].as_str().is_none_or(str::is_empty) {
-        body["model"] = json!(systemone_router::DEFAULT_SYSTEMONE_ROUTER_MODEL);
-    }
-    if body.get("messages").is_none()
-        && let Some(candidates) = body["candidates"].as_array()
-    {
-        let models: Vec<String> = candidates
-            .iter()
-            .filter_map(|c| c.as_str().map(str::to_string))
-            .collect();
-        let criteria = systemone_router::build_choice_criteria(&models);
-        let intent = body["intent"].as_str().unwrap_or("");
-        body["messages"] = json!([{
-            "role": "user",
-            "content": format!("Choose the best candidate for intent: {intent}\nCriteria: {criteria}")
-        }]);
-    }
-    if body["messages"].as_array().is_none_or(Vec::is_empty) {
-        return err(StatusCode::BAD_REQUEST, "Missing messages or candidates", "invalid_request_error");
-    }
-    body["stream"] = json!(false);
-    crate::server::completion(State(s), OriginalUri(uri), headers, Json(body)).await
 }
 
 async fn ollama_chat(

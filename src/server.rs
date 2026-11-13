@@ -1,5 +1,5 @@
 use crate::{
-    api::{ApiKey, KeyAccess, executor::HttpExecutor},
+    api::executor::HttpExecutor,
     dashboard,
     handlers::{
         BoxFuture, Credentials,
@@ -8,15 +8,14 @@ use crate::{
 };
 use axum::{
     Json, Router,
-    body::Body,
     extract::{OriginalUri, Path, Query, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet},
@@ -189,51 +188,6 @@ async fn dashboard_page_auth(
     }
     next.run(request).await
 }
-async fn auth_login(State(s): State<AppState>, Json(body): Json<Value>) -> Response {
-    let Some(password) = body["password"].as_str() else {
-        return StatusCode::BAD_REQUEST.into_response();
-    };
-    let ok = s
-        .db
-        .lock()
-        .ok()
-        .is_some_and(|db| dashboard::verify_password(&db, password));
-    if !ok {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({"error": "Invalid password"})),
-        )
-            .into_response();
-    }
-    let Some(secret) = s.jwt_secret.as_deref() else {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": "JWT secret not configured"})),
-        )
-            .into_response();
-    };
-    let token = dashboard::issue_auth_token(secret);
-    let Ok(cookie) = HeaderValue::from_str(&dashboard::auth_cookie_header(&token)) else {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    };
-    (
-        StatusCode::OK,
-        [(header::SET_COOKIE, cookie)],
-        Json(json!({"success": true})),
-    )
-        .into_response()
-}
-async fn auth_logout() -> Response {
-    (
-        StatusCode::OK,
-        [(
-            header::SET_COOKIE,
-            HeaderValue::from_static(dashboard::clear_auth_cookie_header()),
-        )],
-        Json(json!({"success": true})),
-    )
-        .into_response()
-}
 async fn api_auth(
     State(s): State<AppState>,
     request: axum::extract::Request,
@@ -298,178 +252,6 @@ async fn api_auth(
     };
     next.run(request).await
 }
-fn read_keys(db: &Connection, id: Option<&str>) -> rusqlite::Result<Vec<ApiKey>> {
-    let mut stmt = db.prepare("SELECT id,key,name,machineId,isActive,createdAt,expiresAt,accessRestricted,accessAllow FROM apiKeys WHERE (?1 IS NULL OR id=?1) ORDER BY createdAt")?;
-    let rows = stmt.query_map([id], |r| {
-        let restricted = r.get::<_, Option<i64>>(7)?.unwrap_or(0) != 0;
-        let raw: Option<String> = r.get(8)?;
-        let allow = if restricted {
-            raw.and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
-                .unwrap_or_default()
-        } else {
-            vec![]
-        };
-        Ok(ApiKey {
-            id: r.get(0)?,
-            key: r.get(1)?,
-            name: r.get(2)?,
-            machine_id: r.get(3)?,
-            is_active: r.get::<_, Option<i64>>(4)?.unwrap_or(0) != 0,
-            created_at: r.get(5)?,
-            expires_at: r.get(6)?,
-            access: KeyAccess { restricted, allow },
-            quota: None,
-            limits: None,
-        })
-    })?;
-    rows.collect()
-}
-async fn keys(State(s): State<AppState>) -> Response {
-    match s.db.lock().ok().and_then(|db| read_keys(&db, None).ok()) {
-        Some(keys) => Json(json!({"keys":keys})).into_response(),
-        None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
-}
-async fn key(State(s): State<AppState>, Path(id): Path<String>) -> Response {
-    match s
-        .db
-        .lock()
-        .ok()
-        .and_then(|db| read_keys(&db, Some(&id)).ok())
-        .and_then(|mut keys| keys.pop())
-    {
-        Some(key) => Json(json!({"key":key})).into_response(),
-        None => StatusCode::NOT_FOUND.into_response(),
-    }
-}
-async fn create_key(State(s): State<AppState>, Json(body): Json<Value>) -> Response {
-    use ring::rand::SecureRandom;
-    let Some(name) = body["name"]
-        .as_str()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    else {
-        return StatusCode::BAD_REQUEST.into_response();
-    };
-    let mut bytes = [0u8; 32];
-    if ring::rand::SystemRandom::new().fill(&mut bytes).is_err() {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
-    let mut id_bytes = [0u8; 16];
-    if ring::rand::SystemRandom::new().fill(&mut id_bytes).is_err() {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
-    let id = URL_SAFE_NO_PAD.encode(id_bytes);
-    let key = body["customKey"]
-        .as_str()
-        .filter(|v| !v.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("sk-{}", URL_SAFE_NO_PAD.encode(bytes)));
-    let result=s.db.lock().ok().and_then(|db|db.execute("INSERT INTO apiKeys(id,key,name,isActive,createdAt,accessRestricted,accessAllow) VALUES(?1,?2,?3,1,strftime('%Y-%m-%dT%H:%M:%fZ','now'),0,'[]')",params![id,key,name]).ok());
-    if result.is_none() {
-        return StatusCode::BAD_REQUEST.into_response();
-    }
-    (
-        StatusCode::CREATED,
-        Json(json!({"id":id,"key":key,"name":name})),
-    )
-        .into_response()
-}
-async fn update_key(
-    State(s): State<AppState>,
-    Path(id): Path<String>,
-    Json(body): Json<Value>,
-) -> Response {
-    let Ok(db) = s.db.lock() else {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    };
-    let Some(mut key) = read_keys(&db, Some(&id)).ok().and_then(|mut v| v.pop()) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    if let Some(name) = body.get("name") {
-        let Some(name) = name.as_str().map(str::trim).filter(|s| !s.is_empty()) else {
-            return StatusCode::BAD_REQUEST.into_response();
-        };
-        key.name = Some(name.to_owned())
-    }
-    if let Some(active) = body.get("isActive") {
-        let Some(active) = active.as_bool() else {
-            return StatusCode::BAD_REQUEST.into_response();
-        };
-        key.is_active = active
-    }
-    if let Some(access) = body.get("access") {
-        if !access.get("restricted").is_some_and(Value::is_boolean) {
-            return StatusCode::BAD_REQUEST.into_response();
-        }
-        let Ok(value) = serde_json::from_value::<KeyAccess>(access.clone()) else {
-            return StatusCode::BAD_REQUEST.into_response();
-        };
-        key.access = value;
-        if !key.access.restricted {
-            key.access.allow.clear()
-        }
-    }
-    let allow = serde_json::to_string(&key.access.allow).unwrap();
-    if db
-        .execute(
-            "UPDATE apiKeys SET name=?1,isActive=?2,accessRestricted=?3,accessAllow=?4 WHERE id=?5",
-            params![key.name, key.is_active, key.access.restricted, allow, id],
-        )
-        .is_err()
-    {
-        return StatusCode::BAD_REQUEST.into_response();
-    }
-    Json(json!({"key":key})).into_response()
-}
-async fn delete_key(State(s): State<AppState>, Path(id): Path<String>) -> Response {
-    match s
-        .db
-        .lock()
-        .ok()
-        .and_then(|db| db.execute("DELETE FROM apiKeys WHERE id=?1", [id]).ok())
-    {
-        Some(0) => StatusCode::NOT_FOUND.into_response(),
-        Some(_) => Json(json!({"success":true})).into_response(),
-        None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
-}
-async fn bulk_keys(State(s): State<AppState>, Json(body): Json<Value>) -> Response {
-    let (Some(ids), Some(active)) = (body["ids"].as_array(), body["isActive"].as_bool()) else {
-        return StatusCode::BAD_REQUEST.into_response();
-    };
-    if ids.iter().any(|id| id.as_str().is_none()) {
-        return StatusCode::BAD_REQUEST.into_response();
-    }
-    let Ok(mut db) = s.db.lock() else {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    };
-    let Ok(tx) = db.transaction() else {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    };
-    for id in ids {
-        if tx
-            .execute(
-                "UPDATE apiKeys SET isActive=?1 WHERE id=?2",
-                params![active, id.as_str()],
-            )
-            .is_err()
-        {
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    }
-    if tx.commit().is_err() {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
-    Json(json!({"success":true})).into_response()
-}
-async fn providers(State(s): State<AppState>) -> Response {
-    let rows = s.db.lock().ok().and_then(|db| { let mut stmt=db.prepare("SELECT id,provider,name,isActive FROM providerConnections").ok()?; let rows=stmt.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"provider":r.get::<_,String>(1)?,"name":r.get::<_,Option<String>>(2)?,"isActive":r.get::<_,Option<i64>>(3)?.unwrap_or(0)!=0}))).ok()?.collect::<rusqlite::Result<Vec<_>>>().ok(); rows });
-    match rows {
-        Some(rows) => Json(json!({"connections":rows})).into_response(),
-        None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
-}
 /// Usage totals for the last `days` (default 7, max 366).
 async fn usage(State(s): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
     let days = q.get("days").and_then(|d| d.parse::<u32>().ok()).unwrap_or(7).clamp(1, 366);
@@ -483,23 +265,6 @@ async fn usage(State(s): State<AppState>, Query(q): Query<HashMap<String, String
     );
     match since.ok().and_then(|since| crate::db::usage_summary(&db, &since).ok()) {
         Some(summary) => Json(summary).into_response(),
-        None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
-}
-/// Settings document (`settings` row 1). Empty object when never saved.
-async fn settings(State(s): State<AppState>) -> Response {
-    match s.db.lock().ok().and_then(|db| crate::db::settings_get(&db).ok()) {
-        Some(v) => Json(v).into_response(),
-        None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
-}
-/// Replaces the settings document. Body must be a JSON object.
-async fn save_settings(State(s): State<AppState>, Json(body): Json<Value>) -> Response {
-    if !body.is_object() {
-        return StatusCode::BAD_REQUEST.into_response();
-    }
-    match s.db.lock().ok().and_then(|db| crate::db::settings_put(&db, &body).ok()) {
-        Some(()) => Json(body).into_response(),
         None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
@@ -723,7 +488,8 @@ async fn gemini(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{body::to_bytes, http::Request};
+    use axum::{body::{Body, to_bytes}, http::Request};
+    use rusqlite::params;
     use tower::ServiceExt;
     fn test_router() -> Router {
         let db = Connection::open_in_memory().unwrap();

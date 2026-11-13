@@ -28,7 +28,7 @@ enum Command {
 
 /// Parses `args` (without the program name) and sets `PORT`, `DATA_DIR` and `HOST` from flags.
 fn parse_args(args: &[String]) -> Result<Command, String> {
-    let mut command = Command::Serve;
+    let command = Command::Serve;
     let mut iter = args.iter();
     let mut first = true;
     while let Some(arg) = iter.next() {
