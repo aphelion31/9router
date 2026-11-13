@@ -262,11 +262,52 @@ async fn api_auth(
                 .or_else(|| headers.get("x-goog-api-key"))
                 .and_then(|v| v.to_str().ok())
         });
-    let valid = key.is_some_and(|key| s.db.lock().ok().and_then(|db| db.query_row("SELECT 1 FROM apiKeys WHERE key=?1 AND isActive=1 AND (expiresAt IS NULL OR expiresAt > strftime('%Y-%m-%dT%H:%M:%fZ','now')) AND COALESCE(accessRestricted,0)=0", [key], |_|Ok(())).optional().ok().flatten()).is_some());
     // Restricted keys fail closed until model access policies are enforced.
-    if !valid {
+    let Some(key_id) = key.and_then(|key| s.db.lock().ok().and_then(|db| db.query_row("SELECT id FROM apiKeys WHERE key=?1 AND isActive=1 AND (expiresAt IS NULL OR expiresAt > strftime('%Y-%m-%dT%H:%M:%fZ','now')) AND COALESCE(accessRestricted,0)=0", [key], |r| r.get::<_, String>(0)).optional().ok().flatten())) else {
         return unauthorized();
-    }
+    };
+    // Per-key rpm/rph/rpd/concurrency admission. Lookup errors fail open.
+    let limits = s
+        .db
+        .lock()
+        .ok()
+        .and_then(|db| crate::services::key_rate_limiter::load_limits(&db, &key_id));
+    let limiter = crate::services::key_rate_limiter::limiter();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    // Slot is held until the handler future resolves (response headers). ponytail: streaming bodies release early; add body-wrapping guard when concurrency on streams matters.
+    let _slot = match limits {
+        Some(limits) => {
+            if let Some(v) = limiter.peek(&key_id, limits, now) {
+                let msg = match v.kind {
+                    "concurrency" => format!(
+                        "API key concurrency limit exceeded ({} requests already in flight)",
+                        v.limit
+                    ),
+                    kind => format!(
+                        "API key rate limit exceeded ({}/{} requests in the {} window)",
+                        v.used,
+                        v.limit,
+                        match kind {
+                            "rpm" => "last minute",
+                            "rph" => "last hour",
+                            _ => "last 24 hours",
+                        }
+                    ),
+                };
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [(header::RETRY_AFTER, v.retry_after_sec.to_string())],
+                    Json(json!({"error": msg})),
+                )
+                    .into_response();
+            }
+            Some(limiter.admit(&key_id, now))
+        }
+        None => None,
+    };
     next.run(request).await
 }
 fn read_keys(db: &Connection, id: Option<&str>) -> rusqlite::Result<Vec<ApiKey>> {

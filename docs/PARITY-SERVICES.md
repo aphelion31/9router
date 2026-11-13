@@ -84,7 +84,7 @@ Status: **in progress**. Partial entries cover only the functions named, not ful
 | `src/lib/latencyStats.js` | Ported: aggregation and database query |
 | `src/lib/notify.js` | Partial: config, message and signing helpers |
 | `src/lib/network/connectionProxy.js` | Partial: configuration resolution, no rotation |
-| `src/lib/keyRateLimiter.js` | Partial: windows and slots, caller integration pending |
+| `src/lib/keyRateLimiter.js` | Ported: windows, slots, and wired into `/v1` auth (`server::api_auth`) |
 | `src/lib/providerHealthSummary.js` | Not ported |
 | `src/lib/modelCatalog/*` | Not ported |
 | Remaining `src/lib/network/*`, proxy pools, headroom, backup and `atRestCrypto.js` | Not ported |
