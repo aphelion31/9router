@@ -6,6 +6,73 @@ pub fn read_numbered(input: &str) -> String {
     truncate(input, true)
 }
 
+pub fn git_diff(diff: &str, max_lines: usize) -> String {
+    let mut result = Vec::new();
+    let mut file = "";
+    let (mut added, mut removed, mut shown, mut skipped) = (0, 0, 0, 0);
+    let (mut in_hunk, mut truncated) = (false, false);
+    for line in diff.split('\n') {
+        if line.starts_with("diff --git") {
+            if skipped > 0 {
+                result.push(format!("  ... ({skipped} lines truncated)"));
+                truncated = true;
+                skipped = 0;
+            }
+            if !file.is_empty() && (added > 0 || removed > 0) {
+                result.push(format!("  +{added} -{removed}"));
+            }
+            file = line.split_once(" b/").map_or("unknown", |(_, name)| name);
+            result.push(format!("\n{file}"));
+            (added, removed, shown) = (0, 0, 0);
+            in_hunk = false;
+        } else if line.starts_with("@@") {
+            if skipped > 0 {
+                result.push(format!("  ... ({skipped} lines truncated)"));
+                truncated = true;
+                skipped = 0;
+            }
+            in_hunk = true;
+            shown = 0;
+            result.push(format!("  {line}"));
+        } else if in_hunk {
+            if (line.starts_with('+') && !line.starts_with("+++"))
+                || (line.starts_with('-') && !line.starts_with("---"))
+            {
+                if line.starts_with('+') {
+                    added += 1;
+                } else {
+                    removed += 1;
+                }
+                if shown < 100 {
+                    result.push(format!("  {line}"));
+                    shown += 1;
+                } else {
+                    skipped += 1;
+                }
+            } else if shown > 0 && shown < 100 && !line.starts_with('\\') {
+                result.push(format!("  {line}"));
+                shown += 1;
+            }
+        }
+        if result.len() >= max_lines {
+            result.push("\n... (more changes truncated)".into());
+            truncated = true;
+            break;
+        }
+    }
+    if skipped > 0 {
+        result.push(format!("  ... ({skipped} lines truncated)"));
+        truncated = true;
+    }
+    if !file.is_empty() && (added > 0 || removed > 0) {
+        result.push(format!("  +{added} -{removed}"));
+    }
+    if truncated {
+        result.push("[full diff: rtk git diff --no-compact]".into());
+    }
+    result.join("\n")
+}
+
 pub fn search_list(input: &str) -> String {
     let mut lines = input.split('\n');
     let header = lines.next().unwrap_or("");
@@ -271,6 +338,13 @@ pub fn dedup_log(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn git_diff_summarizes_changes() {
+        assert_eq!(
+            git_diff("diff --git a/a b/a\n@@ -1 +1 @@\n-old\n+new", 500),
+            "\na\n  @@ -1 +1 @@\n  -old\n  +new\n  +1 -1"
+        );
+    }
     #[test]
     fn search_list_groups_paths() {
         assert_eq!(
