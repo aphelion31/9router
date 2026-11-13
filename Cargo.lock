@@ -756,6 +756,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "futures-core",
  "reqwest",
  "rusqlite",
  "serde",
