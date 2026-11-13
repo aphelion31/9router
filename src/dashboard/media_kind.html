@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Media Providers — 9Router</title>
+  <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body data-page="media-kind">
+  <div class="layout">
+    <aside class="sidebar"></aside>
+    <main class="main">
+      <div id="error-banner" class="banner banner-error hidden" role="alert" aria-live="polite"></div>
+      <header class="page-header">
+        <div>
+          <h1 id="mk-title" class="page-title">Media Providers</h1>
+          <p class="page-subtitle">Manage connections and API endpoints for this media category</p>
+        </div>
+        <div class="row">
+          <a class="btn btn-primary" href="/dashboard/providers/new">Add Provider</a>
+          <button id="mk-refresh" type="button" class="btn">Refresh</button>
+        </div>
+      </header>
+
+      <section class="card">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Provider</th><th>Name</th><th>Status</th><th>Detail</th></tr></thead>
+            <tbody id="mk-tbody"><tr><td colspan="4" class="mono">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="/dashboard/app.js"></script>
+  <script>
+    window.__NR.pages["media-kind"] = async function () {
+      var nr = window.__NR;
+      var kind = nr.pathSegment(0);
+      var LABELS = {
+        "image": "Image Generation",
+        "video": "Video Generation",
+        "tts": "Text-to-Speech (TTS)",
+        "stt": "Speech-to-Text (STT)",
+        "embedding": "Embeddings",
+        "audio": "Audio & Transcription"
+      };
+      document.getElementById("mk-title").textContent = LABELS[kind] || ("Media: " + kind);
+
+      async function load() {
+        var tbody = document.getElementById("mk-tbody");
+        try {
+          var data = await nr.apiFetch("/api/providers?lite=1");
+          var list = Array.isArray(data.connections) ? data.connections : [];
+          if (list.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4">No connections configured yet.</td></tr>';
+            return;
+          }
+          tbody.innerHTML = "";
+          list.forEach(function (c) {
+            var tr = document.createElement("tr");
+            var active = c.isActive !== false;
+            tr.innerHTML =
+              '<td class="mono">' + nr.escapeHtml(c.provider || "-") + "</td>" +
+              "<td>" + nr.escapeHtml(c.name || "-") + "</td>" +
+              '<td><span class="badge ' + (active ? "badge-ok" : "badge-off") + '">' + (active ? "Active" : "Paused") + "</span></td>" +
+              '<td><a class="btn btn-sm" href="/dashboard/media-providers/' + encodeURIComponent(kind) + "/" + encodeURIComponent(c.id || c.provider) + '">Open</a></td>';
+            tbody.appendChild(tr);
+          });
+        } catch (err) {
+          tbody.innerHTML = '<tr><td colspan="4">Unable to load media providers.</td></tr>';
+          nr.showBanner("Failed to load providers: " + err.message, "error");
+        }
+      }
+
+      document.getElementById("mk-refresh").addEventListener("click", load);
+      await load();
+    };
+  </script>
+</body>
+</html>

@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Media Provider Detail — 9Router</title>
+  <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body data-page="media-detail">
+  <div class="layout">
+    <aside class="sidebar"></aside>
+    <main class="main">
+      <div id="error-banner" class="banner banner-error hidden" role="alert" aria-live="polite"></div>
+      <header class="page-header">
+        <div>
+          <a id="md-back" href="/dashboard/providers" class="muted text-sm">&larr; Back</a>
+          <h1 id="md-title" class="page-title mt-12">Media Provider</h1>
+          <p class="page-subtitle">Test endpoint and inspect provider details</p>
+        </div>
+      </header>
+
+      <section class="card">
+        <h2 class="card-title">Quick Test</h2>
+        <div class="field">
+          <label for="md-endpoint">Endpoint</label>
+          <input id="md-endpoint" type="text" class="mono">
+        </div>
+        <div class="field">
+          <label for="md-body">Request JSON</label>
+          <textarea id="md-body" class="mono" rows="5">{}</textarea>
+        </div>
+        <button id="md-run" type="button" class="btn btn-primary">Send Test Request</button>
+        <pre id="md-out" class="log-box mt-12 hidden"></pre>
+      </section>
+    </main>
+  </div>
+  <script src="/dashboard/app.js"></script>
+  <script>
+    window.__NR.pages["media-detail"] = async function () {
+      var nr = window.__NR;
+      var kind = nr.pathSegment(1);
+      var id = nr.pathSegment(0);
+      document.getElementById("md-back").href = "/dashboard/media-providers/" + encodeURIComponent(kind);
+      document.getElementById("md-title").textContent = kind + " / " + id;
+
+      var DEFAULTS = {
+        "image": { ep: "/v1/images/generations", body: { model: "dall-e-3", prompt: "A serene mountain lake at dawn" } },
+        "video": { ep: "/v1/videos/generations", body: { model: "grok-imagine-video", prompt: "Waves crashing on rocks" } },
+        "tts": { ep: "/v1/audio/speech", body: { model: "tts-1", voice: "alloy", input: "Hello from 9Router" } },
+        "stt": { ep: "/v1/audio/transcriptions", body: { model: "whisper-1" } },
+        "embedding": { ep: "/v1/embeddings", body: { model: "text-embedding-3-small", input: "9Router embeddings test" } },
+        "web-search": { ep: "/v1/search", body: { query: "9router" } }
+      };
+      var def = DEFAULTS[kind] || { ep: "/v1/models", body: {} };
+      document.getElementById("md-endpoint").value = def.ep;
+      document.getElementById("md-body").value = JSON.stringify(def.body, null, 2);
+
+      var apiKey = "";
+      try {
+        var keys = await nr.apiFetch("/api/keys");
+        if (keys.keys && keys.keys[0]) apiKey = keys.keys[0].key || "";
+      } catch (e) {}
+
+      document.getElementById("md-run").addEventListener("click", async function () {
+        var out = document.getElementById("md-out");
+        out.classList.remove("hidden");
+        out.textContent = "Running...";
+        try {
+          var headers = { "Content-Type": "application/json" };
+          if (apiKey) headers["Authorization"] = "Bearer " + apiKey;
+          var res = await fetch(document.getElementById("md-endpoint").value.trim(), {
+            method: "POST",
+            headers: headers,
+            body: document.getElementById("md-body").value
+          });
+          out.textContent = await res.text();
+        } catch (err) {
+          out.textContent = "Request failed: " + err.message;
+        }
+      });
+    };
+  </script>
+</body>
+</html>

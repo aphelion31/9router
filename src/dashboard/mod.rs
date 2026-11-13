@@ -27,6 +27,12 @@ const AUTOMATION_HTML: &str = include_str!("automation.html");
 const CLI_TOOLS_HTML: &str = include_str!("cli_tools.html");
 const CLI_TOOL_DETAIL_HTML: &str = include_str!("cli_tool_detail.html");
 const BASIC_CHAT_HTML: &str = include_str!("basic_chat.html");
+const CONSOLE_LOG_HTML: &str = include_str!("console_log.html");
+const TRANSLATOR_HTML: &str = include_str!("translator.html");
+const MEDIA_WEB_HTML: &str = include_str!("media_web.html");
+const MEDIA_KIND_HTML: &str = include_str!("media_kind.html");
+const MEDIA_DETAIL_HTML: &str = include_str!("media_detail.html");
+const MEDIA_COMBO_DETAIL_HTML: &str = include_str!("media_combo_detail.html");
 const STYLE_CSS: &str = include_str!("style.css");
 const APP_JS: &str = include_str!("app.js");
 
@@ -108,6 +114,30 @@ pub async fn cli_tool_detail_page() -> Html<&'static str> {
 
 pub async fn basic_chat_page() -> Html<&'static str> {
     Html(BASIC_CHAT_HTML)
+}
+
+pub async fn console_log_page() -> Html<&'static str> {
+    Html(CONSOLE_LOG_HTML)
+}
+
+pub async fn translator_page() -> Html<&'static str> {
+    Html(TRANSLATOR_HTML)
+}
+
+pub async fn media_web_page() -> Html<&'static str> {
+    Html(MEDIA_WEB_HTML)
+}
+
+pub async fn media_kind_page() -> Html<&'static str> {
+    Html(MEDIA_KIND_HTML)
+}
+
+pub async fn media_detail_page() -> Html<&'static str> {
+    Html(MEDIA_DETAIL_HTML)
+}
+
+pub async fn media_combo_detail_page() -> Html<&'static str> {
+    Html(MEDIA_COMBO_DETAIL_HTML)
 }
 
 pub async fn style_css() -> Response {

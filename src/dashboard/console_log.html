@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Console Log — 9Router</title>
+  <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body data-page="console-log">
+  <div class="layout">
+    <aside class="sidebar"></aside>
+    <main class="main">
+      <div id="error-banner" class="banner banner-error hidden" role="alert" aria-live="polite"></div>
+      <header class="page-header">
+        <div>
+          <h1 class="page-title">Console Log</h1>
+          <p class="page-subtitle">Live translator and router diagnostic output</p>
+        </div>
+        <div class="row">
+          <button id="cl-clear" type="button" class="btn btn-danger">Clear Logs</button>
+          <button id="cl-refresh" type="button" class="btn btn-primary">Refresh</button>
+        </div>
+      </header>
+      <section class="card">
+        <pre id="cl-box" class="log-box" style="max-height:560px">Loading...</pre>
+      </section>
+    </main>
+  </div>
+  <script src="/dashboard/app.js"></script>
+  <script>
+    window.__NR.pages["console-log"] = async function () {
+      var nr = window.__NR;
+      var box = document.getElementById("cl-box");
+
+      async function load() {
+        try {
+          var res = await nr.apiFetch("/api/translator/console-logs");
+          var lines = Array.isArray(res.logs) ? res.logs : (Array.isArray(res) ? res : []);
+          box.textContent = lines.length ? lines.map(function (l) { return typeof l === "string" ? l : JSON.stringify(l); }).join("\n") : "No console logs yet.";
+        } catch (err) {
+          box.textContent = "Console log stream unavailable: " + err.message;
+        }
+      }
+
+      document.getElementById("cl-clear").addEventListener("click", async function () {
+        try {
+          await nr.apiFetch("/api/translator/console-logs", { method: "DELETE" });
+          box.textContent = "Cleared.";
+        } catch (err) {
+          nr.showBanner("Clear failed: " + err.message, "error");
+        }
+      });
+
+      document.getElementById("cl-refresh").addEventListener("click", load);
+      await load();
+    };
+  </script>
+</body>
+</html>

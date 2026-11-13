@@ -100,6 +100,12 @@ fn make_router_with_db(
         .route("/dashboard/cli-tools", get(dashboard::cli_tools_page))
         .route("/dashboard/cli-tools/{toolId}", get(dashboard::cli_tool_detail_page))
         .route("/dashboard/basic-chat", get(dashboard::basic_chat_page))
+        .route("/dashboard/console-log", get(dashboard::console_log_page))
+        .route("/dashboard/translator", get(dashboard::translator_page))
+        .route("/dashboard/media-providers/web", get(dashboard::media_web_page))
+        .route("/dashboard/media-providers/combo/{id}", get(dashboard::media_combo_detail_page))
+        .route("/dashboard/media-providers/{kind}", get(dashboard::media_kind_page))
+        .route("/dashboard/media-providers/{kind}/{id}", get(dashboard::media_detail_page))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             dashboard_page_auth,

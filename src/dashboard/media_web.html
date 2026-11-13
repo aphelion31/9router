@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Web Search &amp; Fetch Providers — 9Router</title>
+  <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body data-page="media-web">
+  <div class="layout">
+    <aside class="sidebar"></aside>
+    <main class="main">
+      <div id="error-banner" class="banner banner-error hidden" role="alert" aria-live="polite"></div>
+      <header class="page-header">
+        <div>
+          <h1 class="page-title">Web Search &amp; Fetch</h1>
+          <p class="page-subtitle">Manage web search and URL fetch provider connections and combos</p>
+        </div>
+        <button id="mw-refresh" type="button" class="btn">Refresh</button>
+      </header>
+
+      <section class="card">
+        <h2 class="card-title">Connected Web Providers</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Provider</th><th>Name</th><th>Status</th><th>Action</th></tr></thead>
+            <tbody id="mw-tbody"><tr><td colspan="4" class="mono">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 class="card-title">Web Combos</h2>
+        <div id="mw-combos" class="row"></div>
+      </section>
+    </main>
+  </div>
+  <script src="/dashboard/app.js"></script>
+  <script>
+    window.__NR.pages["media-web"] = async function () {
+      var nr = window.__NR;
+      var WEB_KINDS = ["tavily", "exa", "brave", "serper", "searxng", "firecrawl", "jina", "linkup", "you", "xquik"];
+
+      async function load() {
+        var tbody = document.getElementById("mw-tbody");
+        try {
+          var p = await nr.apiFetch("/api/providers?lite=1");
+          var conns = (p.connections || []).filter(function (c) {
+            return WEB_KINDS.indexOf((c.provider || "").toLowerCase()) !== -1;
+          });
+          if (conns.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4">No web search/fetch providers configured. <a href="/dashboard/providers/new">Add provider</a></td></tr>';
+          } else {
+            tbody.innerHTML = "";
+            conns.forEach(function (c) {
+              var tr = document.createElement("tr");
+              var active = c.isActive !== false;
+              tr.innerHTML =
+                '<td class="mono">' + nr.escapeHtml(c.provider) + "</td>" +
+                "<td>" + nr.escapeHtml(c.name || "-") + "</td>" +
+                '<td><span class="badge ' + (active ? "badge-ok" : "badge-off") + '">' + (active ? "Active" : "Paused") + "</span></td>" +
+                '<td><a class="btn btn-sm" href="/dashboard/media-providers/web-search/' + encodeURIComponent(c.id) + '">Inspect</a></td>';
+              tbody.appendChild(tr);
+            });
+          }
+        } catch (err) {
+          tbody.innerHTML = '<tr><td colspan="4">Unable to load web providers.</td></tr>';
+        }
+
+        var combosEl = document.getElementById("mw-combos");
+        try {
+          var c = await nr.apiFetch("/api/combos");
+          var list = Array.isArray(c.combos) ? c.combos : [];
+          if (list.length === 0) {
+            combosEl.innerHTML = '<span class="muted text-sm">No combos configured.</span>';
+          } else {
+            combosEl.innerHTML = "";
+            list.forEach(function (cb) {
+              var a = document.createElement("a");
+              a.className = "btn btn-sm";
+              a.href = "/dashboard/media-providers/combo/" + encodeURIComponent(cb.id || cb.name);
+              a.textContent = cb.name || cb.id;
+              combosEl.appendChild(a);
+            });
+          }
+        } catch (e) {}
+      }
+
+      document.getElementById("mw-refresh").addEventListener("click", load);
+      await load();
+    };
+  </script>
+</body>
+</html>

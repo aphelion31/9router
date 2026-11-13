@@ -24,9 +24,9 @@ Status of dashboard pages ported from `9router-pro/src/app/(dashboard)/dashboard
 | 17 | CLI Tools | `/dashboard/cli-tools` | Done | `cli_tools.html` |
 | 18 | CLI Tool Detail | `/dashboard/cli-tools/{toolId}` | Done | `cli_tool_detail.html` |
 | 19 | Basic Chat | `/dashboard/basic-chat` | Done | `basic_chat.html` |
-| 20 | Console Log | `/dashboard/console-log` | Pending | Group 5 |
-| 21 | Translator | `/dashboard/translator` | Pending | Group 5 |
-| 22 | Media Web | `/dashboard/media-providers/web` | Pending | Group 5 |
-| 23 | Media Kind | `/dashboard/media-providers/{kind}` | Pending | Group 5 |
-| 24 | Media Provider Detail | `/dashboard/media-providers/{kind}/{id}` | Pending | Group 5 |
-| 25 | Media Combo Detail | `/dashboard/media-providers/combo/{id}` | Pending | Group 5 |
+| 20 | Console Log | `/dashboard/console-log` | Done | `console_log.html` |
+| 21 | Translator | `/dashboard/translator` | Done | `translator.html` |
+| 22 | Media Web | `/dashboard/media-providers/web` | Done | `media_web.html` |
+| 23 | Media Kind | `/dashboard/media-providers/{kind}` | Done | `media_kind.html` |
+| 24 | Media Provider Detail | `/dashboard/media-providers/{kind}/{id}` | Done | `media_detail.html` |
+| 25 | Media Combo Detail | `/dashboard/media-providers/combo/{id}` | Done | `media_combo_detail.html` |

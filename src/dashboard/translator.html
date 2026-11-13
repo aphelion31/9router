@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Translator Playground — 9Router</title>
+  <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body data-page="translator">
+  <div class="layout">
+    <aside class="sidebar"></aside>
+    <main class="main">
+      <div id="error-banner" class="banner banner-error hidden" role="alert" aria-live="polite"></div>
+      <header class="page-header">
+        <div>
+          <h1 class="page-title">Translator Playground</h1>
+          <p class="page-subtitle">Inspect and test request/response format translation across providers</p>
+        </div>
+        <button id="tr-run" type="button" class="btn btn-primary">Translate</button>
+      </header>
+
+      <section class="card">
+        <div class="row mb-12">
+          <div class="field" style="flex:1;min-width:180px;margin-bottom:0">
+            <label for="tr-from">Source Format</label>
+            <select id="tr-from">
+              <option value="openai">OpenAI</option>
+              <option value="claude">Claude (Anthropic)</option>
+              <option value="gemini">Gemini</option>
+              <option value="responses">OpenAI Responses</option>
+            </select>
+          </div>
+          <div class="field" style="flex:1;min-width:180px;margin-bottom:0">
+            <label for="tr-to">Target Format</label>
+            <select id="tr-to">
+              <option value="claude">Claude (Anthropic)</option>
+              <option value="openai">OpenAI</option>
+              <option value="gemini">Gemini</option>
+              <option value="codex">Codex</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label for="tr-input">Input JSON Payload</label>
+          <textarea id="tr-input" class="mono" rows="8">{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"Hello"}]}</textarea>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 class="card-title">Translated Output</h2>
+        <pre id="tr-output" class="log-box">Click Translate to inspect output.</pre>
+      </section>
+    </main>
+  </div>
+  <script src="/dashboard/app.js"></script>
+  <script>
+    window.__NR.pages["translator"] = function () {
+      var nr = window.__NR;
+      document.getElementById("tr-run").addEventListener("click", async function () {
+        var out = document.getElementById("tr-output");
+        out.textContent = "Translating...";
+        try {
+          var body = JSON.parse(document.getElementById("tr-input").value);
+          var res = await nr.apiFetch("/api/translator/translate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              sourceFormat: document.getElementById("tr-from").value,
+              targetFormat: document.getElementById("tr-to").value,
+              body: body
+            })
+          });
+          out.textContent = JSON.stringify(res, null, 2);
+        } catch (err) {
+          out.textContent = "Translation error: " + err.message;
+        }
+      });
+    };
+  </script>
+</body>
+</html>
