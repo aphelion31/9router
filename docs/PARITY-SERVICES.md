@@ -43,7 +43,7 @@ Status: **in progress**. Partial entries cover only the functions named, not ful
 | `open-sse/services/kimchiModels.js` | Partial: normalization and URL, no discovery or cache |
 | `open-sse/services/kiroModels.js` | Partial: variant expansion, discovery and refresh pending |
 | `open-sse/services/qoderModels.js` | Partial: PAT identification and catalog visibility |
-| `open-sse/services/capacityAdapter.js` | Partial: pool selection, no history stripping |
+| `open-sse/services/capacityAdapter.js` | Ported: pool selection and history stripping (`services::capacity_adapter::strip_history_for_context`) |
 | `open-sse/services/emptyFailover.js` | Partial: classification, no streaming peek/reconstruction |
 | `open-sse/services/projectId.js` | Not ported |
 | `open-sse/services/thoughtSignatureStore.js` | Not ported |
