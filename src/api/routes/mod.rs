@@ -11,6 +11,7 @@ use crate::server::AppState;
 
 mod v1_catalog;
 mod v1_count_tokens;
+mod v1_models;
 mod v1_stubs;
 mod v1_usage;
 
@@ -24,6 +25,7 @@ pub fn v1() -> Router<AppState> {
         .merge(v1_usage::router())
         .merge(v1_stubs::router())
         .merge(v1_catalog::router())
+        .merge(v1_models::router())
 }
 
 /// 501 for routes whose upstream service is not ported yet.
