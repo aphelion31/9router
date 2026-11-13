@@ -219,10 +219,11 @@ async fn api_auth(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64;
-    // Slot is held until the handler future resolves (response headers). ponytail: streaming bodies release early; add body-wrapping guard when concurrency on streams matters.
-    let _slot = match limits {
+    let slot = match limits {
         Some(limits) => {
-            if let Some(v) = limiter.peek(&key_id, limits, now) {
+            match limiter.try_admit(&key_id, limits, now) {
+              Ok(slot) => Some(slot),
+              Err(v) => {
                 let msg = match v.kind {
                     "concurrency" => format!(
                         "API key concurrency limit exceeded ({} requests already in flight)",
@@ -245,12 +246,29 @@ async fn api_auth(
                     Json(json!({"error": msg})),
                 )
                     .into_response();
+              }
             }
-            Some(limiter.admit(&key_id, now))
         }
         None => None,
     };
-    next.run(request).await
+    let response = next.run(request).await;
+    let Some(slot) = slot else { return response };
+    let (parts, body) = response.into_parts();
+    struct GuardedBody {
+        stream: axum::body::BodyDataStream,
+        slot: Option<crate::services::key_rate_limiter::Slot>,
+    }
+    impl futures_core::Stream for GuardedBody {
+        type Item = Result<axum::body::Bytes, axum::Error>;
+        fn poll_next(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+            let result = std::pin::Pin::new(&mut self.stream).poll_next(cx);
+            if matches!(result, std::task::Poll::Ready(None) | std::task::Poll::Ready(Some(Err(_)))) {
+                self.slot.take();
+            }
+            result
+        }
+    }
+    Response::from_parts(parts, axum::body::Body::from_stream(GuardedBody { stream: body.into_data_stream(), slot: Some(slot) }))
 }
 /// Usage totals for the last `days` (default 7, max 366).
 async fn usage(State(s): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
@@ -303,6 +321,25 @@ struct Hooks {
     api_key_id: Option<String>,
 }
 impl ChatHooks for Hooks {
+    fn prompt_injections<'a>(&'a self, model: &'a str) -> BoxFuture<'a, Vec<Value>> {
+        Box::pin(async move {
+            let Ok(db) = self.state.db.lock() else { return Vec::new() };
+            let load = |key| crate::db::kv_get(&db, "promptInjections", key).ok().flatten().and_then(|raw| serde_json::from_str::<Value>(&raw).ok()).unwrap_or_default();
+            let global = load("global");
+            let by_key = load("byKey");
+            let by_model = load("prompts");
+            let by_key_model = load("byKeyModel");
+            let key = self.api_key_id.as_deref().unwrap_or("");
+            [global, by_key[key].clone(), by_model[model].clone(), by_key_model[key][model].clone()]
+                .into_iter().filter(|entry| entry.is_object() && entry["enabled"] != false).collect()
+        })
+    }
+    fn anti_flaky_config<'a>(&'a self) -> BoxFuture<'a, (bool, u8)> {
+        Box::pin(async move {
+            let settings = self.state.db.lock().ok().and_then(|db| crate::db::settings_get(&db).ok()).unwrap_or_default();
+            crate::services::flaky_guard::resolve_anti_flaky_config(&settings)
+        })
+    }
     fn resolve_node_prefix<'a>(&'a self, prefix: &'a str) -> BoxFuture<'a, Option<String>> {
         Box::pin(async move {
             let db = self.state.db.lock().ok()?;
@@ -349,6 +386,14 @@ impl ChatHooks for Hooks {
             };
             if let Err(err) = crate::db::usage_insert(&db, &row) {
                 tracing::warn!("usage insert failed: {err}");
+            }
+            let settings = crate::db::settings_get(&db).unwrap_or_default();
+            let enabled = settings.get("observabilityEnabled").or_else(|| settings.get("enableRequestDetails")).and_then(Value::as_bool).unwrap_or(true);
+            if enabled {
+                let detail = json!({"id":row.request_id,"provider":row.provider,"model":row.model,"latency":{"total":row.latency_ms}}).to_string();
+                if let Err(err) = db.execute("INSERT INTO requestDetails(id,timestamp,provider,model,connectionId,status,data) VALUES(?1,strftime('%Y-%m-%dT%H:%M:%fZ','now'),?2,?3,?4,?5,?6)", rusqlite::params![row.request_id, row.provider, row.model, row.connection_id, row.status.to_string(), detail]) {
+                    tracing::warn!("request latency insert failed: {err}");
+                }
             }
         })
     }
@@ -520,6 +565,39 @@ mod tests {
         crate::db::migrate(&db).unwrap();
         db.execute("INSERT INTO apiKeys(id,key,createdAt,accessRestricted,accessAllow) VALUES('1','secret','now',1,?1)",params!["{\"restricted\":true}"]).unwrap();
         make_router(db, Some(b"test-secret".to_vec()))
+    }
+    #[tokio::test]
+    async fn key_limit_blocks_until_response_body_is_dropped() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&db).unwrap();
+        db.execute("INSERT INTO apiKeys(id,key,createdAt) VALUES('limit-body-test','limit-body-secret','now')", []).unwrap();
+        crate::db::kv_set(&db, "keyLimits", "limit-body-test", r#"{"maxConcurrent":1}"#).unwrap();
+        let app = make_router(db, None);
+        let request = || Request::get("/v1/models").header("authorization", "Bearer limit-body-secret").body(Body::empty()).unwrap();
+        let first = app.clone().oneshot(request()).await.unwrap();
+        assert_eq!(first.status(), 200);
+        let blocked = app.clone().oneshot(request()).await.unwrap();
+        assert_eq!(blocked.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(blocked.headers()[header::RETRY_AFTER], "5");
+        drop(first);
+        assert_eq!(app.oneshot(request()).await.unwrap().status(), 200);
+    }
+    #[tokio::test]
+    async fn usage_records_latency_only_when_observability_enabled() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&db).unwrap();
+        let state = AppState { db: Arc::new(Mutex::new(db)), executor: Arc::new(HttpExecutor(reqwest::Client::new())), jwt_secret: None };
+        let hooks = Hooks { api_key_id: None, state: state.clone() };
+        hooks.on_usage_record(UsageRecord { provider: "test".into(), model: "model".into(), status: 200, latency_ms: 42, ..Default::default() }).await;
+        {
+            let db = state.db.lock().unwrap();
+            let stats = crate::services::latency_stats::get_latency_stats(&db, None, 10).unwrap();
+            assert_eq!(stats.total.p50, Some(42.0));
+            crate::db::settings_put(&db, &json!({"observabilityEnabled":false})).unwrap();
+        }
+        hooks.on_usage_record(UsageRecord { provider: "test".into(), status: 200, latency_ms: 20, ..Default::default() }).await;
+        let db = state.db.lock().unwrap();
+        assert_eq!(crate::services::latency_stats::get_latency_stats(&db, None, 10).unwrap().samples, 1);
     }
     fn token() -> String {
         let h = URL_SAFE_NO_PAD.encode(r#"{"alg":"HS256"}"#);

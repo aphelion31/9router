@@ -10,7 +10,7 @@ use crate::translator::formats::{
 };
 use crate::translator::{init_state, translate_response};
 
-pub const SSE_DONE: &str = "data: [DONE]\n\n";
+use crate::services::stream_helpers::SSE_DONE;
 
 #[derive(Debug, PartialEq)]
 pub enum SseLine {

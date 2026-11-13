@@ -6,8 +6,7 @@ use serde_json::Value;
 use crate::services::rtk_apply_filter::safe_apply;
 use crate::services::rtk_autodetect::auto_detect_filter;
 
-pub const RAW_CAP: usize = 10 * 1024 * 1024;
-pub const MIN_COMPRESS_SIZE: usize = 500;
+use crate::services::rtk_constants::{RAW_CAP, MIN_COMPRESS_SIZE};
 
 #[derive(Debug, Clone)]
 pub struct RtkHit {

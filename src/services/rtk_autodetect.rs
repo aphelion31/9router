@@ -4,9 +4,7 @@
 
 use crate::services::rtk_filters;
 
-pub const DETECT_WINDOW: usize = 1024;
-pub const SMART_TRUNCATE_MIN_LINES: usize = 250;
-pub const READ_NUMBERED_MIN_HIT_RATIO: f64 = 0.7;
+use crate::services::rtk_constants::{DETECT_WINDOW, SMART_TRUNCATE_MIN_LINES, READ_NUMBERED_MIN_HIT_RATIO};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterKind {
@@ -27,24 +25,24 @@ pub enum FilterKind {
 impl FilterKind {
     pub fn name(self) -> &'static str {
         match self {
-            Self::GitLog => "git-log",
-            Self::GitDiff => "git-diff",
-            Self::GitStatus => "git-status",
-            Self::BuildOutput => "build-output",
-            Self::Grep => "grep",
-            Self::Find => "find",
-            Self::Tree => "tree",
-            Self::Ls => "ls",
-            Self::SearchList => "search-list",
-            Self::ReadNumbered => "read-numbered",
-            Self::DedupLog => "dedup-log",
-            Self::SmartTruncate => "smart-truncate",
+            Self::GitLog => crate::services::rtk_constants::FILTER_GIT_LOG,
+            Self::GitDiff => crate::services::rtk_constants::FILTER_GIT_DIFF,
+            Self::GitStatus => crate::services::rtk_constants::FILTER_GIT_STATUS,
+            Self::BuildOutput => crate::services::rtk_constants::FILTER_BUILD_OUTPUT,
+            Self::Grep => crate::services::rtk_constants::FILTER_GREP,
+            Self::Find => crate::services::rtk_constants::FILTER_FIND,
+            Self::Tree => crate::services::rtk_constants::FILTER_TREE,
+            Self::Ls => crate::services::rtk_constants::FILTER_LS,
+            Self::SearchList => crate::services::rtk_constants::FILTER_SEARCH_LIST,
+            Self::ReadNumbered => crate::services::rtk_constants::FILTER_READ_NUMBERED,
+            Self::DedupLog => crate::services::rtk_constants::FILTER_DEDUP_LOG,
+            Self::SmartTruncate => crate::services::rtk_constants::FILTER_SMART_TRUNCATE,
         }
     }
 
     pub fn filter_fn(self) -> fn(&str) -> String {
         match self {
-            Self::GitLog => |s| rtk_filters::git_log(s, 200),
+            Self::GitLog => |s| rtk_filters::git_log(s, crate::services::rtk_constants::GIT_LOG_MAX_LINES),
             Self::GitDiff => |s| rtk_filters::git_diff(s, 500),
             Self::GitStatus => rtk_filters::git_status,
             Self::BuildOutput => rtk_filters::build_output,

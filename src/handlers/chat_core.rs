@@ -71,6 +71,7 @@ pub struct ChatCoreOptions {
     /// Upper bound for upstream response headers. Exceeding it returns status 504.
     pub first_response_timeout: Option<std::time::Duration>,
     pub token_saver: Option<TokenSaverConfig>,
+    pub prompt_injections: Vec<Value>,
 }
 
 pub enum ChatCoreResult {
@@ -896,6 +897,21 @@ pub async fn handle_chat_core(
         obj.insert("model".to_string(), json!(upstream_model));
     }
     strip_continuity_fields(&mut translated_body);
+    if let Some(tools) = translated_body.get_mut("tools").and_then(Value::as_array_mut) {
+        let (deduped, _) = crate::services::tool_deduper::dedupe_tools(
+            tools, options.client_tool.as_deref().unwrap_or(""), &options.model,
+        );
+        *tools = deduped;
+    }
+    for position in ["prepend", "append"] {
+        let prompt = options.prompt_injections.iter()
+            .filter(|p| p["mode"] != "chat" && (p["position"] == "prepend") == (position == "prepend"))
+            .filter_map(|p| p["content"].as_str()).filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n\n");
+        crate::services::rtk_system_inject::inject_system_prompt(&mut translated_body, &target_format, &prompt, position);
+    }
+    let turns: Vec<Value> = options.prompt_injections.iter().filter(|p| p["mode"] == "chat")
+        .filter_map(|p| p["turns"].as_array()).flatten().cloned().collect();
+    crate::services::rtk_system_inject::inject_chat_turns(&mut translated_body, &target_format, &turns);
 
     let rtk_stats = pre_translate_rtk.or_else(|| {
         crate::services::rtk_index::compress_messages(&mut translated_body, rtk_active)
