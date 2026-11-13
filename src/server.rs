@@ -514,6 +514,34 @@ struct Hooks {
     api_key_id: Option<String>,
 }
 impl ChatHooks for Hooks {
+    fn resolve_node_prefix<'a>(&'a self, prefix: &'a str) -> BoxFuture<'a, Option<String>> {
+        Box::pin(async move {
+            let db = self.state.db.lock().ok()?;
+            let mut st = db
+                .prepare("SELECT id,type,data FROM providerNodes ORDER BY createdAt")
+                .ok()?;
+            let rows = st
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?)))
+                .ok()?;
+            // Upstream order: openai-compatible, then anthropic-compatible, then custom-embedding.
+            let mut found: Vec<(u8, String)> = rows
+                .flatten()
+                .filter_map(|(id, kind, data)| {
+                    let data: Value = serde_json::from_str(data.as_deref().unwrap_or("{}")).ok()?;
+                    (data["prefix"].as_str() == Some(prefix)).then_some(())?;
+                    let rank = match kind.as_deref() {
+                        Some("openai-compatible") => 0,
+                        Some("anthropic-compatible") => 1,
+                        Some("custom-embedding") => 2,
+                        _ => return None,
+                    };
+                    Some((rank, id))
+                })
+                .collect();
+            found.sort_by_key(|(rank, _)| *rank);
+            found.into_iter().next().map(|(_, id)| id)
+        })
+    }
     fn on_usage_record<'a>(&'a self, r: UsageRecord) -> BoxFuture<'a, ()> {
         Box::pin(async move {
             let Ok(db) = self.state.db.lock() else { return };

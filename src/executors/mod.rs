@@ -63,6 +63,57 @@ fn retry_policy(status: u16) -> (usize, std::time::Duration) {
     }
 }
 
+/// Dynamic nodes `openai-compatible-*` / `anthropic-compatible-*` (upstream default.js buildUrl).
+/// The user's baseUrl is a base like `https://host/v1`; the path is appended, not used verbatim.
+fn compat_node_url(provider: &str, psd: Option<&Value>) -> String {
+    let base_of = |default: &str| {
+        psd.and_then(|p| p.get("baseUrl"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(default)
+            .trim_end_matches('/')
+            .to_owned()
+    };
+    if provider.starts_with("anthropic-compatible-") {
+        return format!("{}/messages", base_of("https://api.anthropic.com/v1"));
+    }
+    let stored = psd.and_then(|p| p.get("apiType")).and_then(Value::as_str);
+    let responses = match stored {
+        Some("responses") => true,
+        Some("chat") => false,
+        _ => provider.contains("responses"),
+    };
+    let path = if responses { "/responses" } else { "/chat/completions" };
+    format!("{}{path}", base_of("https://api.openai.com/v1"))
+}
+
+async fn compat_node(client: &reqwest::Client, request: &ExecutorRequest) -> anyhow::Result<reqwest::Response> {
+    let url = reqwest::Url::parse(&compat_node_url(&request.provider, request.provider_specific_data.as_ref()))
+        .context("invalid compatible-node baseUrl")?;
+    if !matches!(url.scheme(), "http" | "https") {
+        bail!("upstream URL must use HTTP or HTTPS");
+    }
+    let mut builder = client
+        .post(url)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(serde_json::to_vec(&request.body)?);
+    if request.provider.starts_with("anthropic-compatible-") {
+        builder = builder.header("anthropic-version", "2023-06-01");
+        if let Some(key) = request.api_key.as_deref() {
+            builder = builder.header("x-api-key", key);
+        } else if let Some(token) = request.access_token.as_deref() {
+            builder = builder.bearer_auth(token);
+        }
+    } else if let Some(token) = request.api_key.as_deref().or(request.access_token.as_deref()) {
+        builder = builder.bearer_auth(token);
+    }
+    if request.stream {
+        builder = builder.header(reqwest::header::ACCEPT, "text/event-stream");
+    }
+    Ok(builder.send().await?)
+}
+
 /// Sends a translated request and leaves the upstream body unbuffered.
 /// The response exposes both `status()` and `bytes_stream()`, including on errors.
 pub async fn execute(
@@ -101,6 +152,9 @@ pub async fn execute(
     }
     if request.provider == "veoaifree-web" {
         return veoaifree_web::execute(client, &request).await;
+    }
+    if request.provider.starts_with("openai-compatible-") || request.provider.starts_with("anthropic-compatible-") {
+        return compat_node(client, &request).await;
     }
     let provider = crate::providers::lookup(&request.provider)
         .with_context(|| format!("unknown provider: {}", request.provider))?;
@@ -457,6 +511,23 @@ pub async fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compat_node_url_appends_path_like_upstream() {
+        let psd = json!({"baseUrl": "https://host.example/v1/"});
+        assert_eq!(
+            compat_node_url("openai-compatible-chat-abc", Some(&psd)),
+            "https://host.example/v1/chat/completions"
+        );
+        assert_eq!(
+            compat_node_url("openai-compatible-responses-abc", Some(&psd)),
+            "https://host.example/v1/responses"
+        );
+        let typed = json!({"baseUrl": "https://h/v1", "apiType": "chat"});
+        assert_eq!(compat_node_url("openai-compatible-responses-x", Some(&typed)), "https://h/v1/chat/completions");
+        assert_eq!(compat_node_url("anthropic-compatible-x", None), "https://api.anthropic.com/v1/messages");
+        assert_eq!(compat_node_url("openai-compatible-x", None), "https://api.openai.com/v1/chat/completions");
+    }
     use axum::{
         Router,
         body::Bytes,
