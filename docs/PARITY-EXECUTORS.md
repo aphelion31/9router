@@ -28,7 +28,7 @@ Status is deliberately conservative: partial means the upstream executor has beh
 | grok-web.js | pending | |
 | iflow.js | partial | Request signing implemented. |
 | index.js | partial | Executor dispatch incomplete. |
-| kimchi.js | pending | |
+| kimchi.js | partial | Request normalization ported; dynamic model metadata and shared reasoning injection not yet available. |
 | kiro.js | pending | |
 | mimo-free.js | pending | |
 | minimax-code.js | pending | |

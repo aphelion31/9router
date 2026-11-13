@@ -7,6 +7,7 @@ mod chatgpt_web;
 mod gemini_web;
 mod github;
 mod iflow;
+mod kimchi;
 mod muse_web;
 mod vertex;
 
@@ -130,6 +131,9 @@ pub async fn execute(
         body.entry("instructions")
             .or_insert_with(|| "You are a helpful assistant.".into());
     }
+    if provider.id == "kimchi" {
+        kimchi::prepare(&request.model, &mut request.body);
+    }
     if provider.id == "github" && !github_claude {
         github::prepare(&request.model, &mut request.body)?;
     }
@@ -219,6 +223,24 @@ mod tests {
         routing::post,
     };
     use serde_json::json;
+
+    #[tokio::test]
+    async fn kimchi_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(mock)))
+                .await
+                .unwrap()
+        });
+        let response = execute(&reqwest::Client::new(), ExecutorRequest { provider: "kimchi".into(), model: "claude-test".into(), body: json!({"system":"policy", "messages":[{"role":"assistant", "reasoning_content":"private reasoning", "content":[{"type":"text", "text":"hi", "signature":"x"}]}], "thinking":{}, "reasoning_effort":"high"}), stream: false, api_key: Some("test".into()), access_token: None, base_url: Some(url) }).await.unwrap();
+        let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(result["body"]["messages"][0]["content"], "policy");
+        assert!(result["body"]["thinking"].is_null());
+        assert!(result["body"]["reasoning_effort"].is_null());
+        assert!(result["body"]["messages"][1]["content"][0]["signature"].is_null());
+        task.abort();
+    }
 
     async fn mock(
         OriginalUri(uri): OriginalUri,
