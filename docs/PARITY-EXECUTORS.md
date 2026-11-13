@@ -45,6 +45,6 @@ Status is deliberately conservative: partial means the upstream executor has beh
 | veoaifree-web.js | pending | |
 | vertex.js | partial | API key, service account and ADC supported. Token caching, project discovery and connection settings missing. |
 | windsurf.js | pending | |
-| xiaomi-mimo.js | pending | |
+| xiaomi-mimo.js | partial | Cloud API passthrough; account-cookie route and desktop authentication unavailable. |
 | xiaomi-tokenplan.js | partial | OpenAI and Claude model routes; per-connection region selection not available. |
 | zed.js | pending | |
