@@ -1,6 +1,156 @@
 use anyhow::{Context, bail};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use ring::{digest, hmac};
 use serde_json::Value;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn fragmented_frame_and_crc() {
+        let mut headers = Vec::new();
+        for (name, value) in [(":message-type", "event"), (":event-type", "chunk")] {
+            headers.push(name.len() as u8);
+            headers.extend_from_slice(name.as_bytes());
+            headers.push(7);
+            headers.extend_from_slice(&(value.len() as u16).to_be_bytes());
+            headers.extend_from_slice(value.as_bytes());
+        }
+        let payload = serde_json::json!({"bytes": STANDARD.encode(br#"{"type":"message_stop"}"#)})
+            .to_string();
+        let length = 16 + headers.len() + payload.len();
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&(length as u32).to_be_bytes());
+        frame.extend_from_slice(&(headers.len() as u32).to_be_bytes());
+        frame.extend_from_slice(&crc32(&frame).to_be_bytes());
+        frame.extend_from_slice(&headers);
+        frame.extend_from_slice(payload.as_bytes());
+        frame.extend_from_slice(&crc32(&frame).to_be_bytes());
+        let mut decoder = Decoder::new();
+        assert!(decoder.push(&frame[..10]).unwrap().is_empty());
+        assert!(
+            String::from_utf8(decoder.push(&frame[10..]).unwrap())
+                .unwrap()
+                .contains("event: message_stop")
+        );
+        decoder.finish().unwrap();
+        frame[8] ^= 1;
+        assert!(Decoder::new().push(&frame).is_err());
+    }
+}
+
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ (0xedb88320 & 0u32.wrapping_sub(crc & 1));
+        }
+    }
+    !crc
+}
+
+pub(crate) struct Decoder {
+    buffer: Vec<u8>,
+    terminal: bool,
+}
+impl Decoder {
+    pub(crate) fn new() -> Self {
+        Self {
+            buffer: Vec::new(),
+            terminal: false,
+        }
+    }
+    pub(crate) fn push(&mut self, bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
+        self.buffer.extend_from_slice(bytes);
+        let mut out = Vec::new();
+        while self.buffer.len() >= 12 {
+            let read = |slice: &[u8]| u32::from_be_bytes(slice.try_into().unwrap()) as usize;
+            let len = read(&self.buffer[0..4]);
+            let headers = read(&self.buffer[4..8]);
+            if crc32(&self.buffer[..8]) != read(&self.buffer[8..12]) as u32 {
+                bail!("Bedrock EventStream prelude CRC mismatch");
+            }
+            if !(16..=16 * 1024 * 1024).contains(&len) || headers > 128 * 1024 || headers > len - 16
+            {
+                bail!("invalid Bedrock EventStream frame bounds");
+            }
+            if self.buffer.len() < len {
+                break;
+            }
+            let frame = self.buffer.drain(..len).collect::<Vec<_>>();
+            if crc32(&frame[..len - 4]) != read(&frame[len - 4..]) as u32 {
+                bail!("Bedrock EventStream message CRC mismatch");
+            }
+            let mut i = 12;
+            let end = 12 + headers;
+            let mut event_type = String::new();
+            let mut message_type = String::new();
+            while i < end {
+                let n = frame[i] as usize;
+                i += 1;
+                if i + n + 3 > end {
+                    bail!("invalid Bedrock EventStream header");
+                }
+                let name = std::str::from_utf8(&frame[i..i + n])?;
+                i += n;
+                if frame[i] != 7 {
+                    bail!("unsupported Bedrock EventStream header type");
+                }
+                i += 1;
+                let n = u16::from_be_bytes([frame[i], frame[i + 1]]) as usize;
+                i += 2;
+                if i + n > end {
+                    bail!("invalid Bedrock EventStream header length");
+                }
+                let value = std::str::from_utf8(&frame[i..i + n])?;
+                i += n;
+                if name == ":event-type" {
+                    event_type = value.to_owned();
+                }
+                if name == ":message-type" {
+                    message_type = value.to_owned();
+                }
+            }
+            let payload: Value = serde_json::from_slice(&frame[end..len - 4])?;
+            if message_type == "exception" || message_type == "error" {
+                bail!(
+                    "Bedrock stream error: {}",
+                    payload
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("upstream error")
+                );
+            }
+            if event_type != "chunk" {
+                continue;
+            }
+            let encoded = payload
+                .get("bytes")
+                .and_then(Value::as_str)
+                .context("Bedrock chunk missing bytes")?;
+            let inner: Value = serde_json::from_slice(&STANDARD.decode(encoded)?)?;
+            let kind = inner
+                .get("type")
+                .and_then(Value::as_str)
+                .context("Bedrock chunk missing type")?;
+            if kind == "message_stop" {
+                self.terminal = true;
+            }
+            out.extend_from_slice(format!("event: {kind}\ndata: {inner}\n\n").as_bytes());
+        }
+        Ok(out)
+    }
+    pub(crate) fn finish(&self) -> anyhow::Result<()> {
+        if !self.buffer.is_empty() {
+            bail!("Bedrock stream ended mid-frame");
+        }
+        if !self.terminal {
+            bail!("Bedrock stream ended before message_stop");
+        }
+        Ok(())
+    }
+}
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -42,9 +192,6 @@ pub(super) fn prepare(
     body: &mut Value,
     stream: bool,
 ) -> anyhow::Result<(reqwest::Url, Vec<(String, String)>, Vec<u8>)> {
-    if stream {
-        bail!("Bedrock streaming requires AWS EventStream decoding, which is not implemented");
-    }
     if !model.to_ascii_lowercase().contains("anthropic.") {
         bail!("Bedrock expects an Anthropic model ID");
     }
@@ -71,7 +218,15 @@ pub(super) fn prepare(
     url.path_segments_mut()
         .map_err(|_| anyhow::anyhow!("invalid Bedrock URL"))?
         .pop_if_empty()
-        .extend(["model", model, "invoke"]);
+        .extend([
+            "model",
+            model,
+            if stream {
+                "invoke-with-response-stream"
+            } else {
+                "invoke"
+            },
+        ]);
     if url.query().is_some() {
         bail!("Bedrock endpoint must not contain a query");
     }
@@ -88,7 +243,15 @@ pub(super) fn prepare(
         None => url.host_str().context("missing Bedrock host")?.to_owned(),
     };
     let mut headers: Vec<(String, String)> = vec![
-        ("accept".into(), "application/json".into()),
+        (
+            "accept".into(),
+            if stream {
+                "application/vnd.amazon.eventstream"
+            } else {
+                "application/json"
+            }
+            .into(),
+        ),
         ("content-type".into(), "application/json".into()),
         ("host".into(), host),
         ("x-amz-date".into(), amz_date.clone()),

@@ -9,6 +9,7 @@ impl Executor for HttpExecutor {
         req: ExecutorRequest,
     ) -> BoxFuture<'a, Result<ExecutorResponse, String>> {
         Box::pin(async move {
+            let bedrock_stream = req.provider == "bedrock" && req.stream;
             let response_format = (req.provider == "github"
                 && req.model.to_ascii_lowercase().contains("claude"))
             .then(|| "claude".to_string());
@@ -39,18 +40,38 @@ impl Executor for HttpExecutor {
                 .iter()
                 .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.to_string(), v.to_string())))
                 .collect();
+            let bedrock_stream = bedrock_stream && (200..300).contains(&status);
             let body = if req.stream {
                 let (tx, rx) = tokio::sync::mpsc::channel(16);
                 tokio::spawn(async move {
                     let mut response = response;
+                    let mut decoder = bedrock_stream.then(crate::executors::bedrock::Decoder::new);
                     loop {
                         match response.chunk().await {
                             Ok(Some(bytes)) => {
-                                if tx.send(Ok(bytes.to_vec())).await.is_err() {
+                                let bytes = if let Some(decoder) = decoder.as_mut() {
+                                    match decoder.push(&bytes) {
+                                        Ok(bytes) => bytes,
+                                        Err(error) => {
+                                            let _ = tx.send(Err(error.to_string())).await;
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    bytes.to_vec()
+                                };
+                                if !bytes.is_empty() && tx.send(Ok(bytes)).await.is_err() {
                                     break;
                                 }
                             }
-                            Ok(None) => break,
+                            Ok(None) => {
+                                if let Some(decoder) = decoder.as_ref() {
+                                    if let Err(error) = decoder.finish() {
+                                        let _ = tx.send(Err(error.to_string())).await;
+                                    }
+                                }
+                                break;
+                            }
                             Err(e) => {
                                 let _ = tx.send(Err(e.to_string())).await;
                                 break;
