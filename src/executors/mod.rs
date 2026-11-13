@@ -2,6 +2,7 @@
 use anyhow::{Context, bail};
 use serde_json::Value;
 mod azure;
+mod browser_executable_check;
 pub(crate) mod bedrock;
 mod chatgpt_web;
 mod gemini_web;
