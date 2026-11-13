@@ -134,17 +134,17 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `
 | /api/pxpipe/status | GET | done |
 | /api/pxpipe/stop | POST | 501 |
 | /api/security-log | GET | done |
-| /api/settings/backup/[id] | GET, POST | stub501 |
-| /api/settings/backup | GET, POST | stub501 |
-| /api/settings/database | GET, POST | stub501 |
-| /api/settings/encryption | GET, POST | stub501 |
-| /api/settings/maintenance | GET, POST | stub501 |
-| /api/settings/notifications | GET, POST | stub501 |
-| /api/settings/notifications/test | POST | stub501 |
-| /api/settings/proxy-test | POST | stub501 |
-| /api/settings/require-login | GET | partial |
-| /api/settings | GET, PATCH | partial (SSO gate and side effects unported) |
-| /api/settings/webhook-events | GET, POST | stub501 |
+| /api/settings/backup/[id] | GET, POST | done |
+| /api/settings/backup | GET, POST | done |
+| /api/settings/database | GET, POST | done |
+| /api/settings/encryption | GET, POST | done |
+| /api/settings/maintenance | GET, POST | done |
+| /api/settings/notifications | GET, POST | done |
+| /api/settings/notifications/test | POST | done |
+| /api/settings/proxy-test | POST | done |
+| /api/settings/require-login | GET | done |
+| /api/settings | GET, PATCH | done |
+| /api/settings/webhook-events | GET, POST | done |
 | /api/shutdown | POST | done |
 | /api/tags | GET | done |
 | /api/token-saver/brief | DELETE, GET, PUT | done |

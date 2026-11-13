@@ -13,6 +13,7 @@ mod mgmt_keys;
 mod mgmt_misc;
 mod mgmt_models;
 mod mgmt_providers;
+mod mgmt_settings;
 mod mgmt_system;
 
 mod v1_catalog;
@@ -40,6 +41,7 @@ mod tools_tunnel;
 pub fn management() -> Router<AppState> {
     Router::new()
         .merge(mgmt_system::routes())
+        .merge(mgmt_settings::routes())
         .merge(mgmt_auth::routes())
         .merge(mgmt_keys::routes())
         .merge(mgmt_providers::routes())

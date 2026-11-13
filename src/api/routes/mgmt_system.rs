@@ -20,32 +20,6 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/init", get(|| async { "Initialized" }))
         .route("/api/locale", post(locale))
-        .route("/api/settings", get(settings).patch(update_settings))
-        .route("/api/settings/require-login", get(require_login))
-        .route("/api/settings/backup", get(unavailable).post(unavailable))
-        .route(
-            "/api/settings/backup/{id}",
-            get(unavailable).post(unavailable),
-        )
-        .route("/api/settings/database", get(unavailable).post(unavailable))
-        .route(
-            "/api/settings/encryption",
-            get(unavailable).post(unavailable),
-        )
-        .route(
-            "/api/settings/maintenance",
-            get(unavailable).post(unavailable),
-        )
-        .route(
-            "/api/settings/notifications",
-            get(unavailable).post(unavailable),
-        )
-        .route("/api/settings/notifications/test", post(unavailable))
-        .route("/api/settings/proxy-test", post(unavailable))
-        .route(
-            "/api/settings/webhook-events",
-            get(unavailable).post(unavailable),
-        )
         .route("/api/version", get(version))
         .route("/api/version/update", post(unavailable))
         .route("/api/version/shutdown", post(version_shutdown))
