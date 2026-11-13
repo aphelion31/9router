@@ -18,6 +18,7 @@ mod github;
 mod grok_cli;
 mod iflow;
 mod kimchi;
+mod kiro;
 mod mimo_free;
 mod minimax_code;
 mod muse_web;
@@ -58,6 +59,9 @@ pub async fn execute(
     }
     if request.provider == "windsurf" {
         return windsurf::execute(client, &request).await;
+    }
+    if request.provider == "kiro" {
+        return kiro::execute(client, &request).await;
     }
     let provider = crate::providers::lookup(&request.provider)
         .with_context(|| format!("unknown provider: {}", request.provider))?;
