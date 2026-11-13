@@ -58,7 +58,9 @@ pub fn management() -> Router<AppState> {
 }
 
 pub fn public() -> Router<AppState> {
-    Router::new().merge(oauth_core::public_router())
+    Router::new()
+        .merge(oauth_core::public_router())
+        .merge(mgmt_misc::public_routes())
 }
 
 pub fn v1() -> Router<AppState> {

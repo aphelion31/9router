@@ -277,3 +277,76 @@ async fn locale(Json(body): Json<Value>) -> Response {
     )
         .into_response()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::routes::test_support::call;
+    use axum::body::Body;
+    use axum::http::{Method, Request};
+    use rusqlite::Connection;
+    use std::sync::{Arc, Mutex};
+    use tower::ServiceExt;
+
+    fn sys_app() -> (Router, Arc<Mutex<Connection>>) {
+        let db = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&db).unwrap();
+        let db = Arc::new(Mutex::new(db));
+        let state = AppState {
+            db: Arc::clone(&db),
+            executor: Arc::new(crate::api::executor::HttpExecutor(reqwest::Client::new())),
+            jwt_secret: None,
+        };
+        (routes().with_state(state), db)
+    }
+
+    #[tokio::test]
+    async fn init_locale_and_shutdown_work() {
+        let (app, _) = sys_app();
+        let res = app
+            .clone()
+            .oneshot(Request::get("/api/init").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], b"Initialized");
+
+        let (st, body) = call(
+            app.clone(),
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/locale")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"locale":"vi"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(body["success"], true);
+        assert_eq!(body["locale"], "vi");
+
+        let (st, _) = call(
+            app.clone(),
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/locale")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"locale":"xx-invalid"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST);
+
+        let (st, _) = call(
+            app,
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/shutdown")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED);
+    }
+}

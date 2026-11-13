@@ -123,10 +123,6 @@ fn make_router_with_db(
         .route("/api/auth/login", post(auth_login))
         .route("/api/auth/logout", post(auth_logout))
         .merge(crate::api::routes::public())
-        .route(
-            "/api/health",
-            get(|| async { Json(json!({"status":"ok"})) }),
-        )
         .merge(dashboard_pages)
         .merge(management)
         .merge(v1)

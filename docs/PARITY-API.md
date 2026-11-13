@@ -54,11 +54,11 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `
 | /api/headroom/start | POST | 501 |
 | /api/headroom/status | GET | done |
 | /api/headroom/stop | POST | 501 |
-| /api/health | GET | todo |
-| /api/init | GET | partial |
+| /api/health | GET | done |
+| /api/init | GET | done |
 | /api/keys/[id] | DELETE, GET, PUT | partial (quota and limits unported) |
 | /api/keys | GET, PATCH, POST | partial (quota, limits and bulk import unported) |
-| /api/locale | POST | partial |
+| /api/locale | POST | done |
 | /api/mcp/[plugin]/message | POST | 501 |
 | /api/mcp/[plugin]/sse | GET | 501 |
 | /api/mcp/gateway | GET, POST | done |
@@ -96,7 +96,7 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `
 | /api/oauth/xiaomi-mimo/login/status | GET | done |
 | /api/oauth/zed/auto-import | GET | done |
 | /api/oauth/zed/import | POST | done |
-| /api/pricing | DELETE, GET, PATCH | stub501 |
+| /api/pricing | DELETE, GET, PATCH | done |
 | /api/prompt-injection | DELETE, GET, PUT | done |
 | /api/prompt-injection/stats | GET | done |
 | /api/provider-nodes/[id] | DELETE, PUT | partial |
@@ -145,8 +145,8 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `
 | /api/settings/require-login | GET | partial |
 | /api/settings | GET, PATCH | partial (SSO gate and side effects unported) |
 | /api/settings/webhook-events | GET, POST | stub501 |
-| /api/shutdown | POST | partial |
-| /api/tags | GET | partial |
+| /api/shutdown | POST | done |
+| /api/tags | GET | done |
 | /api/token-saver/brief | DELETE, GET, PUT | done |
 | /api/token-saver/stats | GET | done |
 | /api/token-saver/test | POST | done |
