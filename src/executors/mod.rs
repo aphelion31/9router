@@ -9,6 +9,7 @@ mod github;
 mod iflow;
 mod kimchi;
 mod muse_web;
+mod opencode;
 mod vertex;
 mod xiaomi_tokenplan;
 
@@ -75,7 +76,9 @@ pub async fn execute(
         })
         .or(provider.base_url.as_deref())
         .with_context(|| format!("provider {} has no endpoint", provider.id))?;
-    let mut url = if provider.id == "xiaomi-tokenplan" {
+    let mut url = if provider.id == "opencode" {
+        opencode::url(endpoint, &request.model)?
+    } else if provider.id == "xiaomi-tokenplan" {
         xiaomi_tokenplan::url(endpoint, request.model.ends_with("-claude"))?
     } else if provider.id == "azure" {
         azure::url(endpoint, &request.model)?
@@ -144,6 +147,9 @@ pub async fn execute(
     if provider.id == "kimchi" {
         kimchi::prepare(&request.model, &mut request.body);
     }
+    if provider.id == "opencode" {
+        opencode::prepare(&mut request.body, &request.model);
+    }
     if provider.id == "github" && !github_claude {
         github::prepare(&request.model, &mut request.body)?;
     }
@@ -161,6 +167,18 @@ pub async fn execute(
             .header("x-vscode-user-agent-library-version", "electron-fetch")
             .header("x-initiator", "user")
             .header("anthropic-version", "2023-06-01");
+    }
+    if provider.id == "opencode" {
+        let session = opencode::session();
+        builder = builder
+            .header("user-agent", "opencode/latest/2.2.5/cli")
+            .header("x-opencode-client", "cli")
+            .header("x-opencode-project", "global")
+            .header("x-opencode-session", session)
+            .header("x-opencode-session-id", session)
+            .header("x-session-affinity", session)
+            .header("x-session-id", session)
+            .bearer_auth("public");
     }
     if tokenplan_claude {
         builder = builder.header("anthropic-version", "2023-06-01");
@@ -212,10 +230,11 @@ pub async fn execute(
         if let Some(key) = request.api_key.as_deref() {
             builder = builder.bearer_auth(key);
         }
-    } else if let Some(token) = request
-        .api_key
-        .as_deref()
-        .or(request.access_token.as_deref())
+    } else if provider.id != "opencode"
+        && let Some(token) = request
+            .api_key
+            .as_deref()
+            .or(request.access_token.as_deref())
     {
         builder = builder.bearer_auth(token);
     }
@@ -236,6 +255,37 @@ mod tests {
         routing::post,
     };
     use serde_json::json;
+
+    #[tokio::test]
+    async fn opencode_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(mock)))
+                .await
+                .unwrap()
+        });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "opencode".into(),
+                model: "test".into(),
+                body: json!({"messages":[], "reasoning_effort":"auto"}),
+                stream: true,
+                api_key: None,
+                access_token: None,
+                base_url: Some(url),
+            },
+        )
+        .await
+        .unwrap();
+        let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(result["uri"], "/inference/openai/v1/chat/completions");
+        assert_eq!(result["authorization"], "Bearer public");
+        assert_eq!(result["body"]["stream"], true);
+        assert!(result["body"]["reasoning_effort"].is_null());
+        task.abort();
+    }
 
     #[tokio::test]
     async fn xiaomi_tokenplan_mock_request() {

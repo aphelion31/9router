@@ -22,7 +22,12 @@ pub enum Verdict {
     RequestScoped,
 }
 
-const BACKOFF_TEXT: [&str; 4] = ["rate limit", "too many requests", "quota exceeded", "capacity"];
+const BACKOFF_TEXT: [&str; 4] = [
+    "rate limit",
+    "too many requests",
+    "quota exceeded",
+    "capacity",
+];
 
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -48,14 +53,32 @@ pub fn classify_with_retry_after(
         return Verdict::RequestScoped;
     }
     if status == 429 && provider == "opencode" {
-        if let Some(reset_ms) = quota_reset_ms(body, now_ms) {
+        if let Some(reset_ms) = quota_reset_ms(body, now_ms).or_else(|| {
+            retry_after
+                .filter(|d| !d.is_zero())
+                .map(|d| now_ms.saturating_add(d.as_millis().min(u64::MAX as u128) as u64))
+        }) {
             return Verdict::Quota { reset_ms };
         }
-        if lower.contains("overload") {
+        let message = serde_json::from_str::<Value>(body)
+            .ok()
+            .map(|v| {
+                v.get("error")
+                    .and_then(|e| e.get("message"))
+                    .or_else(|| v.get("message"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_ascii_lowercase()
+            })
+            .unwrap_or_else(|| lower.clone());
+        if message.contains("overload") {
             return Verdict::Overload;
         }
     }
-    if status == 429 || lower.contains("overloaded") || BACKOFF_TEXT.iter().any(|t| lower.contains(t)) {
+    if status == 429
+        || lower.contains("overloaded")
+        || BACKOFF_TEXT.iter().any(|t| lower.contains(t))
+    {
         // Upstream-stated wait wins over our own backoff, capped like quota cooldowns.
         if let Some(wait) = retry_after.or_else(|| {
             quota_reset_ms(body, now_ms).map(|r| Duration::from_millis(r.saturating_sub(now_ms)))
@@ -74,16 +97,19 @@ pub fn classify_with_retry_after(
 fn quota_reset_ms(body: &str, now_ms: u64) -> Option<u64> {
     let v: Value = serde_json::from_str(body).ok()?;
     let err = v.get("error")?;
-    if let Some(at) = err.get("resets_at").and_then(Value::as_u64).filter(|s| *s > 0)
-        && at * 1000 > now_ms
+    if let Some(at) = err
+        .get("resets_at")
+        .and_then(Value::as_u64)
+        .filter(|s| *s > 0)
+        && at.saturating_mul(1000) > now_ms
     {
-        return Some(at * 1000);
+        return Some(at.saturating_mul(1000));
     }
     let secs = err
         .get("resets_in_seconds")
         .and_then(Value::as_f64)
         .filter(|s| *s > 0.0)?;
-    Some(now_ms + (secs * 1000.0) as u64)
+    Some(now_ms.saturating_add((secs * 1000.0) as u64))
 }
 
 /// Overloaded 429 retry delay: 800ms, doubling, capped at 4s.
