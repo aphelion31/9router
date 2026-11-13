@@ -20,7 +20,7 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `
 | /api/auth/totp | GET, POST | done |
 | /api/cli-tools/all-statuses | GET | done |
 | /api/cli-tools/antigravity-mitm/alias | GET, PUT | done |
-| /api/cli-tools/antigravity-mitm | DELETE, GET, PATCH, POST | 501 |
+| /api/cli-tools/antigravity-mitm | DELETE, GET, PATCH, POST | done |
 | /api/cli-tools/claude-settings | DELETE, GET, POST | done |
 | /api/cli-tools/cline-settings | DELETE, GET, POST | done |
 | /api/cli-tools/codewhale-settings | DELETE, GET, POST | done |
@@ -48,19 +48,19 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `
 | /api/combos/[id]/references | GET | done |
 | /api/combos/[id] | DELETE, GET, PUT | done |
 | /api/combos | GET, POST | done |
-| /api/headroom/extras | DELETE, GET, POST | 501 |
+| /api/headroom/extras | DELETE, GET, POST | done |
 | /api/headroom/proxy/[...path] | (verify manually) | done |
-| /api/headroom/restart | POST | 501 |
-| /api/headroom/start | POST | 501 |
+| /api/headroom/restart | POST | done |
+| /api/headroom/start | POST | done |
 | /api/headroom/status | GET | done |
-| /api/headroom/stop | POST | 501 |
+| /api/headroom/stop | POST | done |
 | /api/health | GET | done |
 | /api/init | GET | done |
 | /api/keys/[id] | DELETE, GET, PUT | done |
 | /api/keys | GET, PATCH, POST | done |
 | /api/locale | POST | done |
-| /api/mcp/[plugin]/message | POST | 501 |
-| /api/mcp/[plugin]/sse | GET | 501 |
+| /api/mcp/[plugin]/message | POST | done |
+| /api/mcp/[plugin]/sse | GET | done |
 | /api/mcp/gateway | GET, POST | done |
 | /api/media-providers/tts/deepgram/voices | GET | done |
 | /api/media-providers/tts/elevenlabs/voices | GET | done |
@@ -115,24 +115,24 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `
 | /api/providers/test-batch | POST | done |
 | /api/providers/test-batch/stop | POST | done |
 | /api/providers/validate | POST | done |
-| /api/providers/web-login | DELETE, GET, POST | unsupported (live browser login) |
+| /api/providers/web-login | DELETE, GET, POST | unsupported (interactive browser login; HTTP cookie import works via /api/oauth imports) |
 | /api/proxy-pools/[id] | DELETE, GET, PUT | done |
 | /api/proxy-pools/[id]/test | POST | done |
-| /api/proxy-pools/cloudflare-deploy | POST | 501 |
+| /api/proxy-pools/cloudflare-deploy | POST | done |
 | /api/proxy-pools/delete-failed | POST | done |
-| /api/proxy-pools/deno-deploy | POST | 501 |
-| /api/proxy-pools/netlify-deploy | POST | 501 |
+| /api/proxy-pools/deno-deploy | POST | done |
+| /api/proxy-pools/netlify-deploy | POST | done |
 | /api/proxy-pools | GET, POST | done |
 | /api/proxy-pools/test-all | GET, POST | done |
-| /api/proxy-pools/vercel-deploy | POST | 501 |
+| /api/proxy-pools/vercel-deploy | POST | done |
 | /api/pxpipe/health | POST | done |
-| /api/pxpipe/install | POST | 501 |
+| /api/pxpipe/install | POST | done |
 | /api/pxpipe/logs | GET | done |
-| /api/pxpipe/restart | POST | 501 |
-| /api/pxpipe/start | POST | 501 |
+| /api/pxpipe/restart | POST | done |
+| /api/pxpipe/start | POST | done |
 | /api/pxpipe/stats | GET | done |
 | /api/pxpipe/status | GET | done |
-| /api/pxpipe/stop | POST | 501 |
+| /api/pxpipe/stop | POST | done |
 | /api/security-log | GET | done |
 | /api/settings/backup/[id] | GET, POST | done |
 | /api/settings/backup | GET, POST | done |
@@ -156,13 +156,13 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `
 | /api/translator/save | POST | done |
 | /api/translator/send | POST | done |
 | /api/translator/translate | POST | done |
-| /api/tunnel/disable | POST | 501 |
-| /api/tunnel/enable | POST | 501 |
+| /api/tunnel/disable | POST | done |
+| /api/tunnel/enable | POST | done |
 | /api/tunnel/status | GET | done |
 | /api/tunnel/tailscale-check | GET | done |
-| /api/tunnel/tailscale-disable | POST | 501 |
-| /api/tunnel/tailscale-enable | POST | 501 |
-| /api/tunnel/tailscale-install | POST | 501 |
+| /api/tunnel/tailscale-disable | POST | done |
+| /api/tunnel/tailscale-enable | POST | done |
+| /api/tunnel/tailscale-install | POST | done |
 | /api/usage/[connectionId]/claude-reset | POST | done |
 | /api/usage/[connectionId]/codex-reset-credits | GET, POST | done |
 | /api/usage/[connectionId] | GET | done |
@@ -201,4 +201,4 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `
 | /api/v1beta/models | GET | done |
 | /api/version | GET | done |
 | /api/version/shutdown | POST | done |
-| /api/version/update | POST | unsupported (spawns native updater child process) |
+| /api/version/update | POST | unsupported (self-replacing binary update; reinstall the release instead) |

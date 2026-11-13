@@ -38,11 +38,11 @@ Status: **in progress**. Partial entries cover only the functions named, not ful
 | --- | --- |
 | `open-sse/services/clinepassModels.js` | Ported: `services::clinepass_models` (live discovery, free-tier merge, cache, headers) |
 | `open-sse/services/copilotModels.js` | Ported: `services::copilot_models` (live catalog, 401 token refresh retry, cache) |
-| `open-sse/services/cursorModels.js` | Partial: protobuf catalog parsing and selection, discovery pending |
+| `open-sse/services/cursorModels.js` | Ported: `services::cursor_models` (protobuf catalog parsing, selection, live discovery, Jyh checksum headers, cache) |
 | `open-sse/services/grokCliModels.js` | Ported: `services::grok_cli_models` (live discovery, 401 refresh, identity headers, cache) |
 | `open-sse/services/kimchiModels.js` | Ported: `services::kimchi_models` (metadata discovery, auth, cache) |
 | `open-sse/services/kiroModels.js` | Ported: `services::kiro_models` (ListAvailableModels discovery, fingerprint headers, 401 refresh, cache) |
-| `open-sse/services/qoderModels.js` | Partial: PAT identification and catalog visibility |
+| `open-sse/services/qoderModels.js` | Ported: `services::qoder_models` (PAT exchange, COSY-signed live catalog discovery, caching, static fallback, visibility) |
 | `open-sse/services/capacityAdapter.js` | Ported: pool selection and history stripping (`services::capacity_adapter::strip_history_for_context`) |
 | `open-sse/services/emptyFailover.js` | Ported: classification and buffered stream peek (`services::empty_failover::peek_chunks`); deadline and reader reconstruction stay with the async caller |
 | `open-sse/services/projectId.js` | Not ported |
