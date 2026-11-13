@@ -2,6 +2,7 @@
 
 pub mod chat;
 pub mod chat_core;
+pub mod media;
 pub mod sse;
 
 use serde::{Deserialize, Serialize};
