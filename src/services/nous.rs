@@ -111,3 +111,39 @@ mod tests {
         assert!(is_nous_api_key_accepted(200));
     }
 }
+
+pub const NOUS_CHAT_COMPLETIONS_URL: &str = "https://inference-api.nousresearch.com/v1/chat/completions";
+pub const NOUS_MODELS_URL: &str = "https://inference-api.nousresearch.com/v1/models";
+
+/// Credential probe: an authenticated one-token inference call. `/models` is public,
+/// so it cannot prove a key is accepted.
+pub fn nous_api_key_probe(api_key: &str) -> (&'static str, Value) {
+    (
+        NOUS_CHAT_COMPLETIONS_URL,
+        json!({
+            "headers": {
+                "Authorization": format!("Bearer {api_key}"),
+                "Content-Type": "application/json",
+            },
+            "body": {
+                "model": NOUS_VALIDATION_MODEL,
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 1,
+                "stream": false,
+            },
+        }),
+    )
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+    #[test]
+    fn probe_is_authenticated_one_token_inference() {
+        let (url, req) = nous_api_key_probe("k");
+        assert_eq!(url, NOUS_CHAT_COMPLETIONS_URL);
+        assert_eq!(req["headers"]["Authorization"], "Bearer k");
+        assert_eq!(req["body"]["max_tokens"], 1);
+        assert_eq!(req["body"]["stream"], false);
+    }
+}
