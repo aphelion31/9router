@@ -12,6 +12,7 @@ mod gemini_web;
 mod github;
 mod iflow;
 mod muse_web;
+pub(crate) mod trae;
 mod vertex;
 
 #[derive(Debug, Clone, Default)]
@@ -33,6 +34,9 @@ pub async fn execute(
     client: &reqwest::Client,
     mut request: ExecutorRequest,
 ) -> anyhow::Result<reqwest::Response> {
+    if request.provider == "trae" {
+        return trae::execute(client, &request).await;
+    }
     let provider = crate::providers::lookup(&request.provider)
         .with_context(|| format!("unknown provider: {}", request.provider))?;
     match provider.id.as_str() {
@@ -781,6 +785,74 @@ mod tests {
             String::from_utf8(decoder.finish()).unwrap(),
             "data: [DONE]\n\n"
         );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn trae_mock_request() {
+        use axum::routing::get;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new()
+            .route(
+                "/chat_sessions",
+                post(|headers: HeaderMap, body: Bytes| async move {
+                    let v: Value = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(
+                        headers.get("authorization").unwrap().to_str().unwrap(),
+                        "Cloud-IDE-JWT jwt-tok"
+                    );
+                    assert_eq!(v["mode"], "code");
+                    assert_eq!(v["initial_message"]["model_name"], "claude-sonnet-4");
+                    json!({"code": 0, "data": {"chat_session_id": "sess-1", "message_id": "msg-1"}}).to_string()
+                }),
+            )
+            .route(
+                "/chat_sessions/sess-1/events",
+                get(|OriginalUri(uri): OriginalUri, headers: HeaderMap| async move {
+                    assert_eq!(
+                        uri.to_string(),
+                        "/chat_sessions/sess-1/events?reply_to_message_id=msg-1"
+                    );
+                    assert_eq!(
+                        headers.get("authorization").unwrap().to_str().unwrap(),
+                        "Cloud-IDE-JWT jwt-tok"
+                    );
+                    "event: plan_item\ndata: {\"id\":\"p1\",\"thought\":\"Hello\"}\n\nevent: plan_item\ndata: {\"id\":\"p1\",\"thought\":\"Hello world\"}\n\nevent: token_usage\ndata: {\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}\n\nevent: done\ndata: {}\n\n"
+                }),
+            );
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "trae".into(),
+                model: "claude-sonnet-4".into(),
+                body: json!({"messages": [{"role": "user", "content": "hi"}]}),
+                stream: true,
+                access_token: Some("jwt-tok".into()),
+                base_url: Some(base),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let raw = response.bytes().await.unwrap();
+        let mut decoder = trae::Decoder::new("claude-sonnet-4");
+        let mut sse = String::from_utf8(decoder.push(&raw).unwrap()).unwrap();
+        sse.push_str(&String::from_utf8(decoder.finish()).unwrap());
+        assert!(sse.contains("\"content\":\"Hello\""));
+        assert!(sse.contains("\"content\":\" world\""));
+        assert!(sse.contains("\"total_tokens\":5"));
+        assert!(sse.contains("data: [DONE]"));
+
+        let non_stream: Value =
+            serde_json::from_slice(&trae::decode_non_stream(&raw, "claude-sonnet-4")).unwrap();
+        assert_eq!(
+            non_stream["choices"][0]["message"]["content"],
+            "Hello world"
+        );
+        assert_eq!(non_stream["usage"]["total_tokens"], 5);
         task.abort();
     }
 }

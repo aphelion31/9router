@@ -40,7 +40,7 @@ Status is deliberately conservative: partial means the upstream executor has beh
 | orcarouter.js | partial | Basic transport and status passthrough. Reset parsing missing. |
 | perplexity-web.js | pending | |
 | qoder.js | pending | |
-| trae.js | pending | |
+| trae.js | partial | Two-step SOLO session creation, events SSE stream, and plan_item-to-OpenAI decoder implemented. |
 | uc-web.js | pending | |
 | veoaifree-web.js | pending | |
 | vertex.js | partial | API key, service account and ADC supported. Token caching, project discovery and connection settings missing. |
