@@ -11,6 +11,7 @@ mod kimchi;
 mod muse_web;
 mod opencode;
 mod opencode_go;
+mod opencode_zen;
 mod vertex;
 mod xiaomi_tokenplan;
 
@@ -77,8 +78,8 @@ pub async fn execute(
         })
         .or(provider.base_url.as_deref())
         .with_context(|| format!("provider {} has no endpoint", provider.id))?;
-    let responses =
-        provider.id == "opencode-go" && opencode_go::is_responses(&provider.id, &request.model);
+    let responses = matches!(provider.id.as_str(), "opencode-go" | "opencode-zen")
+        && opencode_go::is_responses(&provider.id, &request.model);
     let mut url = if responses {
         opencode_go::url(endpoint)?
     } else if provider.id == "opencode" {
@@ -158,6 +159,9 @@ pub async fn execute(
     if responses {
         opencode_go::prepare(&mut request.body, &request.model);
     }
+    if provider.id == "opencode-zen" {
+        opencode_zen::prepare(&mut request.body, responses);
+    }
     if provider.id == "github" && !github_claude {
         github::prepare(&request.model, &mut request.body)?;
     }
@@ -190,6 +194,16 @@ pub async fn execute(
     }
     if provider.id == "opencode-go" {
         builder = builder.header("x-opencode-session", opencode::session());
+    }
+    if provider.id == "opencode-zen" {
+        builder = builder
+            .header("x-opencode-session", opencode::session())
+            .header("user-agent", "opencode/latest/2.2.5/cli")
+            .header("x-opencode-client", "desktop")
+            .header("x-opencode-project", "global");
+        if request.model.ends_with("-free") {
+            builder = builder.bearer_auth("public");
+        }
     }
     if tokenplan_claude {
         builder = builder.header("anthropic-version", "2023-06-01");
@@ -242,6 +256,7 @@ pub async fn execute(
             builder = builder.bearer_auth(key);
         }
     } else if provider.id != "opencode"
+        && !(provider.id == "opencode-zen" && request.model.ends_with("-free"))
         && let Some(token) = request
             .api_key
             .as_deref()
@@ -266,6 +281,38 @@ mod tests {
         routing::post,
     };
     use serde_json::json;
+
+    #[tokio::test]
+    async fn opencode_zen_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/v1/chat/completions",
+            listener.local_addr().unwrap()
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(mock)))
+                .await
+                .unwrap()
+        });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "opencode-zen".into(),
+                model: "test-free".into(),
+                body: json!({"messages":[]}),
+                stream: true,
+                api_key: Some("test".into()),
+                access_token: None,
+                base_url: Some(url),
+            },
+        )
+        .await
+        .unwrap();
+        let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(result["authorization"], "Bearer public");
+        assert_eq!(result["body"]["tools"].as_array().unwrap().len(), 4);
+        task.abort();
+    }
 
     #[tokio::test]
     async fn opencode_go_mock_request() {
