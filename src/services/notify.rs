@@ -67,3 +67,33 @@ mod tests {
         );
     }
 }
+
+/// Telegram sendMessage URL. The token is part of the path, so callers must never log it.
+pub fn telegram_send_url(bot_token: &str) -> String {
+    format!("https://api.telegram.org/bot{bot_token}/sendMessage")
+}
+
+/// Webhook headers. The signature is only sent when a secret is configured.
+pub fn webhook_headers(secret: &str, body: &str) -> Vec<(&'static str, String)> {
+    let mut headers = vec![("Content-Type", "application/json".to_owned())];
+    if !secret.is_empty() {
+        headers.push(("X-9Router-Signature", sign_webhook(secret, body)));
+    }
+    headers
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::*;
+    #[test]
+    fn telegram_url_and_optional_signature() {
+        assert_eq!(
+            telegram_send_url("T"),
+            "https://api.telegram.org/botT/sendMessage"
+        );
+        assert_eq!(webhook_headers("", "{}").len(), 1);
+        let signed = webhook_headers("key", "{}");
+        assert_eq!(signed[1].0, "X-9Router-Signature");
+        assert_eq!(signed[1].1, sign_webhook("key", "{}"));
+    }
+}

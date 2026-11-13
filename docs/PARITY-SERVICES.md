@@ -43,16 +43,16 @@ Status: **in progress**. Partial entries cover only the functions named, not ful
 | `open-sse/services/kimchiModels.js` | Partial: normalization and URL, no discovery or cache |
 | `open-sse/services/kiroModels.js` | Partial: variant expansion, discovery and refresh pending |
 | `open-sse/services/qoderModels.js` | Partial: PAT identification and catalog visibility |
-| `open-sse/services/capacityAdapter.js` | Partial: pool selection, no history stripping |
-| `open-sse/services/emptyFailover.js` | Partial: classification, no streaming peek/reconstruction |
+| `open-sse/services/capacityAdapter.js` | Ported: pool selection and history stripping (`services::capacity_adapter::strip_history_for_context`) |
+| `open-sse/services/emptyFailover.js` | Ported: classification and buffered stream peek (`services::empty_failover::peek_chunks`); deadline and reader reconstruction stay with the async caller |
 | `open-sse/services/projectId.js` | Not ported |
 | `open-sse/services/thoughtSignatureStore.js` | Not ported |
 | `open-sse/services/usage.js` and `usage/*` | Partial: shared numeric and project ID helpers |
-| `open-sse/services/minimaxCodeLease.js` | Partial: framing, no broker client |
-| `open-sse/services/minimaxCodeUsage.js` | Partial: membership normalization only |
-| `open-sse/services/nous.js` | Partial: catalog and validation helpers, no request builder |
-| `open-sse/services/systemoneRouter.js` | Partial: routing helpers and sticky state |
-| `open-sse/services/webIdentity.js` | Partial: cookie parsing, no probes |
+| `open-sse/services/minimaxCodeLease.js` | Ported: framing, lease endpoint resolution and unix broker client (`services::minimax_code_lease`); Windows named pipe transport pending |
+| `open-sse/services/minimaxCodeUsage.js` | Ported: membership parsing and account request signing (`services::minimax_code_usage`); HTTP fetch and plan windows still pending |
+| `open-sse/services/nous.js` | Ported: catalog normalization, validation and credential probe request (`services::nous`) |
+| `open-sse/services/systemoneRouter.js` | Ported: prompt extraction, route answer parsing, ordering and sticky store (`services::systemone_router`) |
+| `open-sse/services/webIdentity.js` | Ported: cookie parsing, probe verdicts and per-provider body checks (`services::web_identity`); live HTTP probes pending |
 | `open-sse/services/tokenRefresh.js` and `tokenRefresh/*` | Not ported |
 | `open-sse/services/browserPool.js` | Partial: enable flag, browser operations unsupported |
 | `open-sse/services/webLogin.js` | Unsupported |
@@ -63,8 +63,8 @@ Status: **in progress**. Partial entries cover only the functions named, not ful
 
 | JavaScript source | Status |
 | --- | --- |
-| `open-sse/utils/awsEventStream.js` | Partial: CRC and frame decoding, no encoder |
-| `open-sse/utils/claudeSignature.js` | Partial: signature validation |
+| `open-sse/utils/awsEventStream.js` | Ported: CRC, frame decoding and test encoder (`services::aws_event_stream`) |
+| `open-sse/utils/claudeSignature.js` | Ported: E and R form validation (`services::claude_signature`) |
 | `open-sse/utils/clientDetector.js` | Ported: client detection and native pairs |
 | `open-sse/utils/geminiCookies.js` | Ported: cookie normalization |
 | `open-sse/utils/modelMarkers.js` | Ported: context marker stripping |
@@ -74,7 +74,7 @@ Status: **in progress**. Partial entries cover only the functions named, not ful
 | `open-sse/utils/streamHelpers.js` | Partial: SSE parser only |
 | `open-sse/utils/toolDeduper.js` | Ported: tool normalization |
 | `open-sse/utils/upstreamHeaders.js` | Ported: allowed response headers |
-| `open-sse/utils/webCookieAuth.js` | Partial: cookie parsing and Grok header |
+| `open-sse/utils/webCookieAuth.js` | Ported: cookie parsing, Grok header, Playwright cookie entries (`services::web_cookie_auth`) |
 | Remaining `open-sse/utils/*` | Not ported |
 
 ## Library and MITM
@@ -82,9 +82,9 @@ Status: **in progress**. Partial entries cover only the functions named, not ful
 | JavaScript source | Status |
 | --- | --- |
 | `src/lib/latencyStats.js` | Ported: aggregation and database query |
-| `src/lib/notify.js` | Partial: config, message and signing helpers |
-| `src/lib/network/connectionProxy.js` | Partial: configuration resolution, no rotation |
-| `src/lib/keyRateLimiter.js` | Partial: windows and slots, caller integration pending |
+| `src/lib/notify.js` | Ported: config, message, signing, Telegram URL and webhook headers (`services::notify`); HTTP delivery pending |
+| `src/lib/network/connectionProxy.js` | Ported: config resolution, round-robin rotation (`services::connection_proxy::ProxyRotation`); random strategy and auto-test proxy pending |
+| `src/lib/keyRateLimiter.js` | Ported: windows, slots, and wired into `/v1` auth (`server::api_auth`) |
 | `src/lib/providerHealthSummary.js` | Not ported |
 | `src/lib/modelCatalog/*` | Not ported |
 | Remaining `src/lib/network/*`, proxy pools, headroom, backup and `atRestCrypto.js` | Not ported |

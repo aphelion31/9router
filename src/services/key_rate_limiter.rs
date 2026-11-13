@@ -1,5 +1,7 @@
+use rusqlite::Connection;
+use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 const MINUTE: u64 = 60_000;
 const HOUR: u64 = 60 * MINUTE;
@@ -145,6 +147,34 @@ impl KeyRateLimiter {
         }
     }
 }
+// Process-wide limiter shared by every /v1 request. Per process by design,
+// matching the JS reference (multi-process needs a shared store).
+pub fn limiter() -> &'static KeyRateLimiter {
+    static LIMITER: OnceLock<KeyRateLimiter> = OnceLock::new();
+    LIMITER.get_or_init(KeyRateLimiter::default)
+}
+
+// Reads the per-key config stored at kv scope "keyLimits". Returns None when
+// no field is set, so unlimited keys skip the limiter entirely. Lookup errors
+// fail open.
+pub fn load_limits(conn: &Connection, key_id: &str) -> Option<Limits> {
+    let raw = crate::db::kv_get(conn, "keyLimits", key_id).ok().flatten()?;
+    let v: Value = serde_json::from_str(&raw).ok()?;
+    let field = |name: &str| {
+        v[name]
+            .as_f64()
+            .filter(|n| n.is_finite() && *n >= 1.0)
+            .map_or(0, |n| n.floor() as usize)
+    };
+    let limits = Limits {
+        rpm: field("rpm"),
+        rph: field("rph"),
+        rpd: field("rpd"),
+        max_concurrent: field("maxConcurrent"),
+    };
+    (limits.rpm | limits.rph | limits.rpd | limits.max_concurrent != 0).then_some(limits)
+}
+
 pub struct Slot {
     state: Arc<Mutex<State>>,
     key: String,
