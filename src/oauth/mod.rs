@@ -354,26 +354,34 @@ pub fn load(db_path: PathBuf, id: &str) -> Result<Option<Connection>> {
 
 pub async fn refresh_if_needed(conn: Connection) -> Result<Connection> {
     let config = provider(&conn.provider).context("unsupported OAuth provider")?;
-    refresh_with_config(conn, &config).await
+    refresh_with_config(conn, &config, false).await
 }
 
-async fn refresh_with_config(mut conn: Connection, config: &Config) -> Result<Connection> {
+/// Refreshes regardless of `expiresAt` (upstream 401/403 retry path).
+pub async fn force_refresh(db_path: PathBuf, id: &str) -> Result<Connection> {
+    let conn = load(db_path, id)?.context("connection not found")?;
+    let config = provider(&conn.provider).context("unsupported OAuth provider")?;
+    refresh_with_config(conn, &config, true).await
+}
+
+async fn refresh_with_config(mut conn: Connection, config: &Config, force: bool) -> Result<Connection> {
     static REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _guard = REFRESH_LOCK.lock().await;
     // Re-read after locking so concurrent requests cannot reuse a rotated refresh token.
     conn = load(conn.db_path.clone(), &conn.id)?.context("connection not found")?;
     let db = crate::db::open(&conn.db_path)?;
-    let expires = conn.data.get("expiresAt").and_then(Value::as_str);
-    let Some(expires) = expires else {
-        return Ok(conn);
-    };
-    let remaining: Option<i64> = db.query_row(
-        "SELECT CAST((julianday(?1)-julianday('now'))*86400 AS INTEGER)",
-        [expires],
-        |r| r.get(0),
-    )?;
-    if remaining.is_some_and(|n| n > config.refresh_skew_seconds) {
-        return Ok(conn);
+    if !force {
+        let Some(expires) = conn.data.get("expiresAt").and_then(Value::as_str) else {
+            return Ok(conn);
+        };
+        let remaining: Option<i64> = db.query_row(
+            "SELECT CAST((julianday(?1)-julianday('now'))*86400 AS INTEGER)",
+            [expires],
+            |r| r.get(0),
+        )?;
+        if remaining.is_some_and(|n| n > config.refresh_skew_seconds) {
+            return Ok(conn);
+        }
     }
     let refresh = conn
         .data
@@ -453,14 +461,20 @@ mod tests {
         let mut config = provider("codex").unwrap();
         config.token_url = url;
         let (a, b) = tokio::join!(
-            refresh_with_config(conn.clone(), &config),
-            refresh_with_config(conn, &config)
+            refresh_with_config(conn.clone(), &config, false),
+            refresh_with_config(conn, &config, false)
         );
         assert_eq!(a.unwrap().data["accessToken"], "new");
         assert_eq!(b.unwrap().data["refreshToken"], "rotated");
         let saved = load(path.clone(), "a").unwrap().unwrap();
         assert_eq!(saved.data["other"], "preserved");
         assert_eq!(count.load(Ordering::SeqCst), 1);
+        // Not expired: normal path skips, forced path (401 retry) still refreshes.
+        let fresh = load(path.clone(), "a").unwrap().unwrap();
+        assert_eq!(refresh_with_config(fresh.clone(), &config, false).await.unwrap().data["accessToken"], "new");
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert!(refresh_with_config(fresh, &config, true).await.is_err()); // mock rejects rotated token
+        assert_eq!(count.load(Ordering::SeqCst), 2);
         server.abort();
         let _ = std::fs::remove_file(path);
     }
