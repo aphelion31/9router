@@ -48,7 +48,7 @@ Status: **in progress**. Partial entries cover only the functions named, not ful
 | `open-sse/services/projectId.js` | Not ported |
 | `open-sse/services/thoughtSignatureStore.js` | Not ported |
 | `open-sse/services/usage.js` and `usage/*` | Partial: shared numeric and project ID helpers |
-| `open-sse/services/minimaxCodeLease.js` | Partial: framing, no broker client |
+| `open-sse/services/minimaxCodeLease.js` | Ported: framing, lease endpoint resolution and unix broker client (`services::minimax_code_lease`); Windows named pipe transport pending |
 | `open-sse/services/minimaxCodeUsage.js` | Ported: membership parsing and account request signing (`services::minimax_code_usage`); HTTP fetch and plan windows still pending |
 | `open-sse/services/nous.js` | Partial: catalog and validation helpers, no request builder |
 | `open-sse/services/systemoneRouter.js` | Partial: routing helpers and sticky state |
