@@ -10,6 +10,7 @@ pub(crate) mod commandcode;
 mod gemini_cli;
 mod gemini_web;
 mod github;
+mod grok_cli;
 mod iflow;
 mod muse_web;
 pub(crate) mod trae;
@@ -179,6 +180,15 @@ pub async fn execute(
     }
     if provider.id == "codebuddy-intl" {
         codebuddy_intl::prepare(&mut request.body)?;
+    }
+    if provider.id == "grok-cli" {
+        for (name, value) in grok_cli::prepare(
+            &request.model,
+            &mut request.body,
+            request.provider_specific_data.as_ref(),
+        )? {
+            builder = builder.header(name, value);
+        }
     }
     if provider.id == "iflow" {
         for (name, value) in iflow::prepare(
@@ -853,6 +863,59 @@ mod tests {
             "Hello world"
         );
         assert_eq!(non_stream["usage"]["total_tokens"], 5);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn grok_cli_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://{addr}");
+        let app = Router::new().route("/", post(mock));
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "grok-cli".into(),
+                model: "grok-4.5-high".into(),
+                body: json!({
+                    "messages": [
+                        {"role": "user", "content": "hi"},
+                        {"role": "assistant", "content": "hello"},
+                        {"role": "user", "content": "next"}
+                    ],
+                    "tools": [{
+                        "type": "function",
+                        "function": {"name": "read", "parameters": {"type": "object"}}
+                    }],
+                    "max_tokens": 100
+                }),
+                stream: false,
+                access_token: Some("grok-tok".into()),
+                base_url: Some(base),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let echo: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        let headers = &echo["headers"];
+        let body = &echo["body"];
+        assert!(
+            headers["user-agent"]
+                .as_str()
+                .unwrap()
+                .starts_with("grok-shell/")
+        );
+        assert_eq!(headers["x-grok-client-identifier"], "grok-shell");
+        assert_eq!(headers["x-grok-turn-idx"], "2");
+        assert_eq!(headers["x-grok-model-override"], "grok-4.5");
+        assert_eq!(body["model"], "grok-4.5");
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["store"], false);
+        assert_eq!(body["reasoning"]["effort"], "high");
+        assert!(body.get("max_tokens").is_none());
+        assert_eq!(body["tools"][0]["name"], "read");
         task.abort();
     }
 }

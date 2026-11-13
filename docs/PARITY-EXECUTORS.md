@@ -23,7 +23,7 @@ Status is deliberately conservative: partial means the upstream executor has beh
 | gemini-cli.js | partial | Cloud Code Assist URL, request wrapping, and CLI headers implemented; 429 RetryInfo and token refresh live in oauth/error layers. |
 | gemini-web.js | unsupported | Browser automation required. |
 | github.js | partial | Chat and Claude paths exist. Responses fallback and full response parity missing. |
-| grok-cli.js | pending | |
+| grok-cli.js | ported | `src/executors/grok_cli.rs` (Responses input/tools normalization, reasoning effort, CLI headers) |
 | grok-web-tools.js | pending | |
 | grok-web.js | pending | |
 | iflow.js | partial | Request signing implemented. |
