@@ -147,9 +147,9 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` depends on an
 | /api/settings/webhook-events | GET, POST | todo |
 | /api/shutdown | POST | todo |
 | /api/tags | GET | todo |
-| /api/token-saver/brief | DELETE, GET, PUT | todo |
-| /api/token-saver/stats | GET | todo |
-| /api/token-saver/test | POST | todo |
+| /api/token-saver/brief | DELETE, GET, PUT | done |
+| /api/token-saver/stats | GET | done |
+| /api/token-saver/test | POST | done |
 | /api/translator/console-logs | DELETE, GET | todo |
 | /api/translator/console-logs/stream | GET | todo |
 | /api/translator/load | GET | todo |
