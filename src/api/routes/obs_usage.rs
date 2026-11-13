@@ -1,7 +1,6 @@
 use crate::{api::routes::obs_events::percentile, server::AppState};
 use axum::{
     Json, Router,
-    body::Body,
     extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{
@@ -1156,7 +1155,7 @@ async fn codex_reset_credits_post(
 mod tests {
     use super::*;
     use crate::api::executor::HttpExecutor;
-    use axum::{body::to_bytes, http::Request};
+    use axum::{body::{Body, to_bytes}, http::Request};
     use std::sync::{Arc, Mutex};
     use tower::ServiceExt;
 
