@@ -77,25 +77,25 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` depends on an
 | /api/monitoring | GET | done |
 | /api/notifications | GET, POST | done |
 | /api/oauth/[provider]/[action] | GET, POST | done |
-| /api/oauth/codex/bulk-import | POST | todo |
-| /api/oauth/codex/import-token | POST | todo |
-| /api/oauth/cursor/auto-import | GET | todo |
-| /api/oauth/cursor/import | GET, POST | todo |
-| /api/oauth/gitlab/pat | POST | todo |
-| /api/oauth/grok-cli/bulk-import | POST | todo |
-| /api/oauth/iflow/cookie | POST | todo |
-| /api/oauth/kiro/api-key | POST | todo |
-| /api/oauth/kiro/auto-import | GET | todo |
-| /api/oauth/kiro/import-cli-proxy | POST | todo |
-| /api/oauth/kiro/import | POST | todo |
-| /api/oauth/kiro/social-authorize | GET | todo |
-| /api/oauth/kiro/social-exchange | POST | todo |
-| /api/oauth/xiaomi-mimo/api-key | POST | todo |
-| /api/oauth/xiaomi-mimo/auto-import | GET | todo |
-| /api/oauth/xiaomi-mimo/login/start | POST | todo |
-| /api/oauth/xiaomi-mimo/login/status | GET | todo |
-| /api/oauth/zed/auto-import | GET | todo |
-| /api/oauth/zed/import | POST | todo |
+| /api/oauth/codex/bulk-import | POST | done |
+| /api/oauth/codex/import-token | POST | done |
+| /api/oauth/cursor/auto-import | GET | done |
+| /api/oauth/cursor/import | GET, POST | done |
+| /api/oauth/gitlab/pat | POST | done |
+| /api/oauth/grok-cli/bulk-import | POST | done |
+| /api/oauth/iflow/cookie | POST | done |
+| /api/oauth/kiro/api-key | POST | done |
+| /api/oauth/kiro/auto-import | GET | done |
+| /api/oauth/kiro/import-cli-proxy | POST | done |
+| /api/oauth/kiro/import | POST | done |
+| /api/oauth/kiro/social-authorize | GET | done |
+| /api/oauth/kiro/social-exchange | POST | done |
+| /api/oauth/xiaomi-mimo/api-key | POST | done |
+| /api/oauth/xiaomi-mimo/auto-import | GET | done |
+| /api/oauth/xiaomi-mimo/login/start | POST | done |
+| /api/oauth/xiaomi-mimo/login/status | GET | done |
+| /api/oauth/zed/auto-import | GET | done |
+| /api/oauth/zed/import | POST | done |
 | /api/pricing | DELETE, GET, PATCH | todo |
 | /api/prompt-injection | DELETE, GET, PUT | todo |
 | /api/prompt-injection/stats | GET | todo |

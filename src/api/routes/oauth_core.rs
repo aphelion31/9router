@@ -42,6 +42,14 @@ pub fn public_router() -> Router<AppState> {
     Router::new().route("/api/oauth/{provider}/callback", get(oauth_callback))
 }
 
+pub(crate) fn random_b64_pub(bytes: usize) -> String {
+    random_b64(bytes)
+}
+
+pub(crate) fn pkce_challenge_pub(verifier: &str) -> String {
+    pkce_challenge(verifier)
+}
+
 fn random_b64(bytes: usize) -> String {
     let mut buf = vec![0u8; bytes];
     SystemRandom::new().fill(&mut buf).ok();
