@@ -24,6 +24,9 @@ const PXPIPE_HTML: &str = include_str!("pxpipe.html");
 const PROXY_POOLS_HTML: &str = include_str!("proxy_pools.html");
 const MITM_HTML: &str = include_str!("mitm.html");
 const AUTOMATION_HTML: &str = include_str!("automation.html");
+const CLI_TOOLS_HTML: &str = include_str!("cli_tools.html");
+const CLI_TOOL_DETAIL_HTML: &str = include_str!("cli_tool_detail.html");
+const BASIC_CHAT_HTML: &str = include_str!("basic_chat.html");
 const STYLE_CSS: &str = include_str!("style.css");
 const APP_JS: &str = include_str!("app.js");
 
@@ -93,6 +96,18 @@ pub async fn mitm_page() -> Html<&'static str> {
 
 pub async fn automation_page() -> Html<&'static str> {
     Html(AUTOMATION_HTML)
+}
+
+pub async fn cli_tools_page() -> Html<&'static str> {
+    Html(CLI_TOOLS_HTML)
+}
+
+pub async fn cli_tool_detail_page() -> Html<&'static str> {
+    Html(CLI_TOOL_DETAIL_HTML)
+}
+
+pub async fn basic_chat_page() -> Html<&'static str> {
+    Html(BASIC_CHAT_HTML)
 }
 
 pub async fn style_css() -> Response {

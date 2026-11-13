@@ -97,6 +97,9 @@ fn make_router_with_db(
         .route("/dashboard/proxy-pools", get(dashboard::proxy_pools_page))
         .route("/dashboard/mitm", get(dashboard::mitm_page))
         .route("/dashboard/automation", get(dashboard::automation_page))
+        .route("/dashboard/cli-tools", get(dashboard::cli_tools_page))
+        .route("/dashboard/cli-tools/{toolId}", get(dashboard::cli_tool_detail_page))
+        .route("/dashboard/basic-chat", get(dashboard::basic_chat_page))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             dashboard_page_auth,

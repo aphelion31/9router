@@ -21,9 +21,9 @@ Status of dashboard pages ported from `9router-pro/src/app/(dashboard)/dashboard
 | 14 | Proxy Pools | `/dashboard/proxy-pools` | Done | `proxy_pools.html` |
 | 15 | MITM | `/dashboard/mitm` | Done | `mitm.html` |
 | 16 | Automation | `/dashboard/automation` | Done | `automation.html` |
-| 17 | CLI Tools | `/dashboard/cli-tools` | Pending | Group 4 |
-| 18 | CLI Tool Detail | `/dashboard/cli-tools/{toolId}` | Pending | Group 4 |
-| 19 | Basic Chat | `/dashboard/basic-chat` | Pending | Group 4 |
+| 17 | CLI Tools | `/dashboard/cli-tools` | Done | `cli_tools.html` |
+| 18 | CLI Tool Detail | `/dashboard/cli-tools/{toolId}` | Done | `cli_tool_detail.html` |
+| 19 | Basic Chat | `/dashboard/basic-chat` | Done | `basic_chat.html` |
 | 20 | Console Log | `/dashboard/console-log` | Pending | Group 5 |
 | 21 | Translator | `/dashboard/translator` | Pending | Group 5 |
 | 22 | Media Web | `/dashboard/media-providers/web` | Pending | Group 5 |
