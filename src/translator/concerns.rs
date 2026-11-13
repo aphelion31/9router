@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::translator::formats::{
-    FORMAT_ANTIGRAVITY, FORMAT_CLAUDE, FORMAT_GEMINI, FORMAT_GEMINI_CLI, FORMAT_OPENAI_RESPONSES,
-    FORMAT_VERTEX,
+    FORMAT_ANTIGRAVITY, FORMAT_CLAUDE, FORMAT_COMMANDCODE, FORMAT_GEMINI, FORMAT_GEMINI_CLI,
+    FORMAT_KIRO, FORMAT_OLLAMA, FORMAT_OPENAI_RESPONSES, FORMAT_VERTEX,
 };
 use crate::translator::schema::{
     claude_stop, defaults, gemini_finish, openai_block, openai_finish, responses_incomplete_reason,
@@ -83,6 +83,19 @@ pub fn to_openai_finish(source_format: &str, reason: Option<&str>, has_tool_call
             responses_status::FAILED | responses_incomplete_reason::CONTENT_FILTER => {
                 openai_finish::CONTENT_FILTER
             }
+            _ => openai_finish::STOP,
+        },
+        FORMAT_COMMANDCODE => match r {
+            "stop" => openai_finish::STOP,
+            "length" => openai_finish::LENGTH,
+            "tool-calls" | "tool_use" => openai_finish::TOOL_CALLS,
+            "content-filter" => openai_finish::CONTENT_FILTER,
+            "error" => openai_finish::STOP,
+            _ => openai_finish::STOP,
+        },
+        FORMAT_KIRO | FORMAT_OLLAMA => match r {
+            "tool_calls" | "tool_use" => openai_finish::TOOL_CALLS,
+            "length" | "max_tokens" => openai_finish::LENGTH,
             _ => openai_finish::STOP,
         },
         _ => openai_finish::STOP,
@@ -223,6 +236,54 @@ pub fn to_openai_usage(source_format: &str, raw: Option<&Value>) -> Option<Value
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
             Some(build_usage(prompt, completion, cached, reasoning))
+        }
+        FORMAT_KIRO => {
+            let input = raw.get("inputTokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            let output = raw.get("outputTokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            let cached = raw
+                .get("cache_read_input_tokens")
+                .or_else(|| raw.get("cachedTokens"))
+                .or_else(|| raw.get("cached_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let cache_creation = raw
+                .get("cache_creation_input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let mut u = build_usage(input, output, cached, 0);
+            if cache_creation > 0 {
+                if let Some(obj) = u.as_object_mut() {
+                    let details = obj
+                        .entry("prompt_tokens_details")
+                        .or_insert_with(|| json!({}));
+                    if let Some(dobj) = details.as_object_mut() {
+                        dobj.insert("cache_creation_tokens".to_string(), json!(cache_creation));
+                    }
+                }
+            }
+            Some(u)
+        }
+        FORMAT_OLLAMA => {
+            let input = raw.get("prompt_eval_count").and_then(|v| v.as_u64()).unwrap_or(0);
+            let output = raw.get("eval_count").and_then(|v| v.as_u64()).unwrap_or(0);
+            let cached = raw
+                .get("prompt_eval_cached_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            Some(build_usage(input, output, cached, 0))
+        }
+        FORMAT_COMMANDCODE => {
+            let input = raw.get("inputTokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            let output = raw.get("outputTokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            let total = raw
+                .get("totalTokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(input + output);
+            let mut u = build_usage(input, output, 0, 0);
+            if let Some(obj) = u.as_object_mut() {
+                obj.insert("total_tokens".to_string(), json!(total));
+            }
+            Some(u)
         }
         _ => None,
     }
