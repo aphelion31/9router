@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [develop, master]
+  pull_request:
+    branches: [develop, master]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Skip until crate exists
+        id: crate
+        run: test -f Cargo.toml && echo "ok=1" >> "$GITHUB_OUTPUT" || true
+      - if: steps.crate.outputs.ok
+        run: cargo build --locked
+      - if: steps.crate.outputs.ok
+        run: cargo test --locked
+      - if: steps.crate.outputs.ok
+        name: Health smoke test
+        run: |
+          DATA_DIR=$(mktemp -d) PORT=20127 ./target/debug/ninerouter &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:20127/api/health && exit 0; sleep 1; done
+          exit 1
