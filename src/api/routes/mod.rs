@@ -5,9 +5,12 @@ use axum::Router;
 use crate::server::AppState;
 
 mod obs_events;
+mod obs_usage;
 
 pub fn management() -> Router<AppState> {
-    Router::new().merge(obs_events::router())
+    Router::new()
+        .merge(obs_events::router())
+        .merge(obs_usage::router())
 }
 
 pub fn v1() -> Router<AppState> {

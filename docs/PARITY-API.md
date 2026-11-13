@@ -163,17 +163,17 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` depends on an
 | /api/tunnel/tailscale-disable | POST | todo |
 | /api/tunnel/tailscale-enable | POST | todo |
 | /api/tunnel/tailscale-install | POST | todo |
-| /api/usage/[connectionId]/claude-reset | POST | todo |
-| /api/usage/[connectionId]/codex-reset-credits | GET, POST | todo |
-| /api/usage/[connectionId] | GET | todo |
-| /api/usage/by-key | GET | todo |
-| /api/usage/chart | GET | todo |
-| /api/usage/latency | GET | todo |
-| /api/usage/logs | GET | todo |
-| /api/usage/providers | GET | todo |
-| /api/usage/request-details | GET | todo |
-| /api/usage/stats | GET | todo |
-| /api/usage/stream | GET | todo |
+| /api/usage/[connectionId]/claude-reset | POST | done |
+| /api/usage/[connectionId]/codex-reset-credits | GET, POST | done |
+| /api/usage/[connectionId] | GET | done |
+| /api/usage/by-key | GET | done |
+| /api/usage/chart | GET | done |
+| /api/usage/latency | GET | done |
+| /api/usage/logs | GET | done |
+| /api/usage/providers | GET | done |
+| /api/usage/request-details | GET | done |
+| /api/usage/stats | GET | done |
+| /api/usage/stream | GET | done |
 | /api/v1/api/chat | POST | todo |
 | /api/v1/audio/speech | POST | todo |
 | /api/v1/audio/transcriptions | POST | todo |
