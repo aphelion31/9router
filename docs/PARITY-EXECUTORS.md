@@ -33,7 +33,7 @@ Status is deliberately conservative: partial means the upstream executor has beh
 | mimo-free.js | partial | Bootstrap, marker and auth retry; configure MIMO_FREE_CLIENT_ID; JWT caching omitted. |
 | minimax-code.js | partial | Quota response normalization; desktop lease and OAuth token refresh unavailable. |
 | muse-web.js | unsupported | Browser automation required. |
-| ollama-local.js | partial | Default URL works, host override differs. |
+| ollama-local.js | partial | Per-connection host override implemented; inherited default transport parity remains. |
 | opencode-go.js | partial | Responses path and basic normalization; per-conversation sessions and full input/tool sanitization remain. |
 | opencode-zen.js | partial | Session, fingerprint tools and Responses handling; per-conversation sessions and complete tool sanitization remain. |
 | opencode.js | partial | Routes, headers, session and quota/overload handling; fingerprint tools, per-conversation sessions, TLS impersonation and Responses translation remain. |

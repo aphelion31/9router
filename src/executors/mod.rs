@@ -122,7 +122,16 @@ pub async fn execute(
     }
     let responses = matches!(provider.id.as_str(), "opencode-go" | "opencode-zen")
         && opencode_go::is_responses(&provider.id, &request.model);
-    let mut url = if responses {
+    let mut url = if provider.id == "ollama-local" && request.base_url.is_none() {
+        let host = request.provider_specific_data.as_ref()
+            .and_then(|data| data.get("baseUrl"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|host| !host.is_empty())
+            .unwrap_or("http://localhost:11434")
+            .trim_end_matches('/');
+        reqwest::Url::parse(&format!("{host}/api/chat")).context("invalid Ollama host")?
+    } else if responses {
         opencode_go::url(endpoint)?
     } else if provider.id == "opencode" {
         opencode::url(endpoint, &request.model)?
@@ -841,7 +850,7 @@ mod tests {
                 stream: false,
                 api_key: None,
                 access_token: None,
-                base_url: Some(url),
+                provider_specific_data: Some(json!({"baseUrl": format!(" {}/// ", url.trim_end_matches("/api/chat"))})),
                 ..Default::default()
             },
         )
