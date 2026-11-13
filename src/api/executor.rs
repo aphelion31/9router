@@ -9,7 +9,8 @@ impl Executor for HttpExecutor {
         req: ExecutorRequest,
     ) -> BoxFuture<'a, Result<ExecutorResponse, String>> {
         Box::pin(async move {
-            let bedrock_stream = req.provider == "bedrock" && req.stream;
+            let bedrock_xai = req.provider == "bedrock-xai";
+            let bedrock_stream = (req.provider == "bedrock" || bedrock_xai) && req.stream;
             let response_format = (req.provider == "github"
                 && req.model.to_ascii_lowercase().contains("claude"))
             .then(|| "claude".to_string());
@@ -45,7 +46,8 @@ impl Executor for HttpExecutor {
                 let (tx, rx) = tokio::sync::mpsc::channel(16);
                 tokio::spawn(async move {
                     let mut response = response;
-                    let mut decoder = bedrock_stream.then(crate::executors::bedrock::Decoder::new);
+                    let mut decoder = bedrock_stream
+                        .then(|| crate::executors::bedrock::Decoder::new(bedrock_xai));
                     loop {
                         match response.chunk().await {
                             Ok(Some(bytes)) => {
@@ -68,6 +70,8 @@ impl Executor for HttpExecutor {
                                 if let Some(decoder) = decoder.as_ref() {
                                     if let Err(error) = decoder.finish() {
                                         let _ = tx.send(Err(error.to_string())).await;
+                                    } else if bedrock_xai {
+                                        let _ = tx.send(Ok(b"data: [DONE]\n\n".to_vec())).await;
                                     }
                                 }
                                 break;

@@ -26,7 +26,7 @@ mod tests {
         frame.extend_from_slice(&headers);
         frame.extend_from_slice(payload.as_bytes());
         frame.extend_from_slice(&crc32(&frame).to_be_bytes());
-        let mut decoder = Decoder::new();
+        let mut decoder = Decoder::new(false);
         assert!(decoder.push(&frame[..10]).unwrap().is_empty());
         assert!(
             String::from_utf8(decoder.push(&frame[10..]).unwrap())
@@ -35,7 +35,7 @@ mod tests {
         );
         decoder.finish().unwrap();
         frame[8] ^= 1;
-        assert!(Decoder::new().push(&frame).is_err());
+        assert!(Decoder::new(false).push(&frame).is_err());
     }
 }
 
@@ -53,12 +53,14 @@ fn crc32(bytes: &[u8]) -> u32 {
 pub(crate) struct Decoder {
     buffer: Vec<u8>,
     terminal: bool,
+    xai: bool,
 }
 impl Decoder {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(xai: bool) -> Self {
         Self {
             buffer: Vec::new(),
             terminal: false,
+            xai,
         }
     }
     pub(crate) fn push(&mut self, bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
@@ -130,6 +132,20 @@ impl Decoder {
                 .and_then(Value::as_str)
                 .context("Bedrock chunk missing bytes")?;
             let inner: Value = serde_json::from_slice(&STANDARD.decode(encoded)?)?;
+            if self.xai {
+                let choices = inner
+                    .get("choices")
+                    .and_then(Value::as_array)
+                    .context("Bedrock chunk missing choices")?;
+                if choices
+                    .iter()
+                    .any(|choice| choice.get("finish_reason").is_some_and(|v| !v.is_null()))
+                {
+                    self.terminal = true;
+                }
+                out.extend_from_slice(format!("data: {inner}\n\n").as_bytes());
+                continue;
+            }
             let kind = inner
                 .get("type")
                 .and_then(Value::as_str)
@@ -188,12 +204,19 @@ fn timestamp() -> anyhow::Result<(String, String)> {
 
 pub(super) fn prepare(
     endpoint: Option<&str>,
+    xai: bool,
     model: &str,
     body: &mut Value,
     stream: bool,
 ) -> anyhow::Result<(reqwest::Url, Vec<(String, String)>, Vec<u8>)> {
-    if !model.to_ascii_lowercase().contains("anthropic.") {
-        bail!("Bedrock expects an Anthropic model ID");
+    let family = if xai { "xai." } else { "anthropic." };
+    if !model
+        .split(['.', '/'])
+        .collect::<Vec<_>>()
+        .windows(2)
+        .any(|parts| parts[0].eq_ignore_ascii_case(family.trim_end_matches('.')))
+    {
+        bail!("Bedrock expects a {family} model ID");
     }
     let region = std::env::var("AWS_REGION")
         .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
@@ -235,7 +258,9 @@ pub(super) fn prepare(
         .context("Bedrock request body must be an object")?;
     obj.remove("model");
     obj.remove("stream");
-    obj.insert("anthropic_version".into(), "bedrock-2023-05-31".into());
+    if !xai {
+        obj.insert("anthropic_version".into(), "bedrock-2023-05-31".into());
+    }
     let payload = serde_json::to_vec(body)?;
     let (date, amz_date) = timestamp()?;
     let host = match url.port() {

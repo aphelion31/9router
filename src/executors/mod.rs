@@ -36,9 +36,10 @@ pub async fn execute(
         "muse-web" => return Err(muse_web::unsupported()),
         _ => {}
     }
-    if provider.id == "bedrock" {
+    if matches!(provider.id.as_str(), "bedrock" | "bedrock-xai") {
         let (url, headers, body) = bedrock::prepare(
             request.base_url.as_deref(),
+            provider.id == "bedrock-xai",
             &request.model,
             &mut request.body,
             request.stream,
