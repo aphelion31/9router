@@ -125,10 +125,77 @@ pub fn is_no_retry_finish(reason: &str) -> bool {
     reason.eq_ignore_ascii_case("content_filter")
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum PeekOutcome {
+    // Content seen; `head` chunks must be replayed before the rest of the stream.
+    Content { head_chunks: usize },
+    // Stream ended with no content frame; caller may fail over.
+    Empty { finish_reason: Option<String> },
+}
+
+// Peek buffered upstream chunks in arrival order, stopping at the first content
+// frame. Mirrors peekStreamForContent: partial lines carry across chunk boundaries
+// and the trailing unterminated line is flushed at end of stream. Deadline and
+// reader handoff are the caller's job (async); this is the pure decision.
+pub fn peek_chunks(chunks: &[&[u8]]) -> PeekOutcome {
+    let mut decoder = String::new();
+    let mut state = StreamState::default();
+    for (i, chunk) in chunks.iter().enumerate() {
+        decoder.push_str(&String::from_utf8_lossy(chunk));
+        scan_sse_buffer(&decoder, &mut state);
+        decoder = std::mem::take(&mut state.pending);
+        if state.saw_content {
+            return PeekOutcome::Content { head_chunks: i + 1 };
+        }
+    }
+    if !decoder.is_empty() {
+        let mut tail = StreamState::default();
+        scan_sse_buffer(&format!("{decoder}\n"), &mut tail);
+        state.saw_content |= tail.saw_content;
+        state.finish_reason = tail.finish_reason.or(state.finish_reason);
+    }
+    if state.saw_content {
+        PeekOutcome::Content {
+            head_chunks: chunks.len(),
+        }
+    } else {
+        PeekOutcome::Empty {
+            finish_reason: state.finish_reason,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn peek_stops_at_first_content_across_chunk_boundary() {
+        let a = b"data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\ndata: {\"choi";
+        let b = b"ces\":[{\"delta\":{\"content\":\"hi\"}}]}\n";
+        assert_eq!(
+            peek_chunks(&[a, b]),
+            PeekOutcome::Content { head_chunks: 2 }
+        );
+    }
+    #[test]
+    fn peek_reports_empty_with_finish_reason() {
+        let a = b"data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"finish_reason\":\"content_filter\"}]}\n\ndata: [DONE]\n";
+        assert_eq!(
+            peek_chunks(&[a]),
+            PeekOutcome::Empty {
+                finish_reason: Some("content_filter".into())
+            }
+        );
+    }
+    #[test]
+    fn peek_flushes_unterminated_final_line() {
+        let a = b"data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}";
+        assert_eq!(
+            peek_chunks(&[a]),
+            PeekOutcome::Content { head_chunks: 1 }
+        );
+    }
     #[test]
     fn content_and_reasoning_are_distinct() {
         assert!(!delta_has_client_content(
