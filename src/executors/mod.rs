@@ -4,6 +4,7 @@ use serde_json::Value;
 mod azure;
 pub(crate) mod bedrock;
 mod chatgpt_web;
+mod codebuddy_cn;
 mod codebuddy_intl;
 mod gemini_cli;
 mod gemini_web;
@@ -163,6 +164,9 @@ pub async fn execute(
             builder = builder.header(name, value);
         }
     }
+    if provider.id == "codebuddy-cn" {
+        codebuddy_cn::prepare(&mut request.body)?;
+    }
     if provider.id == "codebuddy-intl" {
         codebuddy_intl::prepare(&mut request.body)?;
     }
@@ -176,7 +180,7 @@ pub async fn execute(
             builder = builder.header(name, value);
         }
     }
-    if request.stream || matches!(provider.id.as_str(), "codex" | "codebuddy-intl") {
+    if request.stream || matches!(provider.id.as_str(), "codex" | "codebuddy-cn" | "codebuddy-intl") {
         builder = builder.header(reqwest::header::ACCEPT, "text/event-stream");
     }
     if provider.id == "azure" {
@@ -680,6 +684,49 @@ mod tests {
                 {"role": "system", "content": "You are CodeBuddy Code."},
                 {"role": "user", "content": [{"type": "text", "text": "hello"}]}
             ])
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn codebuddy_cn_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/v2/chat/completions",
+            listener.local_addr().unwrap()
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(mock)))
+                .await
+                .unwrap()
+        });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "codebuddy-cn".into(),
+                model: "deepseek-chat".into(),
+                body: json!({
+                    "reasoning_effort": "none",
+                    "messages": [
+                        {"role": "system", "content": "You are Claude Code, Anthropic's official CLI."},
+                        {"role": "user", "content": "hi"}
+                    ]
+                }),
+                stream: false,
+                api_key: Some("cb-cn-key".into()),
+                base_url: Some(url),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(result["authorization"], "Bearer cb-cn-key");
+        assert_eq!(result["body"]["stream"], true);
+        assert!(result["body"].get("reasoning_effort").is_none());
+        assert_eq!(
+            result["body"]["messages"][0]["content"],
+            "You are a helpful AI assistant that helps with software engineering tasks."
         );
         task.abort();
     }
