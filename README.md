@@ -6,7 +6,7 @@
 > bcrypt dashboard passwords, provider registry and API shapes.
 > 9Router is © decolua and contributors, MIT licensed. This rewrite is not affiliated with the upstream project.
 >
-> **Status: work in progress (~67% parity).** Progress is tracked per file in `docs/PARITY-API.md`,
+> **Status: Feature parity with 9router-pro: every /api and /v1 route, all 44 executors, all services and all 25 dashboard pages are ported. Two routes are intentionally unsupported: /api/providers/web-login (needs an interactive browser) and /api/version/update (a binary can't replace itself; reinstall a release instead). Verified end to end against a live OpenAI-compatible upstream.** Progress is tracked per file in `docs/PARITY-API.md`,
 > `docs/PARITY-EXECUTORS.md`, `docs/PARITY-SERVICES.md`, and the REA gap report `docs/GAP-REA.md`.
 > Don't run it against a production `~/.9router` yet (see *Data safety*).
 
@@ -37,10 +37,12 @@ machine before comparing.
 ```
 src/api/         /v1 and /api routes (route groups in src/api/routes/)
 src/handlers/    chat core, SSE streaming
+src/handlers/media/  tts, stt, images, videos, embeddings
 src/translator/  OpenAI-pivot format translation (Claude, Gemini, Responses, Kiro, Cursor, ...)
 src/executors/   one upstream executor per provider protocol
 src/routing/     combo and account fallback, cooldowns, 429 classification
 src/services/    token saver (rtk), model catalogs, rate limits, usage helpers
+src/services/usage/  per-provider quota fetchers
 src/oauth/       OAuth flows and token refresh
 src/dashboard/   dependency-free dashboard (HTML/JS/CSS embedded in the binary)
 docs/            parity checklists, git process
@@ -60,6 +62,35 @@ CLI flags override the matching env vars. Defaults: port `20127`, host `127.0.0.
 ninerouter [serve] [--port N] [--data-dir P] [--host H]
 ninerouter --version
 ninerouter --help
+```
+
+## Use with an OpenAI-compatible upstream
+
+1. Create a provider node with a base URL like `https://host/v1` and a prefix like `nr`. The response
+   contains the node id (`openai-compatible-chat-...`).
+2. Add a connection to that node with the upstream API key.
+3. Call `/v1/chat/completions` with model `nr/<model>`, using a router API key (created on the
+   dashboard Endpoint page) as the Bearer token.
+
+Steps 1 and 2 use the management API with a dashboard session cookie (log in at `/login` first):
+
+```sh
+curl -b cookies.txt -X POST http://127.0.0.1:20127/api/provider-nodes \
+  -H "Content-Type: application/json" \
+  -d '{"name":"My upstream","prefix":"nr","type":"openai-compatible","apiType":"chat","baseUrl":"https://host/v1"}'
+
+curl -b cookies.txt -X POST http://127.0.0.1:20127/api/providers \
+  -H "Content-Type: application/json" \
+  -d '{"provider":"<node id from step 1>","name":"main","apiKey":"<upstream key>"}'
+```
+
+Then:
+
+```sh
+curl http://127.0.0.1:20127/v1/chat/completions \
+  -H "Authorization: Bearer sk-..." \
+  -H "Content-Type: application/json" \
+  -d '{"model": "nr/<model>", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
 ## Docker
