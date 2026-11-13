@@ -36,12 +36,12 @@ Status: **in progress**. Partial entries cover only the functions named, not ful
 
 | JavaScript source | Status |
 | --- | --- |
-| `open-sse/services/clinepassModels.js` | Not ported |
-| `open-sse/services/copilotModels.js` | Not ported |
-| `open-sse/services/cursorModels.js` | Not ported |
+| `open-sse/services/clinepassModels.js` | Partial: discovery and merging, header parity incomplete |
+| `open-sse/services/copilotModels.js` | Partial: catalog filtering, discovery and refresh pending |
+| `open-sse/services/cursorModels.js` | Partial: protobuf catalog parsing and selection, discovery pending |
 | `open-sse/services/grokCliModels.js` | Partial: model parsing, no live discovery or refresh |
 | `open-sse/services/kimchiModels.js` | Partial: normalization and URL, no discovery or cache |
-| `open-sse/services/kiroModels.js` | Not ported |
+| `open-sse/services/kiroModels.js` | Partial: variant expansion, discovery and refresh pending |
 | `open-sse/services/qoderModels.js` | Partial: PAT identification and catalog visibility |
 | `open-sse/services/capacityAdapter.js` | Partial: pool selection, no history stripping |
 | `open-sse/services/emptyFailover.js` | Partial: classification, no streaming peek/reconstruction |
@@ -84,7 +84,7 @@ Status: **in progress**. Partial entries cover only the functions named, not ful
 | `src/lib/latencyStats.js` | Ported: aggregation and database query |
 | `src/lib/notify.js` | Partial: config, message and signing helpers |
 | `src/lib/network/connectionProxy.js` | Partial: configuration resolution, no rotation |
-| `src/lib/keyRateLimiter.js` | Not ported |
+| `src/lib/keyRateLimiter.js` | Partial: windows and slots, caller integration pending |
 | `src/lib/providerHealthSummary.js` | Not ported |
 | `src/lib/modelCatalog/*` | Not ported |
 | Remaining `src/lib/network/*`, proxy pools, headroom, backup and `atRestCrypto.js` | Not ported |
