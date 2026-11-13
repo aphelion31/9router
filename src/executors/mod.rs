@@ -1,10 +1,12 @@
 //! Streaming upstream transport. Request and response translation are handled separately.
 use anyhow::{Context, bail};
 use serde_json::Value;
+mod azure;
 mod chatgpt_web;
 mod gemini_web;
 mod iflow;
 mod muse_web;
+mod vertex;
 
 #[derive(Debug, Clone)]
 pub struct ExecutorRequest {
@@ -32,12 +34,29 @@ pub async fn execute(
         "muse-web" => return Err(muse_web::unsupported()),
         _ => {}
     }
+    let azure_endpoint =
+        std::env::var("AZURE_ENDPOINT").unwrap_or_else(|_| "https://api.openai.com".into());
+    let vertex_endpoint = "https://aiplatform.googleapis.com";
     let endpoint = request
         .base_url
         .as_deref()
+        .or_else(|| (provider.id == "azure").then_some(azure_endpoint.as_str()))
+        .or_else(|| (provider.id == "vertex").then_some(vertex_endpoint))
         .or(provider.base_url.as_deref())
         .with_context(|| format!("provider {} has no endpoint", provider.id))?;
-    let mut url = reqwest::Url::parse(endpoint).context("invalid upstream URL")?;
+    let mut url = if provider.id == "azure" {
+        azure::url(endpoint, &request.model)?
+    } else if provider.id == "vertex" {
+        vertex::url(
+            endpoint,
+            &request.model,
+            request.stream,
+            request.api_key.as_deref(),
+            request.access_token.as_deref(),
+        )?
+    } else {
+        reqwest::Url::parse(endpoint).context("invalid upstream URL")?
+    };
     if !matches!(url.scheme(), "http" | "https") {
         bail!("upstream URL must use HTTP or HTTPS");
     }
@@ -82,7 +101,24 @@ pub async fn execute(
     if request.stream || provider.id == "codex" {
         builder = builder.header(reqwest::header::ACCEPT, "text/event-stream");
     }
-    if format == "claude" {
+    if provider.id == "azure" {
+        if let Some(key) = request
+            .api_key
+            .as_deref()
+            .or(request.access_token.as_deref())
+            .map(str::to_owned)
+            .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+        {
+            builder = builder.header("api-key", key);
+        }
+        if let Ok(organization) = std::env::var("AZURE_ORGANIZATION") {
+            builder = builder.header("openai-organization", organization);
+        }
+    } else if provider.id == "vertex" {
+        if let Some(token) = request.access_token.as_deref() {
+            builder = builder.bearer_auth(token);
+        }
+    } else if format == "claude" {
         builder = builder.header("anthropic-version", "2023-06-01");
         if let Some(key) = request.api_key.as_deref() {
             builder = builder.header("x-api-key", key);
@@ -130,7 +166,7 @@ mod tests {
         body: Bytes,
     ) -> (StatusCode, String) {
         let value: Value = serde_json::from_slice(&body).unwrap();
-        (StatusCode::TOO_MANY_REQUESTS, json!({"uri":uri.to_string(), "authorization":headers.get("authorization").and_then(|v|v.to_str().ok()), "key":headers.get("x-api-key").or_else(|| headers.get("x-goog-api-key")).and_then(|v|v.to_str().ok()), "version":headers.get("anthropic-version").and_then(|v|v.to_str().ok()), "session":headers.get("session-id").and_then(|v|v.to_str().ok()), "timestamp":headers.get("x-iflow-timestamp").and_then(|v|v.to_str().ok()), "signature":headers.get("x-iflow-signature").and_then(|v|v.to_str().ok()), "body":value}).to_string())
+        (StatusCode::TOO_MANY_REQUESTS, json!({"uri":uri.to_string(), "authorization":headers.get("authorization").and_then(|v|v.to_str().ok()), "key":headers.get("x-api-key").or_else(|| headers.get("x-goog-api-key")).or_else(|| headers.get("api-key")).and_then(|v|v.to_str().ok()), "version":headers.get("anthropic-version").and_then(|v|v.to_str().ok()), "session":headers.get("session-id").and_then(|v|v.to_str().ok()), "timestamp":headers.get("x-iflow-timestamp").and_then(|v|v.to_str().ok()), "signature":headers.get("x-iflow-signature").and_then(|v|v.to_str().ok()), "body":value}).to_string())
     }
 
     #[tokio::test]
@@ -197,6 +233,76 @@ mod tests {
                 _ => assert_eq!(result["authorization"], "Bearer secret"),
             }
         }
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn vertex_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(mock)))
+                .await
+                .unwrap()
+        });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "vertex".into(),
+                model: "model".into(),
+                body: json!({"contents": []}),
+                stream: true,
+                api_key: Some("secret".into()),
+                access_token: None,
+                base_url: Some(url),
+            },
+        )
+        .await
+        .unwrap();
+        let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert!(
+            result["uri"].as_str().unwrap().contains(
+                "/publishers/google/models/model:streamGenerateContent?alt=sse&key=secret"
+            )
+        );
+        assert_eq!(result["authorization"], Value::Null);
+        assert_eq!(result["body"]["contents"], json!([]));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn azure_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(mock)))
+                .await
+                .unwrap()
+        });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "azure".into(),
+                model: "deployment".into(),
+                body: json!({"messages": []}),
+                stream: true,
+                api_key: Some("secret".into()),
+                access_token: None,
+                base_url: Some(url),
+            },
+        )
+        .await
+        .unwrap();
+        let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert!(
+            result["uri"]
+                .as_str()
+                .unwrap()
+                .starts_with("/openai/deployments/deployment/chat/completions?api-version=")
+        );
+        assert_eq!(result["key"], "secret");
+        assert_eq!(result["authorization"], Value::Null);
+        assert_eq!(result["body"]["messages"], json!([]));
         task.abort();
     }
 
