@@ -31,6 +31,7 @@ impl Executor for HttpExecutor {
                     api_key: req.credentials.api_key,
                     access_token: req.credentials.access_token,
                     base_url,
+                    provider_specific_data: Some(req.credentials.provider_specific_data),
                 },
             )
             .await

@@ -20,7 +20,7 @@ Status is deliberately conservative: partial means the upstream executor has beh
 | deepseek-web.js | pending | |
 | default.js | partial | Generic transport exists, provider quirks missing. |
 | devin-cli.js | pending | |
-| gemini-cli.js | pending | |
+| gemini-cli.js | partial | Cloud Code Assist URL, request wrapping, and CLI headers implemented; 429 RetryInfo and token refresh live in oauth/error layers. |
 | gemini-web.js | unsupported | Browser automation required. |
 | github.js | partial | Chat and Claude paths exist. Responses fallback and full response parity missing. |
 | grok-cli.js | pending | |

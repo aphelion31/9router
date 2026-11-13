@@ -4,13 +4,14 @@ use serde_json::Value;
 mod azure;
 pub(crate) mod bedrock;
 mod chatgpt_web;
+mod gemini_cli;
 mod gemini_web;
 mod github;
 mod iflow;
 mod muse_web;
 mod vertex;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ExecutorRequest {
     pub provider: String,
     pub model: String,
@@ -20,6 +21,7 @@ pub struct ExecutorRequest {
     pub access_token: Option<String>,
     /// Overrides the registry endpoint. For Gemini this is the models endpoint.
     pub base_url: Option<String>,
+    pub provider_specific_data: Option<Value>,
 }
 
 /// Sends a translated request and leaves the upstream body unbuffered.
@@ -75,6 +77,8 @@ pub async fn execute(
         .with_context(|| format!("provider {} has no endpoint", provider.id))?;
     let mut url = if provider.id == "azure" {
         azure::url(endpoint, &request.model)?
+    } else if provider.id == "gemini-cli" {
+        gemini_cli::url(endpoint, request.stream)?
     } else if matches!(provider.id.as_str(), "vertex" | "vertex-partner") {
         vertex::url(
             endpoint,
@@ -147,6 +151,16 @@ pub async fn execute(
             .header("x-vscode-user-agent-library-version", "electron-fetch")
             .header("x-initiator", "user")
             .header("anthropic-version", "2023-06-01");
+    }
+    if provider.id == "gemini-cli" {
+        for (name, value) in gemini_cli::prepare(
+            &request.model,
+            &mut request.body,
+            request.stream,
+            request.provider_specific_data.as_ref(),
+        ) {
+            builder = builder.header(name, value);
+        }
     }
     if provider.id == "iflow" {
         for (name, value) in iflow::prepare(
@@ -226,7 +240,11 @@ mod tests {
         body: Bytes,
     ) -> (StatusCode, String) {
         let value: Value = serde_json::from_slice(&body).unwrap();
-        (StatusCode::TOO_MANY_REQUESTS, json!({"uri":uri.to_string(), "authorization":headers.get("authorization").and_then(|v|v.to_str().ok()), "key":headers.get("x-api-key").or_else(|| headers.get("x-goog-api-key")).or_else(|| headers.get("api-key")).and_then(|v|v.to_str().ok()), "version":headers.get("anthropic-version").and_then(|v|v.to_str().ok()), "session":headers.get("session-id").and_then(|v|v.to_str().ok()), "timestamp":headers.get("x-iflow-timestamp").and_then(|v|v.to_str().ok()), "signature":headers.get("x-iflow-signature").and_then(|v|v.to_str().ok()), "body":value}).to_string())
+        let all_headers: serde_json::Map<String, Value> = headers
+            .iter()
+            .filter_map(|(k, v)| v.to_str().ok().map(|s| (k.to_string(), Value::String(s.to_string()))))
+            .collect();
+        (StatusCode::TOO_MANY_REQUESTS, json!({"uri":uri.to_string(), "authorization":headers.get("authorization").and_then(|v|v.to_str().ok()), "key":headers.get("x-api-key").or_else(|| headers.get("x-goog-api-key")).or_else(|| headers.get("api-key")).and_then(|v|v.to_str().ok()), "version":headers.get("anthropic-version").and_then(|v|v.to_str().ok()), "session":headers.get("session-id").and_then(|v|v.to_str().ok()), "timestamp":headers.get("x-iflow-timestamp").and_then(|v|v.to_str().ok()), "signature":headers.get("x-iflow-signature").and_then(|v|v.to_str().ok()), "headers": all_headers, "body":value}).to_string())
     }
 
     #[tokio::test]
@@ -242,6 +260,7 @@ mod tests {
                     api_key: None,
                     access_token: None,
                     base_url: None,
+                    ..Default::default()
                 },
             )
             .await
@@ -271,6 +290,7 @@ mod tests {
                     api_key: Some("secret".into()),
                     access_token: None,
                     base_url: Some(format!("{base}/v1")),
+                    ..Default::default()
                 },
             )
             .await
@@ -320,6 +340,7 @@ mod tests {
                 api_key: None,
                 access_token: None,
                 base_url: Some(url),
+                ..Default::default()
             },
         )
         .await
@@ -359,6 +380,7 @@ mod tests {
                 api_key: Some("secret".into()),
                 access_token: None,
                 base_url: Some(url),
+                ..Default::default()
             },
         )
         .await
@@ -389,6 +411,7 @@ mod tests {
                 api_key: None,
                 access_token: Some("secret".into()),
                 base_url: Some(url),
+                ..Default::default()
             },
         )
         .await
@@ -410,7 +433,7 @@ mod tests {
                 .await
                 .unwrap()
         });
-        let response = execute(&reqwest::Client::new(), ExecutorRequest { provider: "github".into(), model: "gpt-5".into(), body: json!({"max_tokens": 123, "reasoning_effort":"none", "messages": [{"role":"user", "content":[{"type":"thinking", "text":"hello"}]}]}), stream: false, api_key: None, access_token: Some("secret".into()), base_url: Some(url) }).await.unwrap();
+        let response = execute(&reqwest::Client::new(), ExecutorRequest { provider: "github".into(), model: "gpt-5".into(), body: json!({"max_tokens": 123, "reasoning_effort":"none", "messages": [{"role":"user", "content":[{"type":"thinking", "text":"hello"}]}]}), stream: false, api_key: None, access_token: Some("secret".into()), base_url: Some(url), ..Default::default() }).await.unwrap();
         let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
         assert_eq!(result["authorization"], "Bearer secret");
         assert_eq!(result["body"]["max_completion_tokens"], 123);
@@ -438,6 +461,7 @@ mod tests {
                 api_key: None,
                 access_token: None,
                 base_url: Some(url),
+                ..Default::default()
             },
         )
         .await
@@ -467,6 +491,7 @@ mod tests {
                 api_key: Some("secret".into()),
                 access_token: None,
                 base_url: Some(url),
+                ..Default::default()
             },
         )
         .await
@@ -501,6 +526,7 @@ mod tests {
                 api_key: Some("secret".into()),
                 access_token: None,
                 base_url: Some(url),
+                ..Default::default()
             },
         )
         .await
@@ -540,6 +566,7 @@ mod tests {
                 api_key: Some("secret".into()),
                 access_token: None,
                 base_url: Some(url),
+                ..Default::default()
             },
         )
         .await
@@ -560,6 +587,49 @@ mod tests {
             .map(|b| format!("{b:02x}"))
             .collect();
         assert_eq!(result["signature"], expected);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn gemini_cli_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1internal", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(mock)))
+                .await
+                .unwrap()
+        });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "gemini-cli".into(),
+                model: "gemini-2.5-pro".into(),
+                body: json!({"contents": []}),
+                stream: true,
+                access_token: Some("secret-tok".into()),
+                base_url: Some(url),
+                provider_specific_data: Some(json!({"projectId": "proj-123"})),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(result["uri"], "/v1internal:streamGenerateContent?alt=sse");
+        assert_eq!(result["authorization"], "Bearer secret-tok");
+        assert_eq!(result["body"]["project"], "proj-123");
+        assert_eq!(result["body"]["model"], "gemini-2.5-pro");
+        assert_eq!(result["body"]["request"], json!({"contents": []}));
+        assert!(
+            result["headers"]["user-agent"]
+                .as_str()
+                .unwrap()
+                .starts_with("GeminiCLI/0.34.0/gemini-2.5-pro ")
+        );
+        assert_eq!(
+            result["headers"]["x-goog-api-client"],
+            "google-genai-sdk/1.41.0 gl-node/v22.19.0"
+        );
         task.abort();
     }
 }
