@@ -1,5 +1,6 @@
 use crate::{
     api::{ApiKey, KeyAccess, executor::HttpExecutor},
+    dashboard,
     handlers::{
         BoxFuture, Credentials,
         chat::{self, ChatHooks},
@@ -9,9 +10,9 @@ use axum::{
     Json, Router,
     body::Body,
     extract::{OriginalUri, Path, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::{self, Next},
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Redirect, Response},
     routing::{get, post},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -71,11 +72,27 @@ fn make_router(db: Connection, jwt_secret: Option<Vec<u8>>) -> Router {
         .route("/v1/models", get(models))
         .route("/v1beta/models/{*path}", post(gemini))
         .route_layer(middleware::from_fn_with_state(state.clone(), api_auth));
+    let dashboard_pages = Router::new()
+        .route("/dashboard", get(dashboard::overview_page))
+        .route("/dashboard/endpoint", get(dashboard::endpoint_page))
+        .route("/dashboard/providers", get(dashboard::providers_page))
+        .route("/dashboard/combos", get(dashboard::combos_page))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            dashboard_page_auth,
+        ));
     Router::new()
+        .route("/", get(|| async { Redirect::to("/dashboard") }))
+        .route("/login", get(dashboard::login_page))
+        .route("/dashboard/style.css", get(dashboard::style_css))
+        .route("/dashboard/app.js", get(dashboard::app_js))
+        .route("/api/auth/login", post(auth_login))
+        .route("/api/auth/logout", post(auth_logout))
         .route(
             "/api/health",
             get(|| async { Json(json!({"status":"ok"})) }),
         )
+        .merge(dashboard_pages)
         .merge(management)
         .merge(v1)
         .with_state(state)
@@ -88,13 +105,8 @@ fn unauthorized() -> Response {
     )
         .into_response()
 }
-async fn dashboard_auth(
-    State(s): State<AppState>,
-    request: axum::extract::Request,
-    next: Next,
-) -> Response {
-    let token = request
-        .headers()
+fn has_valid_auth_cookie(headers: &HeaderMap, secret: Option<&[u8]>) -> bool {
+    let token = headers
         .get("cookie")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| {
@@ -102,42 +114,101 @@ async fn dashboard_auth(
                 .map(str::trim)
                 .find_map(|c| c.strip_prefix("auth_token="))
         });
-    let valid = token
-        .zip(s.jwt_secret.as_deref())
-        .is_some_and(|(token, secret)| {
-            let parts: Vec<_> = token.split('.').collect();
-            if parts.len() != 3 {
-                return false;
-            }
-            let header: Value = URL_SAFE_NO_PAD
-                .decode(parts[0])
-                .ok()
-                .and_then(|v| serde_json::from_slice(&v).ok())
-                .unwrap_or(Value::Null);
-            let payload: Value = URL_SAFE_NO_PAD
-                .decode(parts[1])
-                .ok()
-                .and_then(|v| serde_json::from_slice(&v).ok())
-                .unwrap_or(Value::Null);
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            header["alg"] == "HS256"
-                && payload["exp"].as_u64().is_some_and(|exp| exp > now)
-                && URL_SAFE_NO_PAD.decode(parts[2]).ok().is_some_and(|sig| {
-                    ring::hmac::verify(
-                        &ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret),
-                        format!("{}.{}", parts[0], parts[1]).as_bytes(),
-                        &sig,
-                    )
-                    .is_ok()
-                })
-        });
-    if !valid {
+    token.zip(secret).is_some_and(|(token, secret)| {
+        let parts: Vec<_> = token.split('.').collect();
+        if parts.len() != 3 {
+            return false;
+        }
+        let header: Value = URL_SAFE_NO_PAD
+            .decode(parts[0])
+            .ok()
+            .and_then(|v| serde_json::from_slice(&v).ok())
+            .unwrap_or(Value::Null);
+        let payload: Value = URL_SAFE_NO_PAD
+            .decode(parts[1])
+            .ok()
+            .and_then(|v| serde_json::from_slice(&v).ok())
+            .unwrap_or(Value::Null);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        header["alg"] == "HS256"
+            && payload["exp"].as_u64().is_some_and(|exp| exp > now)
+            && URL_SAFE_NO_PAD.decode(parts[2]).ok().is_some_and(|sig| {
+                ring::hmac::verify(
+                    &ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret),
+                    format!("{}.{}", parts[0], parts[1]).as_bytes(),
+                    &sig,
+                )
+                .is_ok()
+            })
+    })
+}
+async fn dashboard_auth(
+    State(s): State<AppState>,
+    request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    if !has_valid_auth_cookie(request.headers(), s.jwt_secret.as_deref()) {
         return unauthorized();
     }
     next.run(request).await
+}
+async fn dashboard_page_auth(
+    State(s): State<AppState>,
+    request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    if !has_valid_auth_cookie(request.headers(), s.jwt_secret.as_deref()) {
+        return Redirect::to("/login").into_response();
+    }
+    next.run(request).await
+}
+async fn auth_login(State(s): State<AppState>, Json(body): Json<Value>) -> Response {
+    let Some(password) = body["password"].as_str() else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let ok = s
+        .db
+        .lock()
+        .ok()
+        .is_some_and(|db| dashboard::verify_password(&db, password));
+    if !ok {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Invalid password"})),
+        )
+            .into_response();
+    }
+    let Some(secret) = s.jwt_secret.as_deref() else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "JWT secret not configured"})),
+        )
+            .into_response();
+    };
+    let token = dashboard::issue_auth_token(secret);
+    let Ok(cookie) = HeaderValue::from_str(&dashboard::auth_cookie_header(&token)) else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    (
+        StatusCode::OK,
+        [(header::SET_COOKIE, cookie)],
+        Json(json!({"success": true})),
+    )
+        .into_response()
+}
+async fn auth_logout() -> Response {
+    (
+        StatusCode::OK,
+        [(
+            header::SET_COOKIE,
+            HeaderValue::from_static(dashboard::clear_auth_cookie_header()),
+        )],
+        Json(json!({"success": true})),
+    )
+        .into_response()
 }
 async fn api_auth(
     State(s): State<AppState>,
@@ -504,5 +575,94 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r.status(), 200);
+    }
+    #[tokio::test]
+    async fn dashboard_endpoint_redirects_when_unauthenticated() {
+        let r = test_router()
+            .oneshot(
+                Request::get("/dashboard/endpoint")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(r.status().is_redirection());
+        assert_eq!(r.headers().get("location").unwrap(), "/login");
+    }
+    #[tokio::test]
+    async fn dashboard_endpoint_returns_html_when_authenticated() {
+        let r = test_router()
+            .oneshot(
+                Request::get("/dashboard/endpoint")
+                    .header("cookie", format!("auth_token={}", token()))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let ct = r
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(ct.contains("text/html"));
+        let body = to_bytes(r.into_body(), 100_000).await.unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+        assert!(html.contains("Endpoint &amp; API Keys"));
+    }
+    #[tokio::test]
+    async fn login_sets_auth_cookie_and_allows_dashboard() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&db).unwrap();
+        crate::db::kv_set(&db, "settings", "password", "test-pass").unwrap();
+        let app = make_router(db, Some(b"test-secret".to_vec()));
+
+        let bad = app
+            .clone()
+            .oneshot(
+                Request::post("/api/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"password":"wrong"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bad.status(), 401);
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::post("/api/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"password":"test-pass"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        let cookie = res
+            .headers()
+            .get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert!(cookie.starts_with("auth_token="));
+        assert!(cookie.contains("HttpOnly"));
+        assert!(cookie.contains("SameSite=Lax"));
+
+        let cookie_pair = cookie.split(';').next().unwrap();
+        let page = app
+            .oneshot(
+                Request::get("/dashboard/endpoint")
+                    .header("cookie", cookie_pair)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.status(), 200);
     }
 }

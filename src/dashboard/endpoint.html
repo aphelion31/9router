@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Endpoint &amp; Keys — 9Router</title>
+  <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body data-page="endpoint">
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">9</span>
+        <span>9Router</span>
+      </div>
+      <nav aria-label="Main navigation">
+        <ul class="nav-list">
+          <li><a class="nav-link" href="/dashboard">Dashboard</a></li>
+          <li><a class="nav-link" href="/dashboard/endpoint" aria-current="page">Endpoint &amp; Key</a></li>
+          <li><a class="nav-link" href="/dashboard/providers">Providers</a></li>
+          <li><a class="nav-link" href="/dashboard/combos">Combos</a></li>
+        </ul>
+      </nav>
+      <div class="sidebar-footer">
+        <button id="logout-btn" type="button" class="btn" style="width:100%">Sign out</button>
+      </div>
+    </aside>
+    <main class="main">
+      <div id="error-banner" class="banner banner-error hidden" role="alert" aria-live="polite"></div>
+      <header class="page-header">
+        <div>
+          <h1 class="page-title">Endpoint &amp; API Keys</h1>
+          <p class="page-subtitle">OpenAI-compatible base URL and client API keys</p>
+        </div>
+      </header>
+
+      <section class="card" aria-labelledby="endpoint-heading">
+        <h2 id="endpoint-heading" class="card-title">API Endpoint</h2>
+        <div class="row">
+          <code id="base-url" class="code-box mono">/v1</code>
+          <button id="copy-base-url" type="button" class="btn">Copy URL</button>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="create-key-heading">
+        <h2 id="create-key-heading" class="card-title">Create API Key</h2>
+        <form id="create-key-form" class="row" style="align-items:flex-end">
+          <div class="field" style="margin-bottom:0;flex:1;min-width:200px">
+            <label for="key-name">Key Name</label>
+            <input id="key-name" name="name" type="text" placeholder="e.g. local-dev" required>
+          </div>
+          <button type="submit" class="btn btn-primary">Create Key</button>
+        </form>
+        <div id="created-key-box" class="banner banner-success hidden" style="margin-top:14px;margin-bottom:0" role="status" aria-live="polite">
+          <span>New key: <code id="created-key-value" class="mono"></code></span>
+          <button id="copy-created-key" type="button" class="btn btn-sm">Copy</button>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="keys-heading">
+        <h2 id="keys-heading" class="card-title">API Keys</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Key</th>
+                <th>Status</th>
+                <th>Access</th>
+                <th>Quota / Limits</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="keys-tbody">
+              <tr><td colspan="6" class="mono">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="/dashboard/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign In — 9Router</title>
+  <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body data-page="login">
+  <main class="login-shell">
+    <section class="card login-card" aria-labelledby="login-heading">
+      <div class="brand" style="padding-left:0">
+        <span class="brand-mark" aria-hidden="true">9</span>
+        <span>9Router</span>
+      </div>
+      <h1 id="login-heading" class="page-title" style="margin-bottom:6px">Sign in</h1>
+      <p class="page-subtitle" style="margin-bottom:18px">Enter your dashboard password to continue.</p>
+      <div id="login-error" class="banner banner-error hidden" role="alert" aria-live="polite"></div>
+      <form id="login-form">
+        <div class="field">
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+        </div>
+        <button id="login-btn" type="submit" class="btn btn-primary" style="width:100%">Sign in</button>
+      </form>
+    </section>
+  </main>
+  <script src="/dashboard/app.js"></script>
+</body>
+</html>
