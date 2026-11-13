@@ -8,6 +8,7 @@ mod oauth;
 mod providers;
 mod routing;
 mod server;
+mod services;
 mod translator;
 
 const USAGE: &str = "\
