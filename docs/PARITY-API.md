@@ -45,9 +45,9 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `
 | /api/cli-tools/opencode-settings | DELETE, GET, PATCH, POST | done |
 | /api/cli-tools/pi-settings | DELETE, GET, POST | done |
 | /api/cli-tools/smelt-settings | DELETE, GET, POST | done |
-| /api/combos/[id]/references | GET | partial |
-| /api/combos/[id] | DELETE, GET, PUT | partial |
-| /api/combos | GET, POST | partial |
+| /api/combos/[id]/references | GET | done |
+| /api/combos/[id] | DELETE, GET, PUT | done |
+| /api/combos | GET, POST | done |
 | /api/headroom/extras | DELETE, GET, POST | 501 |
 | /api/headroom/proxy/[...path] | (verify manually) | done |
 | /api/headroom/restart | POST | 501 |

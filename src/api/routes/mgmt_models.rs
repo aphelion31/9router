@@ -17,7 +17,7 @@ async fn unavailable() -> Response {
 }
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/api/combos", post(create))
+        .route("/api/combos", get(list_combos).post(create))
         .route(
             "/api/combos/{id}",
             get(get_combo).put(update).delete(delete),
@@ -306,6 +306,32 @@ fn validate(v: &Value, create: bool) -> Option<&'static str> {
     }
     None
 }
+async fn list_combos(State(s): State<AppState>) -> Response {
+    let Ok(db) = s.db.lock() else {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "Failed to fetch combos");
+    };
+    let result = (|| -> rusqlite::Result<Vec<Value>> {
+        let mut st = db.prepare(
+            "SELECT id,name,kind,models,createdAt,updatedAt FROM combos ORDER BY createdAt",
+        )?;
+        let rows = st.query_map([], |r| {
+            let raw: String = r.get(3)?;
+            Ok(json!({
+                "id": r.get::<_, String>(0)?,
+                "name": r.get::<_, String>(1)?,
+                "kind": r.get::<_, Option<String>>(2)?,
+                "models": serde_json::from_str::<Value>(&raw).unwrap_or(json!([])),
+                "createdAt": r.get::<_, String>(4)?,
+                "updatedAt": r.get::<_, String>(5)?,
+            }))
+        })?;
+        rows.collect()
+    })();
+    match result {
+        Ok(combos) => Json(json!({ "combos": combos })).into_response(),
+        Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "Failed to fetch combos"),
+    }
+}
 async fn create(State(s): State<AppState>, Json(body): Json<Value>) -> Response {
     if let Some(e) = validate(&body, true) {
         return err(StatusCode::BAD_REQUEST, e);
@@ -491,6 +517,7 @@ mod tests {
             serde_json::from_slice(&to_bytes(response.into_body(), 10000).await.unwrap()).unwrap();
         assert_eq!(body["models"], json!(["node1/model", "other/model"]));
         let response = app
+            .clone()
             .oneshot(
                 Request::get(format!("/api/combos/{}", body["id"].as_str().unwrap()))
                     .body(Body::empty())
@@ -502,5 +529,65 @@ mod tests {
         let body: Value =
             serde_json::from_slice(&to_bytes(response.into_body(), 10000).await.unwrap()).unwrap();
         assert_eq!(body["models"][0], "node1/model");
+
+        let combo_id = body["id"].as_str().unwrap().to_string();
+
+        let response = app
+            .clone()
+            .oneshot(Request::get("/api/combos").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let list_body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 10000).await.unwrap()).unwrap();
+        assert_eq!(list_body["combos"].as_array().unwrap().len(), 1);
+        assert_eq!(list_body["combos"][0]["id"], combo_id);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::put(format!("/api/combos/{combo_id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"name":"test2","models":["custom/m2"]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let upd: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 10000).await.unwrap()).unwrap();
+        assert_eq!(upd["name"], "test2");
+        assert_eq!(upd["models"], json!(["node1/m2"]));
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/combos/{combo_id}/references"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let refs: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 10000).await.unwrap()).unwrap();
+        assert_eq!(refs["name"], "test2");
+        assert_eq!(refs["references"]["keys"], json!([]));
+        assert_eq!(refs["references"]["aliases"], json!([]));
+
+        let response = app
+            .oneshot(
+                Request::delete(format!("/api/combos/{combo_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let del: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 10000).await.unwrap()).unwrap();
+        assert_eq!(del["success"], true);
     }
 }
