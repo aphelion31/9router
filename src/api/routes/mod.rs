@@ -7,6 +7,7 @@ use crate::server::AppState;
 mod tools_headroom;
 mod tools_media_providers;
 mod tools_prompt_injection;
+mod tools_proxy_pools;
 mod tools_pxpipe;
 mod tools_token_saver;
 mod tools_translator;
@@ -19,6 +20,7 @@ pub fn management() -> Router<AppState> {
         .merge(tools_headroom::router())
         .merge(tools_pxpipe::router())
         .merge(tools_translator::router())
+        .merge(tools_proxy_pools::router())
 }
 
 pub fn v1() -> Router<AppState> {

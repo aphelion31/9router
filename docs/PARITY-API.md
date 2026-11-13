@@ -116,15 +116,15 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` depends on an
 | /api/providers/test-batch/stop | POST | todo |
 | /api/providers/validate | POST | todo |
 | /api/providers/web-login | DELETE, GET, POST | todo |
-| /api/proxy-pools/[id] | DELETE, GET, PUT | todo |
-| /api/proxy-pools/[id]/test | POST | todo |
-| /api/proxy-pools/cloudflare-deploy | POST | todo |
-| /api/proxy-pools/delete-failed | POST | todo |
-| /api/proxy-pools/deno-deploy | POST | todo |
-| /api/proxy-pools/netlify-deploy | POST | todo |
-| /api/proxy-pools | GET, POST | todo |
-| /api/proxy-pools/test-all | GET, POST | todo |
-| /api/proxy-pools/vercel-deploy | POST | todo |
+| /api/proxy-pools/[id] | DELETE, GET, PUT | done |
+| /api/proxy-pools/[id]/test | POST | done |
+| /api/proxy-pools/cloudflare-deploy | POST | 501 |
+| /api/proxy-pools/delete-failed | POST | done |
+| /api/proxy-pools/deno-deploy | POST | 501 |
+| /api/proxy-pools/netlify-deploy | POST | 501 |
+| /api/proxy-pools | GET, POST | done |
+| /api/proxy-pools/test-all | GET, POST | done |
+| /api/proxy-pools/vercel-deploy | POST | 501 |
 | /api/pxpipe/health | POST | done |
 | /api/pxpipe/install | POST | 501 |
 | /api/pxpipe/logs | GET | done |
