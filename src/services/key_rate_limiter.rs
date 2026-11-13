@@ -67,16 +67,6 @@ fn count(entry: &Entry, now: u64, window: u64) -> usize {
         .count()
 }
 impl KeyRateLimiter {
-    pub fn peek(&self, key: &str, limits: Limits, now: u64) -> Option<Verdict> {
-        if key.is_empty() {
-            return None;
-        }
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let entry = state.keys.get_mut(key)?;
-        prune(entry, now);
-        Self::check(entry, limits, now)
-    }
-
     fn check(entry: &Entry, limits: Limits, now: u64) -> Option<Verdict> {
         if limits.max_concurrent > 0 && entry.slots.len() >= limits.max_concurrent {
             return Some(Verdict {
@@ -230,16 +220,16 @@ mod tests {
             ..Limits::default()
         };
         assert_eq!(
-            limiter.peek("key", limits, 1000).unwrap().kind,
+            limiter.try_admit("key", limits, 1000).err().unwrap().kind,
             "concurrency"
         );
         slot.release();
         slot.release();
         assert_eq!(
-            limiter.peek("key", limits, 1000).unwrap().retry_after_sec,
+            limiter.try_admit("key", limits, 1000).err().unwrap().retry_after_sec,
             60
         );
-        assert!(limiter.peek("key", limits, 61_000).is_none());
+        drop(limiter.try_admit("key", limits, 61_000).unwrap());
         let _leaked = limiter.admit("key", 100_000);
         assert_eq!(limiter.usage("key", 100_000 + SLOT_TTL).in_flight, 0);
     }

@@ -144,7 +144,7 @@ pub async fn get_usage(
                             .bytes()
                             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
                     {
-                        let request = json!({"version":1,"requestId":super::request_id().unwrap_or_default(),"capability":cap,"method":"lease","minValidityMs":300000});
+                        let request = json!({"version":crate::services::minimax_code_lease::AUTH_LEASE_PROTOCOL_VERSION,"requestId":super::request_id().unwrap_or_default(),"capability":cap,"method":"lease","minValidityMs":crate::services::minimax_code_lease::AUTH_LEASE_MAX_MIN_VALIDITY_MS});
                         if let Ok(reply) = crate::services::minimax_code_lease::broker_call(
                             &dir,
                             &request,
