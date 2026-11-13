@@ -63,8 +63,8 @@ Status: **in progress**. Partial entries cover only the functions named, not ful
 
 | JavaScript source | Status |
 | --- | --- |
-| `open-sse/utils/awsEventStream.js` | Partial: CRC and frame decoding, no encoder |
-| `open-sse/utils/claudeSignature.js` | Partial: signature validation |
+| `open-sse/utils/awsEventStream.js` | Ported: CRC, frame decoding and test encoder (`services::aws_event_stream`) |
+| `open-sse/utils/claudeSignature.js` | Ported: E and R form validation (`services::claude_signature`) |
 | `open-sse/utils/clientDetector.js` | Ported: client detection and native pairs |
 | `open-sse/utils/geminiCookies.js` | Ported: cookie normalization |
 | `open-sse/utils/modelMarkers.js` | Ported: context marker stripping |
