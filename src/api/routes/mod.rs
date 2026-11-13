@@ -1,15 +1,31 @@
 //! Ported 9router-pro API routes. Add one file per route group and merge it below.
 //! `management()` is wrapped in dashboard auth, `v1()` in API-key auth (see server.rs).
-use axum::Router;
+use axum::{
+    Json, Router,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
+use serde_json::json;
 
 use crate::server::AppState;
+
+mod v1_count_tokens;
 
 pub fn management() -> Router<AppState> {
     Router::new()
 }
 
 pub fn v1() -> Router<AppState> {
-    Router::new()
+    Router::new().merge(v1_count_tokens::router())
+}
+
+/// 501 for routes whose upstream service is not ported yet.
+pub(crate) fn not_available() -> Response {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(json!({"error":"not available"})),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
