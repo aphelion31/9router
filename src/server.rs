@@ -65,7 +65,6 @@ fn make_router_with_db(
             "/api/keys/{id}",
             get(key).put(update_key).delete(delete_key),
         )
-        .route("/api/providers", get(providers))
         .route("/api/combos", get(combos))
         .route("/api/usage", get(usage))
         .merge(crate::api::routes::management())
