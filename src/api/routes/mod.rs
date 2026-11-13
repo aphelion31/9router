@@ -11,3 +11,43 @@ pub fn management() -> Router<AppState> {
 pub fn v1() -> Router<AppState> {
     Router::new()
 }
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use crate::server::AppState;
+    use axum::{
+        Router,
+        body::{Body, to_bytes},
+        http::{Request, StatusCode},
+    };
+    use rusqlite::Connection;
+    use serde_json::Value;
+    use std::sync::{Arc, Mutex};
+    use tower::ServiceExt;
+
+    /// v1 router over an in-memory DB with one active key `sk-test` ("Test key", id `k1`).
+    pub fn app() -> (Router, Arc<Mutex<Connection>>) {
+        let db = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&db).unwrap();
+        db.execute(
+            "INSERT INTO apiKeys(id,key,name,createdAt,isActive,accessRestricted,accessAllow) \
+             VALUES('k1','sk-test','Test key','2026-01-01T00:00:00.000Z',1,0,'[]')",
+            [],
+        )
+        .unwrap();
+        let db = Arc::new(Mutex::new(db));
+        let state = AppState {
+            db: Arc::clone(&db),
+            executor: Arc::new(crate::api::executor::HttpExecutor(reqwest::Client::new())),
+            jwt_secret: None,
+        };
+        (super::v1().with_state(state), db)
+    }
+
+    pub async fn call(app: Router, req: Request<Body>) -> (StatusCode, Value) {
+        let res = app.oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+}
