@@ -8,6 +8,7 @@ mod gemini_web;
 mod github;
 mod iflow;
 mod kimchi;
+mod mimo_free;
 mod minimax_code;
 mod muse_web;
 mod opencode;
@@ -80,6 +81,9 @@ pub async fn execute(
         })
         .or(provider.base_url.as_deref())
         .with_context(|| format!("provider {} has no endpoint", provider.id))?;
+    if provider.id == "mimo-free" {
+        return mimo_free::execute(client, endpoint, &mut request.body, request.stream).await;
+    }
     let responses = matches!(provider.id.as_str(), "opencode-go" | "opencode-zen")
         && opencode_go::is_responses(&provider.id, &request.model);
     let mut url = if responses {
