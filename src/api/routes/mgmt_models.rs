@@ -17,7 +17,7 @@ async fn unavailable() -> Response {
 }
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/api/combos", post(create))
+        .route("/api/combos", get(list_combos).post(create))
         .route(
             "/api/combos/{id}",
             get(get_combo).put(update).delete(delete),
@@ -227,6 +227,60 @@ async fn disabled_delete(
 fn combo(db: &rusqlite::Connection, id: &str) -> rusqlite::Result<Option<Value>> {
     db.query_row("SELECT id,name,kind,models,createdAt,updatedAt FROM combos WHERE id=?1",[id],|r|{let raw:String=r.get(3)?;Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"kind":r.get::<_,Option<String>>(2)?,"models":serde_json::from_str::<Value>(&raw).unwrap_or(json!([])),"createdAt":r.get::<_,String>(4)?,"updatedAt":r.get::<_,String>(5)?}))}).optional()
 }
+async fn list_combos(State(s): State<AppState>) -> Response {
+    let Ok(db) = s.db.lock() else {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "Failed to fetch combos");
+    };
+    let result = (|| -> rusqlite::Result<Vec<Value>> {
+        let mut stmt = db.prepare("SELECT id FROM combos ORDER BY createdAt ASC")?;
+        let ids = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut combos = Vec::new();
+        for id in ids {
+            if let Some(value) = combo(&db, &id?)? {
+                combos.push(value);
+            }
+        }
+        Ok(combos)
+    })();
+    match result {
+        Ok(combos) => Json(json!({"combos":combos})).into_response(),
+        Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "Failed to fetch combos"),
+    }
+}
+
+fn normalize_members(db: &rusqlite::Connection, models: &Value) -> Value {
+    let nodes = (|| -> rusqlite::Result<Vec<(String, String)>> {
+        let mut stmt = db.prepare("SELECT id,data FROM providerNodes")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        rows.collect()
+    })()
+    .unwrap_or_default();
+    let mut models = models.clone();
+    if let Some(members) = models.as_array_mut() {
+        for member in members {
+            let Some((prefix, rest)) = member.as_str().and_then(|s| s.split_once('/')) else {
+                continue;
+            };
+            if prefix.is_empty() || nodes.iter().any(|(id, _)| id == prefix) {
+                continue;
+            }
+            let matches: Vec<_> = nodes
+                .iter()
+                .filter(|(_, data)| {
+                    serde_json::from_str::<Value>(data)
+                        .ok()
+                        .and_then(|v| v["prefix"].as_str().map(str::to_owned))
+                        .as_deref()
+                        == Some(prefix)
+                })
+                .collect();
+            if let [node] = matches.as_slice() {
+                *member = json!(format!("{}/{rest}", node.0));
+            }
+        }
+    }
+    models
+}
 fn validate(v: &Value, create: bool) -> Option<&'static str> {
     if create && v["name"].as_str().is_none_or(|s| s.is_empty()) {
         return Some("Name is required");
@@ -295,7 +349,8 @@ async fn create(State(s): State<AppState>, Json(body): Json<Value>) -> Response 
         );
     }
     let id = crate::server::uuid_like();
-    let r=db.execute("INSERT INTO combos(id,name,kind,models,createdAt,updatedAt) VALUES(?1,?2,?3,?4,strftime('%Y-%m-%dT%H:%M:%fZ','now'),strftime('%Y-%m-%dT%H:%M:%fZ','now'))",params![id,name,body["kind"].as_str(),body["models"].to_string()]);
+    let models = normalize_members(&db, &body["models"]);
+    let r=db.execute("INSERT INTO combos(id,name,kind,models,createdAt,updatedAt) VALUES(?1,?2,?3,?4,strftime('%Y-%m-%dT%H:%M:%fZ','now'),strftime('%Y-%m-%dT%H:%M:%fZ','now'))",params![id,name,body["kind"].as_str(),models.to_string()]);
     if let Err(e) = r {
         return if matches!(e,rusqlite::Error::SqliteFailure(ref x,_) if x.code==rusqlite::ErrorCode::ConstraintViolation)
         {
@@ -355,6 +410,9 @@ async fn update(
         if let Some(x) = body.get(k) {
             v[k] = x.clone()
         }
+    }
+    if body.get("models").is_some() {
+        v["models"] = normalize_members(&db, &v["models"]);
     }
     match db.execute("UPDATE combos SET name=?1,kind=?2,models=?3,updatedAt=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?4",params![v["name"].as_str(),v["kind"].as_str(),v["models"].to_string(),id]){Ok(_)=>match combo(&db,&id){Ok(Some(v))=>Json(v).into_response(),_=>err(StatusCode::INTERNAL_SERVER_ERROR,"Failed to update combo")},Err(rusqlite::Error::SqliteFailure(x,_)) if x.code==rusqlite::ErrorCode::ConstraintViolation=>err(StatusCode::BAD_REQUEST,"Combo name already exists"),Err(_)=>err(StatusCode::INTERNAL_SERVER_ERROR,"Failed to update combo")}
 }
@@ -418,5 +476,48 @@ async fn alias_delete(
     ) {
         Ok(_) => Json(json!({"success":true})).into_response(),
         Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "Failed to delete alias"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::{Body, to_bytes},
+        http::Request,
+    };
+    use std::sync::{Arc, Mutex};
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn combos_normalize_and_list() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrate(&db).unwrap();
+        db.execute("INSERT INTO providerNodes(id,type,name,data,createdAt,updatedAt) VALUES('node1','openai-compatible','Node',?1,'now','now')", [json!({"prefix":"custom"}).to_string()]).unwrap();
+        let state = AppState {
+            db: Arc::new(Mutex::new(db)),
+            executor: Arc::new(crate::api::executor::HttpExecutor(reqwest::Client::new())),
+            jwt_secret: None,
+        };
+        let app = routes().with_state(state);
+        let request = Request::post("/api/combos")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"name":"test","models":["custom/model","other/model"]}"#,
+            ))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 10000).await.unwrap()).unwrap();
+        assert_eq!(body["models"], json!(["node1/model", "other/model"]));
+        let response = app
+            .oneshot(Request::get("/api/combos").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 10000).await.unwrap()).unwrap();
+        assert_eq!(body["combos"][0]["models"][0], "node1/model");
     }
 }
