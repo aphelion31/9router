@@ -363,7 +363,8 @@ async fn create_connection(State(s): State<AppState>, Json(body): Json<Value>) -
         "connectionNoProxy".into(),
         json!(body["connectionNoProxy"].as_str().unwrap_or("").trim()),
     );
-    let data = json!({"apiKey":key,"defaultModel":body["defaultModel"],"globalPriority":body["globalPriority"],"testStatus":body["testStatus"].as_str().unwrap_or("unknown"),"providerSpecificData":specific});
+    let mut data = json!({"apiKey":key,"defaultModel":body["defaultModel"],"globalPriority":body["globalPriority"],"testStatus":body["testStatus"].as_str().unwrap_or("unknown"),"providerSpecificData":specific});
+    crate::crypto::encrypt_fields(&mut data);
     let id = crate::server::uuid_like();
     if db.execute("INSERT INTO providerConnections(id,provider,authType,name,priority,isActive,data,createdAt,updatedAt) VALUES(?1,?2,'apikey',?3,?4,1,?5,strftime('%Y-%m-%dT%H:%M:%fZ','now'),strftime('%Y-%m-%dT%H:%M:%fZ','now'))",params![id,provider,name,body["priority"].as_i64().unwrap_or(1),data.to_string()]).is_err(){return err(StatusCode::INTERNAL_SERVER_ERROR,"Failed to create connection")}
     match connection(&db, &id) {
@@ -574,7 +575,7 @@ async fn validate_node(Json(body): Json<Value>) -> Response {
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"valid":false,"error":"DNS lookup failed - invalid domain or network issue"}))).into_response();
     };
     let addrs: Vec<_> = addrs.collect();
-    if addrs.is_empty() || addrs.iter().any(|a| !public_address(a.ip())) {
+    if addrs.is_empty() || addrs.iter().any(|a| !crate::ssrf::public_address(a.ip())) {
         return err(StatusCode::BAD_REQUEST, "URL not allowed");
     }
     let Ok(client) = reqwest::Client::builder()
@@ -678,32 +679,6 @@ async fn validate_node(Json(body): Json<Value>) -> Response {
         _ => format!("Unexpected response ({status})"),
     };
     Json(json!({"valid":false,"error":message})).into_response()
-}
-
-fn public_address(ip: std::net::IpAddr) -> bool {
-    match ip {
-        std::net::IpAddr::V4(ip) => {
-            !(ip.is_private()
-                || ip.is_loopback()
-                || ip.is_link_local()
-                || ip.is_unspecified()
-                || ip.is_broadcast()
-                || ip.is_multicast()
-                || ip.octets()[0] == 0
-                || ip.octets()[0] >= 224
-                || (ip.octets()[0] == 100 && (64..=127).contains(&ip.octets()[1])))
-        }
-        std::net::IpAddr::V6(ip) => {
-            if let Some(v4) = ip.to_ipv4_mapped() {
-                return public_address(v4.into());
-            }
-            !(ip.is_loopback()
-                || ip.is_unspecified()
-                || ip.is_multicast()
-                || (ip.segments()[0] & 0xfe00) == 0xfc00
-                || (ip.segments()[0] & 0xffc0) == 0xfe80)
-        }
-    }
 }
 
 fn canonical_provider_id(id: &str) -> String {

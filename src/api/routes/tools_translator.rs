@@ -222,7 +222,7 @@ fn has_active_connection(state: &AppState, provider: &str) -> Option<Value> {
         .optional()
         .ok()
         .flatten();
-    data_str.and_then(|s| serde_json::from_str::<Value>(&s).ok())
+    data_str.and_then(|s| crate::crypto::parse_data(&s))
 }
 
 async fn translate(State(s): State<AppState>, Json(req): Json<Value>) -> Response {

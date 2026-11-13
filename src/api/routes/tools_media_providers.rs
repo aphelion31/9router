@@ -56,7 +56,7 @@ fn get_active_api_key(state: &AppState, provider: &str) -> Option<String> {
         .ok()
         .flatten();
     data_str
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|s| crate::crypto::parse_data(&s))
         .and_then(|v| v["apiKey"].as_str().map(str::to_owned))
         .filter(|k| !k.is_empty())
 }

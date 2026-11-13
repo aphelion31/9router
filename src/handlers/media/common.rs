@@ -77,7 +77,7 @@ pub fn resolve_credentials(state: &AppState, provider: &str) -> Option<Credentia
         })
         .ok()?;
     let (id, name, data_str) = rows.next()?.ok()?;
-    let data: Value = serde_json::from_str(&data_str).unwrap_or(Value::Null);
+    let data: Value = crate::crypto::parse_data(&data_str).unwrap_or(Value::Null);
     let access_token = data["accessToken"]
         .as_str()
         .filter(|s| !s.is_empty())
