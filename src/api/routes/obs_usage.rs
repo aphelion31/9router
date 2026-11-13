@@ -1028,7 +1028,7 @@ fn load_conn(db: &Connection, id: &str) -> Option<(String, String, i64, Value)> 
         [id],
         |r| {
             let ds: String = r.get(3)?;
-            let data: Value = serde_json::from_str(&ds).unwrap_or(json!({}));
+            let data: Value = crate::crypto::parse_data(&ds).unwrap_or(json!({}));
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, data))
         },
     )

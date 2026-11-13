@@ -126,6 +126,7 @@ pub(crate) fn save_oauth_connection(
         data["displayName"] = json!(dn);
     }
 
+    crate::crypto::encrypt_fields(&mut data);
     db.execute(
         "INSERT INTO providerConnections(id, provider, authType, name, email, isActive, createdAt, updatedAt, data)
          VALUES(?1, ?2, ?3, ?4, ?5, 1, ?6, ?6, ?7)",

@@ -291,7 +291,7 @@ async fn models(State(state): State<AppState>) -> Json<Value> {
         let mut stmt = db.prepare("SELECT id,provider,data FROM providerConnections WHERE isActive=1 ORDER BY priority ASC").ok()?;
         let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))).ok()?;
         Some(rows.flatten().filter_map(|(id, provider, raw)| {
-            let mut data: Value = serde_json::from_str(&raw).ok()?;
+            let mut data: Value = crate::crypto::parse_data(&raw)?;
             data.as_object_mut()?.insert("id".into(), json!(id));
             data.as_object_mut()?.insert("provider".into(), json!(provider));
             Some((provider, data))
@@ -404,33 +404,38 @@ impl ChatHooks for Hooks {
         excluded: &'a HashSet<String>,
     ) -> BoxFuture<'a, Option<Credentials>> {
         Box::pin(async move {
-            let db = self.state.db.lock().ok()?;
-            let mut st=db.prepare("SELECT id,name,data FROM providerConnections WHERE provider=?1 AND isActive=1 ORDER BY priority ASC").ok()?;
-            let rows = st
-                .query_map([provider], |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, Option<String>>(1)?,
-                        r.get::<_, String>(2)?,
-                    ))
-                })
-                .ok()?;
-            for row in rows.flatten() {
-                if excluded.contains(&row.0) {
-                    continue;
+            let candidate = {
+                let db = self.state.db.lock().ok()?;
+                let mut st = db.prepare("SELECT id,name,data FROM providerConnections WHERE provider=?1 AND isActive=1 ORDER BY priority ASC").ok()?;
+                let rows = st
+                    .query_map([provider], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?)))
+                    .ok()?;
+                rows.flatten().find(|row| !excluded.contains(&row.0))?
+            };
+            let mut data: Value = crate::crypto::parse_data(&candidate.2)?;
+            // Proactive refresh like upstream checkAndRefreshToken. On failure keep the old token
+            // so the request still reaches upstream and the 401 fallback path can run.
+            if data["refreshToken"].is_string()
+                && data["expiresAt"].is_string()
+                && crate::oauth::provider(provider).is_some()
+                && let Ok(path) = crate::db::data_file()
+            {
+                let conn = crate::oauth::Connection { id: candidate.0.clone(), provider: provider.to_owned(), data: data.clone(), db_path: path };
+                match crate::oauth::refresh_if_needed(conn).await {
+                    Ok(c) => data = c.data,
+                    Err(e) => tracing::warn!("oauth refresh for {} failed: {e}", candidate.0),
                 }
-                let data: Value = serde_json::from_str(&row.2).ok()?;
-                return Some(Credentials {
-                    connection_id: row.0,
-                    connection_name: row.1,
-                    access_token: data["accessToken"].as_str().map(str::to_owned),
-                    refresh_token: data["refreshToken"].as_str().map(str::to_owned),
-                    api_key: data["apiKey"].as_str().map(str::to_owned),
-                    provider_specific_data: data["providerSpecificData"].clone(),
-                    ..Default::default()
-                });
             }
-            None
+            Some(Credentials {
+                connection_id: candidate.0,
+                connection_name: candidate.1,
+                access_token: data["accessToken"].as_str().map(str::to_owned),
+                refresh_token: data["refreshToken"].as_str().map(str::to_owned),
+                api_key: data["apiKey"].as_str().map(str::to_owned),
+                expires_at: data["expiresAt"].as_str().map(str::to_owned),
+                provider_specific_data: data["providerSpecificData"].clone(),
+                ..Default::default()
+            })
         })
     }
     fn get_token_saver_config<'a>(&'a self, model: &'a str) -> BoxFuture<'a, Option<crate::handlers::chat_core::TokenSaverConfig>> {
@@ -894,6 +899,30 @@ mod tests {
         }
     }
     #[tokio::test]
+    async fn login_locks_out_after_five_failures() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&db).unwrap();
+        crate::db::kv_set(&db, "settings", "password", "test-pass").unwrap();
+        let app = make_router(db, Some(b"test-secret".to_vec()));
+        let attempt = |pw: &'static str| {
+            app.clone().oneshot(
+                Request::post("/api/auth/login")
+                    .header("content-type", "application/json")
+                    .header("cf-connecting-ip", "198.51.100.2")
+                    .body(Body::from(format!(r#"{{"password":"{pw}"}}"#)))
+                    .unwrap(),
+            )
+        };
+        for _ in 0..4 {
+            assert_eq!(attempt("wrong").await.unwrap().status(), 401);
+        }
+        let locked = attempt("wrong").await.unwrap();
+        assert_eq!(locked.status(), 429);
+        assert_eq!(locked.headers()["retry-after"], "30");
+        // Correct password is still refused while locked.
+        assert_eq!(attempt("test-pass").await.unwrap().status(), 429);
+    }
+    #[tokio::test]
     async fn login_sets_auth_cookie_and_allows_dashboard() {
         let db = Connection::open_in_memory().unwrap();
         crate::db::migrate(&db).unwrap();
@@ -905,6 +934,7 @@ mod tests {
             .oneshot(
                 Request::post("/api/auth/login")
                     .header("content-type", "application/json")
+                    .header("cf-connecting-ip", "198.51.100.1")
                     .body(Body::from(r#"{"password":"wrong"}"#))
                     .unwrap(),
             )
@@ -917,6 +947,7 @@ mod tests {
             .oneshot(
                 Request::post("/api/auth/login")
                     .header("content-type", "application/json")
+                    .header("cf-connecting-ip", "198.51.100.1")
                     .body(Body::from(r#"{"password":"test-pass"}"#))
                     .unwrap(),
             )

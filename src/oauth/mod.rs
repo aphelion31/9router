@@ -2,7 +2,7 @@
 use anyhow::{Context, Result, bail, ensure};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::path::PathBuf;
 
 #[derive(Clone)]
@@ -345,7 +345,7 @@ pub fn load(db_path: PathBuf, id: &str) -> Result<Option<Connection>> {
         Ok(Connection {
             id: id.into(),
             provider,
-            data: serde_json::from_str(&data)?,
+            data: crate::crypto::parse_data(&data).context("invalid connection data")?,
             db_path,
         })
     })
@@ -385,13 +385,29 @@ async fn refresh_with_config(mut conn: Connection, config: &Config) -> Result<Co
     let new = refresh_token(config, &old_refresh).await?;
     let db = crate::db::open(&conn.db_path)?;
     // Compare-and-swap prevents overwriting changes made while the request was in flight.
-    let updated = db.execute("UPDATE providerConnections SET data=json_set(data, '$.accessToken', ?1, '$.refreshToken', ?2, '$.expiresAt', CASE WHEN ?3 IS NULL THEN NULL ELSE strftime('%Y-%m-%dT%H:%M:%fZ','now', printf('+%d seconds', ?3)) END), updatedAt=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?4 AND json_extract(data,'$.refreshToken')=?5", params![new.access_token, new.refresh_token.as_deref().unwrap_or(&old_refresh), new.expires_in, conn.id, old_refresh])?;
-    ensure!(updated == 1, "connection changed during OAuth refresh");
-    conn.data = serde_json::from_str(&db.query_row(
-        "SELECT data FROM providerConnections WHERE id=?1",
-        [&conn.id],
-        |r| r.get::<_, String>(0),
-    )?)?;
+    // Compare in Rust: the stored refresh token may be an encrypted envelope.
+    let current = load(conn.db_path.clone(), &conn.id)?.context("connection not found")?;
+    ensure!(
+        current.data["refreshToken"].as_str() == Some(old_refresh.as_str()),
+        "connection changed during OAuth refresh"
+    );
+    let mut data = current.data;
+    data["accessToken"] = json!(new.access_token);
+    data["refreshToken"] = json!(new.refresh_token.as_deref().unwrap_or(&old_refresh));
+    data["expiresAt"] = match new.expires_in {
+        Some(s) => json!(db.query_row(
+            "SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now', printf('+%d seconds', ?1))",
+            [s],
+            |r| r.get::<_, String>(0),
+        )?),
+        None => Value::Null,
+    };
+    conn.data = data.clone();
+    crate::crypto::encrypt_fields(&mut data);
+    db.execute(
+        "UPDATE providerConnections SET data=?1, updatedAt=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?2",
+        params![data.to_string(), conn.id],
+    )?;
     Ok(conn)
 }
 

@@ -877,7 +877,7 @@ async fn availability_get(State(s): State<AppState>) -> Response {
         let mut models = Vec::new();
         for row in rows {
             let (id, provider, name, email, raw) = row?;
-            let data: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
+            let data: Value = crate::crypto::parse_data(&raw).unwrap_or(json!({}));
             let conn_name = name
                 .filter(|s| !s.is_empty())
                 .or(email.filter(|s| !s.is_empty()))
@@ -1136,7 +1136,7 @@ async fn models_test(State(s): State<AppState>, Json(body): Json<Value>) -> Resp
             params![provider_id, provider_part],
             |r| {
                 let raw: String = r.get(2)?;
-                let data: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
+                let data: Value = crate::crypto::parse_data(&raw).unwrap_or(json!({}));
                 Ok((
                     r.get::<_, Option<String>>(0)?,
                     r.get::<_, Option<String>>(1)?,

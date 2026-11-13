@@ -19,7 +19,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
 
 const WEBHOOK_EVENT_TYPES: &[&str] = &["usage", "quota", "error"];
-const SECRET_FIELDS: &[&str] = &["apiKey", "accessToken", "refreshToken", "idToken"];
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -552,46 +551,13 @@ async fn backup_restore(
     Json(json!({ "success": true })).into_response()
 }
 
-fn load_credential_key() -> Option<[u8; 32]> {
-    let raw = std::env::var("PRO_CREDENTIAL_KEY").ok()?;
-    let trimmed = raw.trim();
-    if trimmed.len() == 64 && trimmed.bytes().all(|b| b.is_ascii_hexdigit()) {
-        let mut out = [0u8; 32];
-        for i in 0..32 {
-            out[i] = u8::from_str_radix(&trimmed[i * 2..i * 2 + 2], 16).ok()?;
-        }
-        return Some(out);
-    }
-    let decoded = B64.decode(trimmed).ok()?;
-    decoded.try_into().ok()
-}
-
-fn encrypt_field(key_bytes: &[u8; 32], plaintext: &str) -> Result<String, ()> {
-    let unbound = UnboundKey::new(&AES_256_GCM, key_bytes).map_err(|_| ())?;
-    let key = LessSafeKey::new(unbound);
-    let mut nonce_bytes = [0u8; 12];
-    ring::rand::SystemRandom::new()
-        .fill(&mut nonce_bytes)
-        .map_err(|_| ())?;
-    let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-    let mut in_out = plaintext.as_bytes().to_vec();
-    key.seal_in_place_append_tag(nonce, Aad::empty(), &mut in_out)
-        .map_err(|_| ())?;
-    let tag_start = in_out.len() - 16;
-    Ok(format!(
-        "enc:v1:{}:{}:{}",
-        B64.encode(nonce_bytes),
-        B64.encode(&in_out[tag_start..]),
-        B64.encode(&in_out[..tag_start]),
-    ))
-}
-
 fn count_row_encryption(data: &Value) -> (usize, usize) {
     let mut plain = 0;
     let mut enc = 0;
-    for f in SECRET_FIELDS {
-        if let Some(s) = data.get(*f).and_then(Value::as_str).filter(|s| !s.is_empty()) {
-            if s.starts_with("enc:v1:") {
+    let spec = &data["providerSpecificData"];
+    for f in crate::crypto::SENSITIVE_FIELDS {
+        for s in [&data[*f], &spec[*f]].into_iter().filter_map(Value::as_str).filter(|s| !s.is_empty()) {
+            if crate::crypto::is_envelope(s) {
                 enc += 1;
             } else {
                 plain += 1;
@@ -624,7 +590,7 @@ async fn encryption_status(State(s): State<AppState>) -> Response {
         }
     }
     Json(json!({
-        "keyConfigured": load_credential_key().is_some(),
+        "keyConfigured": crate::crypto::key().is_some(),
         "envVar": "PRO_CREDENTIAL_KEY",
         "connections": connections,
         "plaintextFields": plaintext,
@@ -647,8 +613,7 @@ async fn encryption_migrate(State(s): State<AppState>, Json(body): Json<Value>) 
         return err(StatusCode::BAD_REQUEST, "Unknown action");
     }
     let dry_run = action == "dry-run";
-    let key = load_credential_key();
-    if !dry_run && key.is_none() {
+    if !dry_run && crate::crypto::key().is_none() {
         return err(
             StatusCode::BAD_REQUEST,
             "PRO_CREDENTIAL_KEY is not set — refusing to migrate without a key",
@@ -664,33 +629,18 @@ async fn encryption_migrate(State(s): State<AppState>, Json(body): Json<Value>) 
         }
     }
     for (id, raw) in rows_data {
-        let mut obj = serde_json::from_str::<Map<String, Value>>(&raw).unwrap_or_default();
-        let mut changed = false;
-        for f in SECRET_FIELDS {
-            if let Some(val) = obj
-                .get(*f)
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty() && !s.starts_with("enc:v1:"))
-                .map(str::to_string)
-            {
-                migrated_fields += 1;
-                changed = true;
-                if !dry_run
-                    && let Some(ref k) = key
-                    && let Ok(enc) = encrypt_field(k, &val)
-                {
-                    obj.insert((*f).to_string(), Value::String(enc));
-                }
-            }
+        let mut data: Value = serde_json::from_str(&raw).unwrap_or_else(|_| json!({}));
+        let (plain, _) = count_row_encryption(&data);
+        if plain == 0 {
+            continue;
         }
-        if changed {
-            migrated_rows += 1;
-            if !dry_run {
-                let _ = db.execute(
-                    "UPDATE providerConnections SET data = ?1 WHERE id = ?2",
-                    params![Value::Object(obj).to_string(), id],
-                );
-            }
+        migrated_rows += 1;
+        migrated_fields += plain;
+        if !dry_run && crate::crypto::encrypt_fields(&mut data) > 0 {
+            let _ = db.execute(
+                "UPDATE providerConnections SET data = ?1, updatedAt = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?2",
+                params![data.to_string(), id],
+            );
         }
     }
     Json(json!({

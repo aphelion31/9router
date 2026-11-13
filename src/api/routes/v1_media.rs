@@ -45,7 +45,7 @@ fn active_credential(state: &AppState, provider: &str) -> Option<(String, Option
             |r| r.get(0),
         )
         .ok()?;
-    let data: Value = serde_json::from_str(&raw).ok()?;
+    let data: Value = crate::crypto::parse_data(&raw)?;
     let token = data["apiKey"]
         .as_str()
         .or_else(|| data["accessToken"].as_str())
@@ -177,33 +177,11 @@ async fn web_search(State(s): State<AppState>, Json(body): Json<Value>) -> Respo
     forward_json(&s, reqwest::Method::POST, &url, &token, Some(body)).await
 }
 
-fn is_disallowed_fetch_url(target: &str) -> bool {
-    let Some(rest) = target
-        .strip_prefix("http://")
-        .or_else(|| target.strip_prefix("https://"))
-    else {
-        return true;
-    };
-    let host = rest
-        .split(['/', ':', '?'])
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    host.is_empty()
-        || host == "localhost"
-        || host == "127.0.0.1"
-        || host == "::1"
-        || host == "[::1]"
-        || host.starts_with("10.")
-        || host.starts_with("192.168.")
-        || host.starts_with("169.254.")
-}
-
 async fn web_fetch(State(s): State<AppState>, Json(body): Json<Value>) -> Response {
     let Some(target) = body["url"].as_str().filter(|u| !u.is_empty()) else {
         return err(StatusCode::BAD_REQUEST, "Missing required field: url", "invalid_request_error");
     };
-    if is_disallowed_fetch_url(target) {
+    if !crate::ssrf::url_is_public(target).await {
         return err(StatusCode::BAD_REQUEST, "URL is invalid or blocked", "invalid_request_error");
     }
     if let Some(provider_input) = body["provider"]

@@ -333,7 +333,93 @@ fn url_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-async fn login(State(s): State<AppState>, Json(body): Json<Value>) -> Response {
+const RESET_HINT: &str = "Forgot password? Reset to default via 9Router CLI → Settings → Reset Password to Default.";
+
+/// Progressive per-IP lockout, ported from upstream `lib/auth/loginLimiter.js`. In-memory.
+mod limiter {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    const MAX_FAILS: u32 = 5;
+    const STEPS: [u64; 4] = [30, 120, 600, 1800];
+    const WINDOW: Duration = Duration::from_secs(3600);
+
+    #[derive(Default)]
+    struct Entry { fails: u32, lock_until: Option<Instant>, level: usize, last_fail: Option<Instant> }
+
+    static ATTEMPTS: Mutex<Option<HashMap<String, Entry>>> = Mutex::new(None);
+
+    fn with<R>(ip: &str, f: impl FnOnce(&mut Entry) -> R) -> R {
+        let mut g = ATTEMPTS.lock().unwrap_or_else(|e| e.into_inner());
+        let map = g.get_or_insert_with(HashMap::new);
+        let now = Instant::now();
+        if map.get(ip).is_some_and(|e| {
+            e.last_fail.is_some_and(|t| now - t > WINDOW) && e.lock_until.is_none_or(|t| now >= t)
+        }) {
+            map.remove(ip);
+        }
+        f(map.entry(ip.to_owned()).or_default())
+    }
+
+    /// Seconds left on an active lock.
+    pub fn check(ip: &str) -> Option<u64> {
+        with(ip, |e| e.lock_until.and_then(|t| t.checked_duration_since(Instant::now())))
+            .map(|d| d.as_secs_f64().ceil() as u64)
+            .filter(|s| *s > 0)
+    }
+
+    /// Records a failure, returns attempts left before lockout.
+    pub fn fail(ip: &str) -> u32 {
+        with(ip, |e| {
+            e.fails += 1;
+            e.last_fail = Some(Instant::now());
+            if e.fails >= MAX_FAILS {
+                e.lock_until = Some(Instant::now() + Duration::from_secs(STEPS[e.level.min(STEPS.len() - 1)]));
+                e.level += 1;
+                e.fails = 0;
+            }
+            MAX_FAILS.saturating_sub(e.fails)
+        })
+    }
+
+    pub fn success(ip: &str) {
+        ATTEMPTS.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|m| m.remove(ip));
+    }
+}
+
+/// Client IP for lockout bucketing. Spoofable headers are only trusted when explicitly allowed.
+fn client_ip(headers: &HeaderMap) -> String {
+    let h = |n: &str| headers.get(n).and_then(|v| v.to_str().ok()).map(str::trim).filter(|v| !v.is_empty());
+    if let Some(ip) = h("cf-connecting-ip") {
+        return ip.to_owned();
+    }
+    if std::env::var("TRUST_PROXY").as_deref() == Ok("true")
+        && let Some(xff) = h("x-forwarded-for")
+    {
+        return xff.split(',').next().unwrap_or("").trim().to_owned();
+    }
+    "unknown".to_owned()
+}
+
+fn locked_response(retry: u64) -> Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(header::RETRY_AFTER, HeaderValue::from(retry))],
+        Json(json!({
+            "error": format!("Too many failed attempts. Try again in {retry}s. {RESET_HINT}"),
+            "retryAfter": retry,
+            "resetHint": RESET_HINT,
+        })),
+    )
+        .into_response()
+}
+
+async fn login(State(s): State<AppState>, headers: HeaderMap, Json(body): Json<Value>) -> Response {
+    let ip = client_ip(&headers);
+    if let Some(retry) = limiter::check(&ip) {
+        return locked_response(retry);
+    }
     let Some(password) = body["password"].as_str() else {
         return StatusCode::BAD_REQUEST.into_response();
     };
@@ -343,7 +429,15 @@ async fn login(State(s): State<AppState>, Json(body): Json<Value>) -> Response {
         .ok()
         .is_some_and(|db| dashboard::verify_password(&db, password));
     if !ok {
-        return err(StatusCode::UNAUTHORIZED, "Invalid password");
+        let left = limiter::fail(&ip);
+        if let Some(retry) = limiter::check(&ip) {
+            return locked_response(retry);
+        }
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": format!("Invalid password. {left} attempt(s) left before lockout."), "remainingBeforeLock": left })),
+        )
+            .into_response();
     }
 
     let totp_cfg = get_totp_config(&s);
@@ -361,10 +455,12 @@ async fn login(State(s): State<AppState>, Json(body): Json<Value>) -> Response {
             false
         };
         if !totp_ok {
+            let left = limiter::fail(&ip);
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(json!({
-                    "error": "Invalid authenticator code.",
+                    "error": format!("Invalid authenticator code. {left} attempt(s) left before lockout."),
+                    "remainingBeforeLock": left,
                     "totpRequired": true
                 })),
             )
@@ -378,6 +474,7 @@ async fn login(State(s): State<AppState>, Json(body): Json<Value>) -> Response {
             "JWT secret not configured",
         );
     };
+    limiter::success(&ip);
     let token = dashboard::issue_auth_token(secret);
     let Ok(cookie) = HeaderValue::from_str(&dashboard::auth_cookie_header(&token)) else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();

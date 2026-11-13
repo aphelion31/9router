@@ -846,7 +846,9 @@ async fn cowork_mcp_tools(State(s): State<AppState>, Json(body): Json<Value>) ->
         )
             .into_response();
     };
-    if !matches!(parsed.scheme(), "http" | "https") {
+    // ponytail: upstream exempts loopback dashboard requests; we lack the peer address
+    // here, so internal hosts are always refused. Add a ConnectInfo check if local MCP probing is needed.
+    if !crate::ssrf::literal_ok(&parsed) {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "URL not allowed" })),
