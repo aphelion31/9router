@@ -9,6 +9,12 @@ impl Executor for HttpExecutor {
         req: ExecutorRequest,
     ) -> BoxFuture<'a, Result<ExecutorResponse, String>> {
         Box::pin(async move {
+            let bedrock_xai = req.provider == "bedrock-xai";
+            let vertex = matches!(req.provider.as_str(), "vertex" | "vertex-partner");
+            let bedrock_stream = (req.provider == "bedrock" || bedrock_xai) && req.stream;
+            let response_format = (req.provider == "github"
+                && req.model.to_ascii_lowercase().contains("claude"))
+            .then(|| "claude".to_string());
             let base_url = req
                 .credentials
                 .provider_specific_data
@@ -30,24 +36,59 @@ impl Executor for HttpExecutor {
             .await
             .map_err(|e| e.to_string())?;
             let status = response.status().as_u16();
-            let url = Some(response.url().to_string());
+            let mut response_url = response.url().clone();
+            if vertex && response_url.query().is_some() {
+                let pairs: Vec<(String, String)> = response_url
+                    .query_pairs()
+                    .filter(|(name, _)| name != "key")
+                    .map(|(name, value)| (name.into_owned(), value.into_owned()))
+                    .collect();
+                response_url.set_query(None);
+                if !pairs.is_empty() {
+                    response_url.query_pairs_mut().extend_pairs(pairs);
+                }
+            }
+            let url = Some(response_url.to_string());
             let headers = response
                 .headers()
                 .iter()
                 .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.to_string(), v.to_string())))
                 .collect();
+            let bedrock_stream = bedrock_stream && (200..300).contains(&status);
             let body = if req.stream {
                 let (tx, rx) = tokio::sync::mpsc::channel(16);
                 tokio::spawn(async move {
                     let mut response = response;
+                    let mut decoder = bedrock_stream
+                        .then(|| crate::executors::bedrock::Decoder::new(bedrock_xai));
                     loop {
                         match response.chunk().await {
                             Ok(Some(bytes)) => {
-                                if tx.send(Ok(bytes.to_vec())).await.is_err() {
+                                let bytes = if let Some(decoder) = decoder.as_mut() {
+                                    match decoder.push(&bytes) {
+                                        Ok(bytes) => bytes,
+                                        Err(error) => {
+                                            let _ = tx.send(Err(error.to_string())).await;
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    bytes.to_vec()
+                                };
+                                if !bytes.is_empty() && tx.send(Ok(bytes)).await.is_err() {
                                     break;
                                 }
                             }
-                            Ok(None) => break,
+                            Ok(None) => {
+                                if let Some(decoder) = decoder.as_ref() {
+                                    if let Err(error) = decoder.finish() {
+                                        let _ = tx.send(Err(error.to_string())).await;
+                                    } else if bedrock_xai {
+                                        let _ = tx.send(Ok(b"data: [DONE]\n\n".to_vec())).await;
+                                    }
+                                }
+                                break;
+                            }
                             Err(e) => {
                                 let _ = tx.send(Err(e.to_string())).await;
                                 break;
@@ -64,7 +105,7 @@ impl Executor for HttpExecutor {
                 headers,
                 body,
                 url,
-                response_format: None,
+                response_format,
             })
         })
     }
