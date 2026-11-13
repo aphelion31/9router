@@ -59,7 +59,36 @@ pub fn routes() -> Router<AppState> {
         .route("/api/version", get(unavailable))
         .route("/api/version/update", post(unavailable))
         .route("/api/version/shutdown", post(unavailable))
-        .route("/api/shutdown", post(unavailable))
+        .route("/api/shutdown", post(shutdown))
+}
+async fn shutdown(headers: axum::http::HeaderMap) -> Response {
+    if std::env::var("NODE_ENV").as_deref() == Ok("production") {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"success":false,"message":"Not allowed in production"})),
+        )
+            .into_response();
+    }
+    let secret = std::env::var("SHUTDOWN_SECRET")
+        .ok()
+        .filter(|s| !s.is_empty());
+    if !secret.is_some_and(|s| {
+        headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            == Some(format!("Bearer {s}").as_str())
+    }) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"success":false,"message":"Unauthorized"})),
+        )
+            .into_response();
+    }
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        crate::server::shutdown_notify().notify_one();
+    });
+    Json(json!({"success":true,"message":"Shutting down..."})).into_response()
 }
 fn safe_settings(mut value: Value) -> Value {
     if let Some(o) = value.as_object_mut() {

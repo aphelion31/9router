@@ -24,6 +24,11 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+pub(crate) fn shutdown_notify() -> &'static tokio::sync::Notify {
+    static SHUTDOWN: std::sync::OnceLock<tokio::sync::Notify> = std::sync::OnceLock::new();
+    SHUTDOWN.get_or_init(tokio::sync::Notify::new)
+}
+
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) db: Arc<Mutex<Connection>>,
