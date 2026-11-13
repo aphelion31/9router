@@ -6,18 +6,18 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `
 
 | JS route | Methods | Rust status |
 |---|---|---|
-| /api/auth/login | POST | partial |
-| /api/auth/logout | POST | partial |
-| /api/auth/oidc/callback | GET | stub501 |
-| /api/auth/oidc/start | GET | stub501 |
-| /api/auth/oidc/test | POST | stub501 |
-| /api/auth/reset-password | POST | stub501 (reset prohibited) |
-| /api/auth/saml/acs | POST | stub501 |
-| /api/auth/saml/metadata | GET | stub501 |
-| /api/auth/saml/start | GET | stub501 |
-| /api/auth/saml/test | POST | stub501 |
-| /api/auth/status | GET | partial |
-| /api/auth/totp | GET, POST | stub501 |
+| /api/auth/login | POST | done |
+| /api/auth/logout | POST | done |
+| /api/auth/oidc/callback | GET | done |
+| /api/auth/oidc/start | GET | done |
+| /api/auth/oidc/test | POST | done |
+| /api/auth/reset-password | POST | done |
+| /api/auth/saml/acs | POST | done |
+| /api/auth/saml/metadata | GET | done |
+| /api/auth/saml/start | GET | done |
+| /api/auth/saml/test | POST | done |
+| /api/auth/status | GET | done |
+| /api/auth/totp | GET, POST | done |
 | /api/cli-tools/all-statuses | GET | done |
 | /api/cli-tools/antigravity-mitm/alias | GET, PUT | done |
 | /api/cli-tools/antigravity-mitm | DELETE, GET, PATCH, POST | 501 |

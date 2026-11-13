@@ -115,8 +115,6 @@ fn make_router_with_db(
         .route("/login", get(dashboard::login_page))
         .route("/dashboard/style.css", get(dashboard::style_css))
         .route("/dashboard/app.js", get(dashboard::app_js))
-        .route("/api/auth/login", post(auth_login))
-        .route("/api/auth/logout", post(auth_logout))
         .merge(crate::api::routes::public())
         .merge(dashboard_pages)
         .merge(management)
