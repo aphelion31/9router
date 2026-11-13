@@ -59,9 +59,9 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` depends on an
 | /api/keys/[id] | DELETE, GET, PUT | todo |
 | /api/keys | GET, PATCH, POST | todo |
 | /api/locale | POST | todo |
-| /api/mcp/[plugin]/message | POST | todo |
-| /api/mcp/[plugin]/sse | GET | todo |
-| /api/mcp/gateway | GET, POST | todo |
+| /api/mcp/[plugin]/message | POST | 501 |
+| /api/mcp/[plugin]/sse | GET | 501 |
+| /api/mcp/gateway | GET, POST | done |
 | /api/media-providers/tts/deepgram/voices | GET | done |
 | /api/media-providers/tts/elevenlabs/voices | GET | done |
 | /api/media-providers/tts/inworld/voices | GET | done |

@@ -6,6 +6,7 @@ use crate::server::AppState;
 
 mod tools_cli_tools;
 mod tools_headroom;
+mod tools_mcp;
 mod tools_media_providers;
 mod tools_prompt_injection;
 mod tools_proxy_pools;
@@ -25,6 +26,7 @@ pub fn management() -> Router<AppState> {
         .merge(tools_proxy_pools::router())
         .merge(tools_tunnel::router())
         .merge(tools_cli_tools::router())
+        .merge(tools_mcp::router())
 }
 
 pub fn v1() -> Router<AppState> {
