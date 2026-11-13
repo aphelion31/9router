@@ -1,6 +1,6 @@
 // Port of src/lib/db: schema, versioned migrations, repos (subset for step 1).
-use anyhow::{Context, Result};
-use rusqlite::{Connection, OptionalExtension, params};
+use anyhow::{Context, Result, bail};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use std::path::{Path, PathBuf};
 
 pub const SCHEMA_VERSION: i64 = 6;
@@ -23,12 +23,38 @@ pub fn data_file() -> Result<PathBuf> {
     Ok(db_dir.join("data.sqlite"))
 }
 
-/// Open DB and run migrations.
+/// Open DB and run migrations. Existing data with an unknown schema version is refused.
 pub fn open(path: &Path) -> Result<Connection> {
+    guard_schema(path)?;
     let conn = Connection::open(path).context("open sqlite")?;
     conn.execute_batch(PRAGMAS)?;
     migrate(&conn)?;
     Ok(conn)
+}
+
+/// Refuses to migrate a non-empty database whose schema version is not `SCHEMA_VERSION`
+/// (for example a legacy Node DB). Inspection is read-only, so the file is never modified.
+fn guard_schema(path: &Path) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let ro = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| format!("open {} read-only", path.display()))?;
+    let count = |sql: &str| -> Result<i64> { Ok(ro.query_row(sql, [], |r| r.get(0))?) };
+    if count("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")? == 0 {
+        return Ok(());
+    }
+    let has_meta = count("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='_meta'")? > 0;
+    let found = if has_meta { Some(schema_version(&ro)?).filter(|v| *v != 0) } else { None };
+    if found == Some(SCHEMA_VERSION) {
+        return Ok(());
+    }
+    let found = found.map_or("none".to_string(), |v| v.to_string());
+    bail!(
+        "refusing to migrate {}: schema version {found} is not supported (expected {SCHEMA_VERSION}). \
+         The file was not modified. Back it up, or point DATA_DIR at an empty directory.",
+        path.display()
+    )
 }
 
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -74,6 +100,9 @@ pub fn migrate(conn: &Connection) -> Result<()> {
                 }
             }
         }
+        conn.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_settings_id ON settings(id)",
+        )?;
         if schema_version(conn)? < SCHEMA_VERSION {
             conn.execute(
                 "INSERT INTO _meta(key, value) VALUES('schemaVersion', ?1)
@@ -123,6 +152,28 @@ pub fn kv_get(conn: &Connection, scope: &str, key: &str) -> Result<Option<String
             |r| r.get(0),
         )
         .optional()?)
+}
+
+// ---- settings repo ----
+
+/// Settings row `id = 1`. Missing row reads as an empty object.
+pub fn settings_get(conn: &Connection) -> Result<serde_json::Value> {
+    let data: Option<String> = conn
+        .query_row("SELECT data FROM settings WHERE id = 1", [], |r| r.get(0))
+        .optional()?;
+    Ok(match data {
+        Some(d) => serde_json::from_str(&d).unwrap_or_else(|_| serde_json::json!({})),
+        None => serde_json::json!({}),
+    })
+}
+
+pub fn settings_put(conn: &Connection, value: &serde_json::Value) -> Result<()> {
+    conn.execute(
+        "INSERT INTO settings(id, data) VALUES(1, ?1)
+         ON CONFLICT(id) DO UPDATE SET data = excluded.data",
+        params![value.to_string()],
+    )?;
+    Ok(())
 }
 
 // ---- combos repo ----
@@ -218,6 +269,41 @@ mod tests {
             .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn settings_roundtrip_and_default() {
+        let c = mem();
+        assert_eq!(settings_get(&c).unwrap(), serde_json::json!({}));
+        settings_put(&c, &serde_json::json!({"a": 1})).unwrap();
+        settings_put(&c, &serde_json::json!({"a": 2})).unwrap();
+        assert_eq!(settings_get(&c).unwrap(), serde_json::json!({"a": 2}));
+    }
+
+    #[test]
+    fn legacy_db_with_unknown_schema_is_refused_untouched() {
+        let dir = std::env::temp_dir().join(format!("nr-guard-{}-{}", std::process::id(), line!()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("data.sqlite");
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch("CREATE TABLE apiKeys (id TEXT PRIMARY KEY, key TEXT); INSERT INTO apiKeys VALUES ('1','secret');").unwrap();
+        }
+        let before = std::fs::read(&path).unwrap();
+        let err = open(&path).unwrap_err().to_string();
+        assert!(err.contains("refusing to migrate"), "{err}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn fresh_and_current_db_open() {
+        let dir = std::env::temp_dir().join(format!("nr-fresh-{}-{}", std::process::id(), line!()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("data.sqlite");
+        drop(open(&path).unwrap());
+        drop(open(&path).unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
