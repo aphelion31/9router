@@ -6,6 +6,69 @@ pub const MAX_STATE_CHARS: usize = 2000;
 pub const MAX_STICKY_SESSIONS: usize = 5000;
 pub const STICKY_SESSION_TTL_MS: u64 = 2 * 60 * 60 * 1000;
 
+#[derive(Default)]
+pub struct StickyComboStore {
+    entries: std::collections::HashMap<String, (String, u64)>,
+}
+
+impl StickyComboStore {
+    pub fn get(
+        &mut self,
+        combo: &str,
+        session: &str,
+        models: &[String],
+        now: u64,
+    ) -> Option<String> {
+        if combo.is_empty() || session.is_empty() {
+            return None;
+        }
+        let key = format!("{combo}:{session}");
+        let entry = self.entries.get_mut(&key)?;
+        if now.saturating_sub(entry.1) > STICKY_SESSION_TTL_MS || !models.contains(&entry.0) {
+            self.entries.remove(&key);
+            return None;
+        }
+        entry.1 = now;
+        Some(entry.0.clone())
+    }
+    pub fn set(&mut self, combo: &str, session: &str, model: &str, now: u64) {
+        if combo.is_empty() || session.is_empty() || model.is_empty() {
+            return;
+        }
+        self.prune(now);
+        self.entries
+            .insert(format!("{combo}:{session}"), (model.into(), now));
+    }
+    pub fn clear(&mut self, combo: &str, session: Option<&str>) {
+        if combo.is_empty() {
+            self.entries.clear();
+        } else if let Some(session) = session.filter(|s| !s.is_empty()) {
+            self.entries.remove(&format!("{combo}:{session}"));
+        } else {
+            let prefix = format!("{combo}:");
+            self.entries.retain(|key, _| !key.starts_with(&prefix));
+        }
+    }
+    pub fn prune(&mut self, now: u64) {
+        if self.entries.len() < MAX_STICKY_SESSIONS {
+            return;
+        }
+        self.entries
+            .retain(|_, (_, last)| now.saturating_sub(*last) <= STICKY_SESSION_TTL_MS);
+        if self.entries.len() >= MAX_STICKY_SESSIONS {
+            let mut keys: Vec<_> = self
+                .entries
+                .iter()
+                .map(|(key, (_, at))| (key.clone(), *at))
+                .collect();
+            keys.sort_by_key(|(_, at)| *at);
+            for (key, _) in keys.into_iter().take(MAX_STICKY_SESSIONS / 4) {
+                self.entries.remove(&key);
+            }
+        }
+    }
+}
+
 fn text(content: &Value) -> String {
     if let Some(s) = content.as_str() {
         return s.to_owned();
@@ -135,6 +198,26 @@ pub fn order_models_by_choice(models: &[String], result: &Value) -> Vec<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sticky_entries_expire_and_validate_membership() {
+        let mut store = StickyComboStore::default();
+        store.set("combo", "session", "a", 10);
+        assert_eq!(
+            store.get("combo", "session", &["a".into()], 11).as_deref(),
+            Some("a")
+        );
+        assert_eq!(store.get("combo", "session", &["b".into()], 12), None);
+        store.set("combo", "session", "a", 10);
+        assert_eq!(
+            store.get(
+                "combo",
+                "session",
+                &["a".into()],
+                11 + STICKY_SESSION_TTL_MS
+            ),
+            None
+        );
+    }
     #[test]
     fn extracts_and_ranks_models() {
         assert_eq!(
