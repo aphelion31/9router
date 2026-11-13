@@ -100,16 +100,18 @@ pub(super) fn url(
     stream: bool,
     api_key: Option<&str>,
     access_token: Option<&str>,
+    settings: Option<&Value>,
 ) -> anyhow::Result<reqwest::Url> {
     let mut url = reqwest::Url::parse(endpoint).context("invalid Vertex endpoint")?;
     let project = credential_project
         .map(str::to_owned)
+        .or_else(|| settings.and_then(|s| s.get("projectId")).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned))
         .or_else(|| std::env::var("GOOGLE_CLOUD_PROJECT").ok())
         .filter(|s| !s.is_empty());
     if (access_token.is_some() || partner) && project.is_none() {
         bail!("Vertex OAuth requires GOOGLE_CLOUD_PROJECT");
     }
-    let location = std::env::var("GOOGLE_CLOUD_LOCATION").unwrap_or_else(|_| {
+    let location = settings.and_then(|s| s.get("location")).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned).or_else(|| std::env::var("GOOGLE_CLOUD_LOCATION").ok()).unwrap_or_else(|| {
         if access_token.is_some() {
             "us-central1"
         } else {
@@ -187,10 +189,19 @@ mod tests {
                     "model",
                     false,
                     Some("key"),
-                    None
+                    None,
+                    None,
                 )
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn connection_project_and_location() {
+        let settings = serde_json::json!({"projectId": "my-project", "location": "europe-west1"});
+        let url = super::url("https://example.com", false, None, "model", true, Some("key"), None, Some(&settings)).unwrap();
+        assert!(url.as_str().contains("/projects/my-project/locations/europe-west1/"));
+        assert!(url.as_str().contains("alt=sse&key=key"));
     }
 }

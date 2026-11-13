@@ -22,12 +22,12 @@ impl Executor for HttpExecutor {
                 (commandcode_stream || trae_provider || windsurf_provider)
                     .then(|| "openai".to_string())
             });
-            let base_url = req
+            let base_url = (req.provider != "ollama-local").then(|| req
                 .credentials
                 .provider_specific_data
                 .get("baseUrl")
                 .and_then(|v| v.as_str())
-                .map(str::to_owned);
+                .map(str::to_owned)).flatten();
             let model = req.model.clone();
             let response = crate::executors::execute(
                 &self.0,
