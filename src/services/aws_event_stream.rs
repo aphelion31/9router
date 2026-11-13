@@ -103,9 +103,40 @@ pub fn parse_event_frame(
     Ok((headers, payload))
 }
 
+// Build one string-header frame. Test fixtures only; mirrors encodeEventFrame.
+pub fn encode_event_frame(headers: &[(&str, &str)], payload: Option<&Value>) -> Vec<u8> {
+    let mut header_bytes = Vec::new();
+    for (name, value) in headers {
+        header_bytes.push(name.len() as u8);
+        header_bytes.extend_from_slice(name.as_bytes());
+        header_bytes.push(7);
+        header_bytes.extend_from_slice(&(value.len() as u16).to_be_bytes());
+        header_bytes.extend_from_slice(value.as_bytes());
+    }
+    let payload_bytes = payload.map_or_else(Vec::new, |p| p.to_string().into_bytes());
+    let total = 16 + header_bytes.len() + payload_bytes.len();
+    let mut frame = Vec::with_capacity(total);
+    frame.extend_from_slice(&(total as u32).to_be_bytes());
+    frame.extend_from_slice(&(header_bytes.len() as u32).to_be_bytes());
+    frame.extend_from_slice(&crc32(&frame[..8]).to_be_bytes());
+    frame.extend_from_slice(&header_bytes);
+    frame.extend_from_slice(&payload_bytes);
+    let checksum = crc32(&frame).to_be_bytes();
+    frame.extend_from_slice(&checksum);
+    frame
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn encode_round_trips_through_parser() {
+        let payload = serde_json::json!({"a": 1});
+        let frame = encode_event_frame(&[(":event-type", "chunk")], Some(&payload));
+        let (headers, decoded) = parse_event_frame(&frame, 4096, 4096).unwrap();
+        assert_eq!(headers[":event-type"], Value::String("chunk".into()));
+        assert_eq!(decoded, payload);
+    }
     #[test]
     fn detects_corruption() {
         assert_eq!(crc32(b"123456789"), 0xcbf43926);
