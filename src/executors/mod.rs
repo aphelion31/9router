@@ -1,6 +1,10 @@
 //! Streaming upstream transport. Request and response translation are handled separately.
 use anyhow::{Context, bail};
 use serde_json::Value;
+mod chatgpt_web;
+mod gemini_web;
+mod iflow;
+mod muse_web;
 
 #[derive(Debug, Clone)]
 pub struct ExecutorRequest {
@@ -22,6 +26,12 @@ pub async fn execute(
 ) -> anyhow::Result<reqwest::Response> {
     let provider = crate::providers::lookup(&request.provider)
         .with_context(|| format!("unknown provider: {}", request.provider))?;
+    match provider.id.as_str() {
+        "chatgpt-web" => return Err(chatgpt_web::unsupported()),
+        "gemini-web" => return Err(gemini_web::unsupported()),
+        "muse-web" => return Err(muse_web::unsupported()),
+        _ => {}
+    }
     let endpoint = request
         .base_url
         .as_deref()
@@ -59,6 +69,16 @@ pub async fn execute(
     let mut builder = client
         .post(url)
         .header(reqwest::header::CONTENT_TYPE, "application/json");
+    if provider.id == "iflow" {
+        for (name, value) in iflow::prepare(
+            &mut request.body,
+            request.stream,
+            request.api_key.as_deref(),
+            request.access_token.as_deref(),
+        )? {
+            builder = builder.header(name, value);
+        }
+    }
     if request.stream || provider.id == "codex" {
         builder = builder.header(reqwest::header::ACCEPT, "text/event-stream");
     }
@@ -74,6 +94,10 @@ pub async fn execute(
             builder = builder.header("x-goog-api-key", key);
         } else if let Some(token) = request.access_token.as_deref() {
             builder = builder.bearer_auth(token);
+        }
+    } else if provider.id == "iflow" {
+        if let Some(key) = request.api_key.as_deref() {
+            builder = builder.bearer_auth(key);
         }
     } else if let Some(token) = request
         .api_key
@@ -106,7 +130,28 @@ mod tests {
         body: Bytes,
     ) -> (StatusCode, String) {
         let value: Value = serde_json::from_slice(&body).unwrap();
-        (StatusCode::TOO_MANY_REQUESTS, json!({"uri":uri.to_string(), "authorization":headers.get("authorization").and_then(|v|v.to_str().ok()), "key":headers.get("x-api-key").or_else(|| headers.get("x-goog-api-key")).and_then(|v|v.to_str().ok()), "version":headers.get("anthropic-version").and_then(|v|v.to_str().ok()), "body":value}).to_string())
+        (StatusCode::TOO_MANY_REQUESTS, json!({"uri":uri.to_string(), "authorization":headers.get("authorization").and_then(|v|v.to_str().ok()), "key":headers.get("x-api-key").or_else(|| headers.get("x-goog-api-key")).and_then(|v|v.to_str().ok()), "version":headers.get("anthropic-version").and_then(|v|v.to_str().ok()), "session":headers.get("session-id").and_then(|v|v.to_str().ok()), "timestamp":headers.get("x-iflow-timestamp").and_then(|v|v.to_str().ok()), "signature":headers.get("x-iflow-signature").and_then(|v|v.to_str().ok()), "body":value}).to_string())
+    }
+
+    #[tokio::test]
+    async fn browser_executors_fail_explicitly() {
+        for provider in ["chatgpt-web", "gemini-web", "muse-web"] {
+            let error = execute(
+                &reqwest::Client::new(),
+                ExecutorRequest {
+                    provider: provider.into(),
+                    model: "model".into(),
+                    body: json!({}),
+                    stream: false,
+                    api_key: None,
+                    access_token: None,
+                    base_url: None,
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(error.to_string().contains("Unsupported"));
+        }
     }
 
     #[tokio::test]
@@ -152,6 +197,51 @@ mod tests {
                 _ => assert_eq!(result["authorization"], "Bearer secret"),
             }
         }
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn iflow_mock_signed_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/v1/chat/completions",
+            listener.local_addr().unwrap()
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(mock)))
+                .await
+                .unwrap()
+        });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "iflow".into(),
+                model: "model".into(),
+                body: json!({"messages": []}),
+                stream: true,
+                api_key: Some("secret".into()),
+                access_token: None,
+                base_url: Some(url),
+            },
+        )
+        .await
+        .unwrap();
+        let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(result["uri"], "/v1/chat/completions");
+        assert_eq!(result["authorization"], "Bearer secret");
+        assert_eq!(result["body"]["stream_options"]["include_usage"], true);
+        let payload = format!(
+            "iFlow-Cli:{}:{}",
+            result["session"].as_str().unwrap(),
+            result["timestamp"].as_str().unwrap()
+        );
+        let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, b"secret");
+        let expected: String = ring::hmac::sign(&key, payload.as_bytes())
+            .as_ref()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(result["signature"], expected);
         task.abort();
     }
 }
