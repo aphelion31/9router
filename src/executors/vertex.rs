@@ -2,6 +2,7 @@ use anyhow::{Context, bail};
 
 pub(super) fn url(
     endpoint: &str,
+    partner: bool,
     model: &str,
     stream: bool,
     api_key: Option<&str>,
@@ -11,7 +12,7 @@ pub(super) fn url(
     let project = std::env::var("GOOGLE_CLOUD_PROJECT")
         .ok()
         .filter(|s| !s.is_empty());
-    if access_token.is_some() && project.is_none() {
+    if (access_token.is_some() || partner) && project.is_none() {
         bail!("Vertex OAuth requires GOOGLE_CLOUD_PROJECT");
     }
     let location = std::env::var("GOOGLE_CLOUD_LOCATION").unwrap_or_else(|_| {
@@ -29,24 +30,33 @@ pub(super) fn url(
         segments.pop_if_empty();
         segments.push("v1");
         if let Some(project) = project.as_deref() {
-            segments.extend(["projects", project, "locations", &location]);
+            segments.extend([
+                "projects",
+                project,
+                "locations",
+                if partner { "global" } else { &location },
+            ]);
         }
-        segments.extend([
-            "publishers",
-            "google",
-            "models",
-            &format!(
-                "{}:{}",
-                model,
-                if stream {
-                    "streamGenerateContent"
-                } else {
-                    "generateContent"
-                }
-            ),
-        ]);
+        if partner {
+            segments.extend(["endpoints", "openapi", "chat", "completions"]);
+        } else {
+            segments.extend([
+                "publishers",
+                "google",
+                "models",
+                &format!(
+                    "{}:{}",
+                    model,
+                    if stream {
+                        "streamGenerateContent"
+                    } else {
+                        "generateContent"
+                    }
+                ),
+            ]);
+        }
     }
-    if stream {
+    if stream && !partner {
         url.query_pairs_mut().append_pair("alt", "sse");
     }
     if access_token.is_none() {
@@ -58,4 +68,16 @@ pub(super) fn url(
         }
     }
     Ok(url)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn partner_requires_project() {
+        if std::env::var("GOOGLE_CLOUD_PROJECT").is_err() {
+            assert!(
+                super::url("http://localhost", true, "model", false, Some("key"), None).is_err()
+            );
+        }
+    }
 }

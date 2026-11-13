@@ -41,14 +41,17 @@ pub async fn execute(
         .base_url
         .as_deref()
         .or_else(|| (provider.id == "azure").then_some(azure_endpoint.as_str()))
-        .or_else(|| (provider.id == "vertex").then_some(vertex_endpoint))
+        .or_else(|| {
+            matches!(provider.id.as_str(), "vertex" | "vertex-partner").then_some(vertex_endpoint)
+        })
         .or(provider.base_url.as_deref())
         .with_context(|| format!("provider {} has no endpoint", provider.id))?;
     let mut url = if provider.id == "azure" {
         azure::url(endpoint, &request.model)?
-    } else if provider.id == "vertex" {
+    } else if matches!(provider.id.as_str(), "vertex" | "vertex-partner") {
         vertex::url(
             endpoint,
+            provider.id == "vertex-partner",
             &request.model,
             request.stream,
             request.api_key.as_deref(),
@@ -114,7 +117,7 @@ pub async fn execute(
         if let Ok(organization) = std::env::var("AZURE_ORGANIZATION") {
             builder = builder.header("openai-organization", organization);
         }
-    } else if provider.id == "vertex" {
+    } else if matches!(provider.id.as_str(), "vertex" | "vertex-partner") {
         if let Some(token) = request.access_token.as_deref() {
             builder = builder.bearer_auth(token);
         }
