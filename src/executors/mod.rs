@@ -1,6 +1,7 @@
 //! Streaming upstream transport. Request and response translation are handled separately.
 use anyhow::{Context, bail};
 use serde_json::Value;
+mod antigravity;
 mod azure;
 pub(crate) mod bedrock;
 mod chatgpt_web;
@@ -85,10 +86,13 @@ pub async fn execute(
         .or_else(|| {
             matches!(provider.id.as_str(), "vertex" | "vertex-partner").then_some(vertex_endpoint)
         })
+        .or_else(|| (provider.id == "antigravity").then_some(antigravity::default_endpoint()))
         .or(provider.base_url.as_deref())
         .with_context(|| format!("provider {} has no endpoint", provider.id))?;
     let mut url = if provider.id == "azure" {
         azure::url(endpoint, &request.model)?
+    } else if provider.id == "antigravity" {
+        antigravity::url(endpoint, &request.model, request.stream)?
     } else if provider.id == "gemini-cli" {
         gemini_cli::url(endpoint, request.stream)?
     } else if matches!(provider.id.as_str(), "vertex" | "vertex-partner") {
@@ -163,6 +167,16 @@ pub async fn execute(
             .header("x-vscode-user-agent-library-version", "electron-fetch")
             .header("x-initiator", "user")
             .header("anthropic-version", "2023-06-01");
+    }
+    if provider.id == "antigravity" {
+        for (name, value) in antigravity::prepare(
+            &request.model,
+            &mut request.body,
+            request.stream,
+            request.provider_specific_data.as_ref(),
+        )? {
+            builder = builder.header(name, value);
+        }
     }
     if provider.id == "gemini-cli" {
         for (name, value) in gemini_cli::prepare(
@@ -1011,6 +1025,78 @@ mod tests {
                 .unwrap();
         assert_eq!(non_stream["choices"][0]["message"]["content"], "Hi ");
         assert_eq!(non_stream["usage"]["total_tokens"], 14);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn antigravity_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://{addr}");
+        let app = Router::new().route("/v1internal:streamGenerateContent", post(mock));
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "antigravity".into(),
+                model: "claude-sonnet-4-6".into(),
+                body: json!({
+                    "thinking": {"type": "enabled"},
+                    "requestType": "agent",
+                    "request": {
+                        "thinkingConfig": {"thinkingBudget": 1024},
+                        "systemInstruction": {"parts": [{"text": "opencode helper\nx-anthropic-billing-header: foo\n"}]},
+                        "contents": [{
+                            "role": "model",
+                            "parts": [
+                                {"thought": true, "text": "hmm"},
+                                {"functionCall": {"name": "read", "args": {}}}
+                            ]
+                        }],
+                        "tools": [{
+                            "functionDeclarations": [{"name": "my/tool!", "parameters": {"type": "object", "additionalProperties": false}}]
+                        }]
+                    }
+                }),
+                stream: true,
+                access_token: Some("ag-tok".into()),
+                base_url: Some(base),
+                provider_specific_data: Some(json!({"projectId": "proj-1"})),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let echo: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(echo["uri"], "/v1internal:streamGenerateContent?alt=sse");
+        assert!(
+            echo["headers"]["user-agent"]
+                .as_str()
+                .unwrap()
+                .starts_with("antigravity/hub/")
+        );
+        let body = &echo["body"];
+        assert_eq!(body["project"], "proj-1");
+        assert_eq!(body["userAgent"], "antigravity");
+        assert!(body.get("requestType").is_none());
+        assert!(body.get("thinking").is_none());
+        assert!(body["request"].get("thinkingConfig").is_none());
+        let sys = body["request"]["systemInstruction"]["parts"][0]["text"]
+            .as_str()
+            .unwrap();
+        assert!(sys.contains("antigravity helper"));
+        assert!(!sys.contains("x-anthropic-billing-header"));
+        let parts = body["request"]["contents"][0]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert!(parts[0]["thoughtSignature"].is_string());
+        assert_eq!(
+            body["request"]["tools"][0]["functionDeclarations"][0]["name"],
+            "my_tool_"
+        );
+        assert_eq!(
+            body["request"]["toolConfig"]["functionCallingConfig"]["mode"],
+            "VALIDATED"
+        );
         task.abort();
     }
 }
