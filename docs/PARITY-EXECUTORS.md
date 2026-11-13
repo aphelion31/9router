@@ -5,7 +5,7 @@ Status is deliberately conservative: partial means the upstream executor has beh
 | JavaScript file | Status | Notes |
 |---|---|---|
 | antigravity.js | ported | `src/executors/antigravity.rs` (v1internal URLs, image_gen path, thoughtSignature backfill, tool schema/name sanitization, prompt rewrites) |
-| azure.js | partial | Provider-specific connection settings not wired. |
+| azure.js | partial | Provider-specific endpoint, deployment, version and organization wired; inherited default transport parity remains. |
 | base.js | partial | Generic HTTP transport exists, retry and refresh parity incomplete. |
 | bedrock.js | partial | Environment SigV4, Claude/xAI event stream supported. AWS profile/SSO and full error parity missing. |
 | browserExecutableCheck.js | pending | Browser helper. |

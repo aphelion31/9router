@@ -97,6 +97,8 @@ pub async fn execute(
     let endpoint = request
         .base_url
         .as_deref()
+        .or_else(|| (provider.id == "azure").then(|| request.provider_specific_data.as_ref()
+            .and_then(|v| v.get("azureEndpoint")).and_then(Value::as_str).filter(|s| !s.is_empty())).flatten())
         .or_else(|| (provider.id == "azure").then_some(azure_endpoint.as_str()))
         .or_else(|| {
             matches!(provider.id.as_str(), "vertex" | "vertex-partner").then_some(vertex_endpoint)
@@ -138,7 +140,7 @@ pub async fn execute(
     } else if provider.id == "xiaomi-tokenplan" {
         xiaomi_tokenplan::url(endpoint, request.model.ends_with("-claude"))?
     } else if provider.id == "azure" {
-        azure::url(endpoint, &request.model)?
+        azure::url(endpoint, &request.model, request.provider_specific_data.as_ref())?
     } else if provider.id == "antigravity" {
         antigravity::url(endpoint, &request.model, request.stream)?
     } else if provider.id == "gemini-cli" {
@@ -329,7 +331,9 @@ pub async fn execute(
         {
             builder = builder.header("api-key", key);
         }
-        if let Ok(organization) = std::env::var("AZURE_ORGANIZATION") {
+        if let Some(organization) = request.provider_specific_data.as_ref()
+            .and_then(|v| v.get("organization")).and_then(Value::as_str).filter(|s| !s.is_empty())
+            .map(str::to_owned).or_else(|| std::env::var("AZURE_ORGANIZATION").ok()) {
             builder = builder.header("openai-organization", organization);
         }
     } else if matches!(provider.id.as_str(), "vertex" | "vertex-partner") {
@@ -915,7 +919,7 @@ mod tests {
                 stream: true,
                 api_key: Some("secret".into()),
                 access_token: None,
-                base_url: Some(url),
+                provider_specific_data: Some(json!({"azureEndpoint": url, "deployment": "override", "apiVersion": "test-version", "organization": "org"})),
                 ..Default::default()
             },
         )
@@ -926,7 +930,7 @@ mod tests {
             result["uri"]
                 .as_str()
                 .unwrap()
-                .starts_with("/openai/deployments/deployment/chat/completions?api-version=")
+                .starts_with("/openai/deployments/override/chat/completions?api-version=test-version")
         );
         assert_eq!(result["key"], "secret");
         assert_eq!(result["authorization"], Value::Null);
