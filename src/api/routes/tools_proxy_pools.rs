@@ -22,10 +22,10 @@ pub fn router() -> Router<AppState> {
             get(test_all_status).post(test_all_run),
         )
         .route("/api/proxy-pools/delete-failed", post(delete_failed))
-        .route("/api/proxy-pools/cloudflare-deploy", post(deploy_not_available))
-        .route("/api/proxy-pools/deno-deploy", post(deploy_not_available))
-        .route("/api/proxy-pools/netlify-deploy", post(deploy_not_available))
-        .route("/api/proxy-pools/vercel-deploy", post(deploy_not_available))
+        .route("/api/proxy-pools/cloudflare-deploy", post(cloudflare_deploy))
+        .route("/api/proxy-pools/deno-deploy", post(deno_deploy))
+        .route("/api/proxy-pools/netlify-deploy", post(netlify_deploy))
+        .route("/api/proxy-pools/vercel-deploy", post(vercel_deploy))
         .route(
             "/api/proxy-pools/{id}",
             get(get_pool).put(update_pool).delete(delete_pool),
@@ -33,13 +33,857 @@ pub fn router() -> Router<AppState> {
         .route("/api/proxy-pools/{id}/test", post(test_pool))
 }
 
-// ponytail: vendor edge relay deployments (cloudflare/deno/netlify/vercel) omitted; return 501 until needed
-async fn deploy_not_available() -> Response {
+fn sanitize_slug(raw: Option<&str>, prefix: &str) -> String {
+    let cleaned: String = raw
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .collect();
+    let trimmed = cleaned.trim_matches('-');
+    if trimmed.is_empty() {
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        format!("{prefix}-{secs}")
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+fn json_req(
+    client: &reqwest::Client,
+    method: reqwest::Method,
+    url: &str,
+    token: &str,
+    body: &Value,
+) -> reqwest::RequestBuilder {
+    client
+        .request(method, url)
+        .bearer_auth(token)
+        .header("content-type", "application/json")
+        .body(body.to_string())
+}
+
+async fn resp_json(res: reqwest::Response) -> Value {
+    res.bytes()
+        .await
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or(Value::Null)
+}
+
+fn is_valid_id_segment(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+fn insert_deployed_pool(
+    s: &AppState,
+    name: &str,
+    deploy_url: &str,
+    pool_type: &str,
+) -> Response {
+    let id = new_id();
+    let now = now_iso();
+    let data = json!({
+        "name": name,
+        "proxyUrl": deploy_url,
+        "noProxy": "",
+        "strictProxy": false,
+        "type": pool_type,
+    });
+    let db = s.db.lock().unwrap();
+    if let Err(e) = db.execute(
+        "INSERT INTO proxyPools (id, isActive, testStatus, data, createdAt, updatedAt) VALUES (?1, 1, NULL, ?2, ?3, ?3)",
+        rusqlite::params![id, data.to_string(), now],
+    ) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response();
+    }
+    let pool = load_pool_by_id(&db, &id).unwrap_or(data);
     (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(json!({ "error": "not available" })),
+        StatusCode::CREATED,
+        Json(json!({ "proxyPool": pool, "deployUrl": deploy_url })),
     )
         .into_response()
+}
+
+const CF_RELAY_WORKER_CODE: &str = r#"export default {
+  async fetch(request) {
+    const target = request.headers.get("x-relay-target");
+    const relayPath = request.headers.get("x-relay-path") || "/";
+    if (!target) {
+      return new Response(JSON.stringify({ error: "Missing x-relay-target header" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    const targetUrl = target.replace(/\/$/, "") + relayPath;
+    const headers = new Headers(request.headers);
+    headers.delete("x-relay-target");
+    headers.delete("x-relay-path");
+    headers.delete("host");
+    const init = { method: request.method, headers };
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      init.body = request.body;
+      init.duplex = "half";
+    }
+    try {
+      const response = await fetch(targetUrl, init);
+      return new Response(response.body, { status: response.status, headers: response.headers });
+    } catch (error) {
+      return new Response(JSON.stringify({ error: error.message }), {
+        status: 502,
+        headers: { "content-type": "application/json" },
+      });
+    }
+  },
+};"#;
+
+async fn cloudflare_deploy(
+    State(s): State<AppState>,
+    body: Option<Json<Value>>,
+) -> Response {
+    let body = body.map(|b| b.0).unwrap_or_else(|| json!({}));
+    let account_id = body["accountId"].as_str().unwrap_or("").trim();
+    let api_token = body["apiToken"].as_str().unwrap_or("").trim();
+    if account_id.is_empty() || api_token.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Cloudflare Account ID and API Token are required" })),
+        )
+            .into_response();
+    }
+    if !is_valid_id_segment(account_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Invalid Cloudflare Account ID" })),
+        )
+            .into_response();
+    }
+    let project_name = sanitize_slug(body["projectName"].as_str(), "relay");
+    let worker_url = format!(
+        "https://api.cloudflare.com/client/v4/accounts/{account_id}/workers/scripts/{project_name}"
+    );
+    let boundary = "----9routerCfBoundary7MA4YWxkTrZu0gW";
+    let metadata = json!({
+        "main_module": "index.js",
+        "compatibility_date": "2024-03-20",
+        "observability": { "enabled": true }
+    })
+    .to_string();
+    let multipart_body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"index.js\"; filename=\"index.js\"\r\nContent-Type: application/javascript+module\r\n\r\n{CF_RELAY_WORKER_CODE}\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"metadata\"; filename=\"metadata.json\"\r\nContent-Type: application/json\r\n\r\n{metadata}\r\n--{boundary}--\r\n"
+    );
+
+    let upload_res = match s
+        .executor
+        .0
+        .put(&worker_url)
+        .bearer_auth(api_token)
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(multipart_body)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": e.to_string() })),
+            )
+                .into_response();
+        }
+    };
+    if !upload_res.status().is_success() {
+        let status = StatusCode::from_u16(upload_res.status().as_u16())
+            .unwrap_or(StatusCode::BAD_GATEWAY);
+        let err = resp_json(upload_res).await;
+        let msg = err["errors"][0]["message"]
+            .as_str()
+            .unwrap_or("Failed to upload Worker to Cloudflare");
+        return (status, Json(json!({ "error": msg }))).into_response();
+    }
+
+    let _ = json_req(
+        &s.executor.0,
+        reqwest::Method::POST,
+        &format!("{worker_url}/subdomain"),
+        api_token,
+        &json!({ "enabled": true }),
+    )
+    .send()
+    .await;
+
+    let sub_res = s
+        .executor
+        .0
+        .get(format!(
+            "https://api.cloudflare.com/client/v4/accounts/{account_id}/workers/subdomain"
+        ))
+        .bearer_auth(api_token)
+        .send()
+        .await;
+    let deploy_url = match sub_res {
+        Ok(r) if r.status().is_success() => {
+            let v = resp_json(r).await;
+            v["result"]["subdomain"]
+                .as_str()
+                .map(|sub| format!("https://{project_name}.{sub}.workers.dev"))
+        }
+        _ => None,
+    };
+    let Some(deploy_url) = deploy_url else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "Worker deployed but failed to retrieve workers.dev subdomain. Make sure you have setup a workers.dev subdomain in Cloudflare Dashboard."
+            })),
+        )
+            .into_response();
+    };
+    insert_deployed_pool(&s, &project_name, &deploy_url, "cloudflare")
+}
+
+const DENO_RELAY_CODE: &str = r#"Deno.serve(async (request) => {
+  const target = request.headers.get("x-relay-target");
+  const relayPath = request.headers.get("x-relay-path") || "/";
+  if (!target) {
+    return new Response(JSON.stringify({ error: "Missing x-relay-target header" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  const targetUrl = target.replace(/\/$/, "") + relayPath;
+  const newHeaders = new Headers(request.headers);
+  newHeaders.delete("x-relay-target");
+  newHeaders.delete("x-relay-path");
+  newHeaders.delete("host");
+  const init = { method: request.method, headers: newHeaders };
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    init.body = request.body;
+    init.duplex = "half";
+  }
+  try {
+    const response = await fetch(targetUrl, init);
+    return new Response(response.body, { status: response.status, headers: response.headers });
+  } catch (error) {
+    return new Response(JSON.stringify({ error: error.message }), {
+      status: 502,
+      headers: { "content-type": "application/json" },
+    });
+  }
+});"#;
+
+async fn deno_deploy(State(s): State<AppState>, body: Option<Json<Value>>) -> Response {
+    let body = body.map(|b| b.0).unwrap_or_else(|| json!({}));
+    let org_domain = body["orgDomain"].as_str().unwrap_or("").trim();
+    let deno_token = body["denoToken"].as_str().unwrap_or("").trim();
+    if org_domain.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Organization domain is required" })),
+        )
+            .into_response();
+    }
+    if deno_token.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Deno Deploy API token is required" })),
+        )
+            .into_response();
+    }
+    let project_name = sanitize_slug(body["projectName"].as_str(), "relay");
+    let deno_api = "https://api.deno.com/v2";
+
+    let create_res = match json_req(
+        &s.executor.0,
+        reqwest::Method::POST,
+        &format!("{deno_api}/apps"),
+        deno_token,
+        &json!({
+            "slug": project_name,
+            "labels": { "custom.kind": "9router-relay" },
+            "config": {
+                "install": "deno install",
+                "runtime": { "type": "dynamic", "entrypoint": "main.ts" }
+            }
+        }),
+    )
+    .send()
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": e.to_string() })),
+            )
+                .into_response();
+        }
+    };
+    if !create_res.status().is_success() {
+        let code = create_res.status();
+        let text = create_res.text().await.unwrap_or_default();
+        if code.as_u16() == 409 {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({ "error": format!("App \"{project_name}\" already exists. Choose a different name.") })),
+            )
+                .into_response();
+        }
+        let status = StatusCode::from_u16(code.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+        return (
+            status,
+            Json(json!({ "error": format!("Failed to create app ({code}): {text}") })),
+        )
+            .into_response();
+    }
+    let app = resp_json(create_res).await;
+    let Some(app_id) = app["id"].as_str() else {
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": "Deno app response missing id" })),
+        )
+            .into_response();
+    };
+
+    let deploy_res = match json_req(
+        &s.executor.0,
+        reqwest::Method::POST,
+        &format!("{deno_api}/apps/{app_id}/deploy"),
+        deno_token,
+        &json!({
+            "assets": {
+                "main.ts": {
+                    "kind": "file",
+                    "content": DENO_RELAY_CODE,
+                    "encoding": "utf-8"
+                }
+            }
+        }),
+    )
+    .send()
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": e.to_string() })),
+            )
+                .into_response();
+        }
+    };
+    if !deploy_res.status().is_success() {
+        let code = deploy_res.status();
+        let text = deploy_res.text().await.unwrap_or_default();
+        let _ = s
+            .executor
+            .0
+            .delete(format!("{deno_api}/apps/{app_id}"))
+            .bearer_auth(deno_token)
+            .send()
+            .await;
+        let status = StatusCode::from_u16(code.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+        return (
+            status,
+            Json(json!({ "error": format!("Deploy failed ({code}): {text}") })),
+        )
+            .into_response();
+    }
+
+    let rev = resp_json(deploy_res).await;
+    let mut rev_status = rev["status"].as_str().unwrap_or("").to_owned();
+    if let Some(rev_id) = rev["id"].as_str() {
+        for _ in 0..30 {
+            if rev_status != "queued" && rev_status != "building" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let Ok(r) = s
+                .executor
+                .0
+                .get(format!("{deno_api}/revisions/{rev_id}"))
+                .bearer_auth(deno_token)
+                .send()
+                .await
+            else {
+                break;
+            };
+            if !r.status().is_success() {
+                break;
+            }
+            let d = resp_json(r).await;
+            rev_status = d["status"].as_str().unwrap_or("").to_owned();
+        }
+    }
+    if rev_status == "failed" {
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": "Deno Deploy revision failed" })),
+        )
+            .into_response();
+    }
+
+    let clean_org = org_domain.trim_end_matches(".deno.net");
+    let deploy_url = format!("https://{project_name}.{clean_org}.deno.net");
+    insert_deployed_pool(&s, &project_name, &deploy_url, "deno")
+}
+
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+    for &b in bytes {
+        crc ^= u32::from(b);
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                0xedb8_8320 ^ (crc >> 1)
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+fn build_stored_zip(files: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut central = Vec::new();
+    for &(name, data) in files {
+        let name_bytes = name.as_bytes();
+        let crc = crc32(data);
+        let len = data.len() as u32;
+        let offset = out.len() as u32;
+
+        out.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
+        out.extend_from_slice(&20u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&crc.to_le_bytes());
+        out.extend_from_slice(&len.to_le_bytes());
+        out.extend_from_slice(&len.to_le_bytes());
+        out.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(name_bytes);
+        out.extend_from_slice(data);
+
+        central.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
+        central.extend_from_slice(&20u16.to_le_bytes());
+        central.extend_from_slice(&20u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&crc.to_le_bytes());
+        central.extend_from_slice(&len.to_le_bytes());
+        central.extend_from_slice(&len.to_le_bytes());
+        central.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u32.to_le_bytes());
+        central.extend_from_slice(&offset.to_le_bytes());
+        central.extend_from_slice(name_bytes);
+    }
+    let cd_offset = out.len() as u32;
+    let cd_size = central.len() as u32;
+    let count = files.len() as u16;
+    out.extend_from_slice(&central);
+    out.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&count.to_le_bytes());
+    out.extend_from_slice(&count.to_le_bytes());
+    out.extend_from_slice(&cd_size.to_le_bytes());
+    out.extend_from_slice(&cd_offset.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+const NETLIFY_RELAY_FUNCTION_CODE: &str = r#"exports.handler = async (event) => {
+  const headers = {};
+  for (const [k, v] of Object.entries(event.headers || {})) headers[k.toLowerCase()] = v;
+  const target = headers["x-relay-target"];
+  const relayPath = headers["x-relay-path"] || "/";
+  if (!target) {
+    return { statusCode: 400, headers: { "content-type": "application/json" }, body: JSON.stringify({ error: "Missing x-relay-target header" }) };
+  }
+  const targetUrl = target.replace(/\/$/, "") + relayPath;
+  const forwardHeaders = { ...event.headers };
+  for (const k of Object.keys(forwardHeaders)) {
+    const lower = k.toLowerCase();
+    if (lower === "x-relay-target" || lower === "x-relay-path" || lower === "host") delete forwardHeaders[k];
+  }
+  try {
+    const upstream = await fetch(targetUrl, {
+      method: event.httpMethod,
+      headers: forwardHeaders,
+      body: event.httpMethod !== "GET" && event.httpMethod !== "HEAD" && event.body
+        ? event.isBase64Encoded ? Buffer.from(event.body, "base64") : event.body
+        : undefined,
+    });
+    const responseHeaders = {};
+    upstream.headers.forEach((value, key) => { responseHeaders[key] = value; });
+    const ct = upstream.headers.get("content-type") || "";
+    const isText = /^(text\/|[^;]*json|[^;]*event-stream|[^;]*javascript|[^;]*xml|[^;]*urlencoded)/i.test(ct);
+    const rawBody = await upstream.arrayBuffer();
+    return {
+      statusCode: upstream.status,
+      headers: responseHeaders,
+      body: isText ? Buffer.from(rawBody).toString("utf8") : Buffer.from(rawBody).toString("base64"),
+      isBase64Encoded: !isText,
+    };
+  } catch (error) {
+    return { statusCode: 502, headers: { "content-type": "application/json" }, body: JSON.stringify({ error: error.message || "Relay fetch failed" }) };
+  }
+};"#;
+
+const NETLIFY_INDEX_HTML: &str = "<!doctype html><html><head><meta charset=\"utf-8\"><title>9Router Relay</title></head><body><p>9Router relay function lives at <code>/.netlify/functions/relay</code>.</p></body></html>";
+
+async fn netlify_deploy(State(s): State<AppState>, body: Option<Json<Value>>) -> Response {
+    let body = body.map(|b| b.0).unwrap_or_else(|| json!({}));
+    let token = body["netlifyToken"].as_str().unwrap_or("").trim();
+    if token.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Netlify API token is required" })),
+        )
+            .into_response();
+    }
+    let site_name = sanitize_slug(
+        body["projectName"].as_str().or(body["siteName"].as_str()),
+        "relay",
+    );
+    let api = "https://api.netlify.com/api/v1";
+
+    let site_res = match json_req(
+        &s.executor.0,
+        reqwest::Method::POST,
+        &format!("{api}/sites"),
+        token,
+        &json!({ "name": site_name }),
+    )
+    .send()
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": e.to_string() })),
+            )
+                .into_response();
+        }
+    };
+    if !site_res.status().is_success() {
+        let code = site_res.status().as_u16();
+        let err = resp_json(site_res).await;
+        let msg = err["message"]
+            .as_str()
+            .or(err["error"].as_str())
+            .unwrap_or("Failed to create Netlify site");
+        let status = if code == 422 {
+            StatusCode::CONFLICT
+        } else {
+            StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_GATEWAY)
+        };
+        return (status, Json(json!({ "error": msg }))).into_response();
+    }
+
+    let site = resp_json(site_res).await;
+    let site_id = site["id"].as_str().or(site["site_id"].as_str());
+    let site_url = site["ssl_url"].as_str().or(site["url"].as_str());
+    let (Some(site_id), Some(site_url)) = (site_id, site_url) else {
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": "Netlify site created but no site URL returned" })),
+        )
+            .into_response();
+    };
+
+    let zip = build_stored_zip(&[("relay.js", NETLIFY_RELAY_FUNCTION_CODE.as_bytes())]);
+    let sha1 = hex_lower(ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, NETLIFY_INDEX_HTML.as_bytes()).as_ref());
+    let sha256 = hex_lower(ring::digest::digest(&ring::digest::SHA256, &zip).as_ref());
+
+    let deploy_res = match json_req(
+        &s.executor.0,
+        reqwest::Method::POST,
+        &format!("{api}/sites/{site_id}/deploys"),
+        token,
+        &json!({
+            "files": { "/index.html": sha1 },
+            "functions": { "relay": sha256 }
+        }),
+    )
+    .send()
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": e.to_string() })),
+            )
+                .into_response();
+        }
+    };
+    if !deploy_res.status().is_success() {
+        let status = StatusCode::from_u16(deploy_res.status().as_u16())
+            .unwrap_or(StatusCode::BAD_GATEWAY);
+        let err = resp_json(deploy_res).await;
+        let msg = err["message"]
+            .as_str()
+            .or(err["error"].as_str())
+            .unwrap_or("Failed to create Netlify deploy");
+        return (status, Json(json!({ "error": msg }))).into_response();
+    }
+
+    let deploy = resp_json(deploy_res).await;
+    let Some(deploy_id) = deploy["id"].as_str() else {
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": "Netlify deploy created but no deploy ID returned" })),
+        )
+            .into_response();
+    };
+
+    let req_files: HashSet<&str> = deploy["required"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str())
+        .collect();
+    if req_files.contains(sha1.as_str())
+        && let Ok(r) = s
+            .executor
+            .0
+            .put(format!("{api}/deploys/{deploy_id}/files/index.html"))
+            .bearer_auth(token)
+            .header("content-type", "application/octet-stream")
+            .body(NETLIFY_INDEX_HTML)
+            .send()
+            .await
+        && !r.status().is_success()
+    {
+        let status = StatusCode::from_u16(r.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+        return (
+            status,
+            Json(json!({ "error": "Failed to upload site file to Netlify" })),
+        )
+            .into_response();
+    }
+
+    let req_fns: HashSet<&str> = deploy["required_functions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str())
+        .collect();
+    if req_fns.contains(sha256.as_str())
+        && let Ok(r) = s
+            .executor
+            .0
+            .put(format!(
+                "{api}/deploys/{deploy_id}/functions/relay?runtime=js"
+            ))
+            .bearer_auth(token)
+            .header("content-type", "application/octet-stream")
+            .body(zip)
+            .send()
+            .await
+        && !r.status().is_success()
+    {
+        let status = StatusCode::from_u16(r.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+        return (
+            status,
+            Json(json!({ "error": "Failed to upload relay function to Netlify" })),
+        )
+            .into_response();
+    }
+
+    for _ in 0..30 {
+        let Ok(r) = s
+            .executor
+            .0
+            .get(format!("{api}/deploys/{deploy_id}"))
+            .bearer_auth(token)
+            .send()
+            .await
+        else {
+            break;
+        };
+        let d = resp_json(r).await;
+        match d["state"].as_str() {
+            Some("ready") => break,
+            Some("error") => {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({ "error": "Netlify deploy failed" })),
+                )
+                    .into_response();
+            }
+            _ => tokio::time::sleep(std::time::Duration::from_secs(2)).await,
+        }
+    }
+
+    let relay_url = format!("{}/.netlify/functions/relay", site_url.trim_end_matches('/'));
+    insert_deployed_pool(&s, &site_name, &relay_url, "netlify")
+}
+
+const VERCEL_RELAY_FUNCTION_CODE: &str = r#"export const config = { runtime: "edge" };
+export default async function handler(req) {
+  const target = req.headers.get("x-relay-target");
+  const relayPath = req.headers.get("x-relay-path") || "/";
+  if (!target) {
+    return new Response(JSON.stringify({ error: "Missing x-relay-target header" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  const targetUrl = target.replace(/\/$/, "") + relayPath;
+  const rawHeaders = {};
+  for (const [k, v] of req.headers.entries()) rawHeaders[k] = v;
+  delete rawHeaders["x-relay-target"];
+  delete rawHeaders["x-relay-path"];
+  delete rawHeaders["host"];
+  const response = await fetch(targetUrl, {
+    method: req.method,
+    headers: rawHeaders,
+    body: req.method !== "GET" && req.method !== "HEAD" ? req.body : undefined,
+    duplex: "half",
+  });
+  return new Response(response.body, { status: response.status, headers: response.headers });
+}"#;
+
+async fn vercel_deploy(State(s): State<AppState>, body: Option<Json<Value>>) -> Response {
+    let body = body.map(|b| b.0).unwrap_or_else(|| json!({}));
+    let token = body["vercelToken"].as_str().unwrap_or("").trim();
+    if token.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Vercel API token is required" })),
+        )
+            .into_response();
+    }
+    let project_name = sanitize_slug(body["projectName"].as_str(), "relay");
+    let api = "https://api.vercel.com";
+
+    let deploy_res = match json_req(
+        &s.executor.0,
+        reqwest::Method::POST,
+        &format!("{api}/v13/deployments"),
+        token,
+        &json!({
+            "name": project_name,
+            "files": [
+                { "file": "api/relay.js", "data": VERCEL_RELAY_FUNCTION_CODE },
+                { "file": "package.json", "data": json!({ "name": project_name, "version": "1.0.0" }).to_string() },
+                { "file": "vercel.json", "data": json!({ "rewrites": [{ "source": "/(.*)", "destination": "/api/relay" }] }).to_string() }
+            ],
+            "projectSettings": { "framework": null },
+            "target": "production"
+        }),
+    )
+    .send()
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": e.to_string() })),
+            )
+                .into_response();
+        }
+    };
+    if !deploy_res.status().is_success() {
+        let status = StatusCode::from_u16(deploy_res.status().as_u16())
+            .unwrap_or(StatusCode::BAD_GATEWAY);
+        let err = resp_json(deploy_res).await;
+        let msg = err["error"]["message"]
+            .as_str()
+            .unwrap_or("Failed to create Vercel deployment");
+        return (status, Json(json!({ "error": msg }))).into_response();
+    }
+
+    let deployment = resp_json(deploy_res).await;
+    let deployment_id = deployment["id"].as_str().or(deployment["uid"].as_str());
+    let project_id = deployment["projectId"].as_str().unwrap_or(&project_name);
+
+    let _ = json_req(
+        &s.executor.0,
+        reqwest::Method::PATCH,
+        &format!("{api}/v9/projects/{project_id}"),
+        token,
+        &json!({ "ssoProtection": null }),
+    )
+    .send()
+    .await;
+
+    let mut ready_url = deployment["url"].as_str().map(str::to_owned);
+    if let Some(dep_id) = deployment_id {
+        for _ in 0..40 {
+            let Ok(r) = s
+                .executor
+                .0
+                .get(format!("{api}/v13/deployments/{dep_id}"))
+                .bearer_auth(token)
+                .send()
+                .await
+            else {
+                break;
+            };
+            let d = resp_json(r).await;
+            match d["readyState"].as_str() {
+                Some("READY") => {
+                    if let Some(u) = d["url"].as_str() {
+                        ready_url = Some(u.to_owned());
+                    }
+                    break;
+                }
+                Some("ERROR") | Some("CANCELED") => {
+                    return (
+                        StatusCode::BAD_GATEWAY,
+                        Json(json!({ "error": format!("Deployment failed: {}", d["readyState"].as_str().unwrap_or("ERROR")) })),
+                    )
+                        .into_response();
+                }
+                _ => tokio::time::sleep(std::time::Duration::from_secs(3)).await,
+            }
+        }
+    }
+
+    let Some(u) = ready_url else {
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": "Vercel deployment did not return a URL" })),
+        )
+            .into_response();
+    };
+    let deploy_url = if u.starts_with("http") {
+        u
+    } else {
+        format!("https://{u}")
+    };
+    insert_deployed_pool(&s, &project_name, &deploy_url, "vercel")
 }
 
 fn now_iso() -> String {
@@ -669,19 +1513,43 @@ mod tests {
             .unwrap();
         assert_eq!(r.status(), 200);
 
-        // Deploy 501
-        for path in [
-            "/api/proxy-pools/cloudflare-deploy",
-            "/api/proxy-pools/deno-deploy",
-            "/api/proxy-pools/netlify-deploy",
-            "/api/proxy-pools/vercel-deploy",
+        // Deploy input validation (never 501)
+        for (path, expected_err) in [
+            (
+                "/api/proxy-pools/cloudflare-deploy",
+                "Cloudflare Account ID and API Token are required",
+            ),
+            (
+                "/api/proxy-pools/deno-deploy",
+                "Organization domain is required",
+            ),
+            (
+                "/api/proxy-pools/netlify-deploy",
+                "Netlify API token is required",
+            ),
+            (
+                "/api/proxy-pools/vercel-deploy",
+                "Vercel API token is required",
+            ),
         ] {
             let r = app
                 .clone()
-                .oneshot(Request::post(path).body(Body::empty()).unwrap())
+                .oneshot(
+                    Request::post(path)
+                        .header("content-type", "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
                 .await
                 .unwrap();
-            assert_eq!(r.status(), 501);
+            assert_eq!(r.status(), 400, "expected 400 for {path}");
+            let body: Value =
+                serde_json::from_slice(&to_bytes(r.into_body(), 4096).await.unwrap()).unwrap();
+            assert_eq!(body["error"], expected_err);
         }
+
+        // Stored zip builds valid PK header
+        let zip = build_stored_zip(&[("relay.js", b"exports.handler = () => {};")]);
+        assert_eq!(&zip[0..4], &[0x50, 0x4b, 0x03, 0x04]);
     }
 }
