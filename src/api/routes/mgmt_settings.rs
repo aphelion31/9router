@@ -59,10 +59,9 @@ fn err(status: StatusCode, message: &str) -> Response {
 }
 
 fn safe_settings_map(conn: &Connection) -> Value {
-    let mut map = crate::db::kv_get(conn, "settings", "data")
+    let mut map = crate::db::settings_get(conn)
         .ok()
-        .flatten()
-        .and_then(|s| serde_json::from_str::<Map<String, Value>>(&s).ok())
+        .and_then(|v| v.as_object().cloned())
         .unwrap_or_default();
     let has_pw = map
         .get("password")
@@ -93,11 +92,11 @@ async fn patch_settings(State(s): State<AppState>, Json(body): Json<Value>) -> R
     let Ok(db) = s.db.lock() else {
         return err(StatusCode::INTERNAL_SERVER_ERROR, "DB lock failed");
     };
-    let mut map = crate::db::kv_get(&db, "settings", "data")
+    let mut map = crate::db::settings_get(&db)
         .ok()
-        .flatten()
-        .and_then(|s| serde_json::from_str::<Map<String, Value>>(&s).ok())
+        .and_then(|v| v.as_object().cloned())
         .unwrap_or_default();
+    let has_new_pw = patch.contains_key("newPassword");
     for (k, v) in patch {
         if k == "newPassword" {
             let Some(pw) = v.as_str().filter(|p| !p.is_empty()) else {
@@ -118,7 +117,7 @@ async fn patch_settings(State(s): State<AppState>, Json(body): Json<Value>) -> R
             map.insert("password".into(), Value::String(hash));
             continue;
         }
-        if k == "currentPassword" || k == "hasPassword" {
+        if k == "currentPassword" || k == "hasPassword" || (k == "password" && has_new_pw) {
             continue;
         }
         if k == "password" {
@@ -139,7 +138,7 @@ async fn patch_settings(State(s): State<AppState>, Json(body): Json<Value>) -> R
         }
         map.insert(k.clone(), v.clone());
     }
-    if crate::db::kv_set(&db, "settings", "data", &Value::Object(map).to_string()).is_err() {
+    if crate::db::settings_put(&db, &Value::Object(map)).is_err() {
         return err(StatusCode::INTERNAL_SERVER_ERROR, "Failed to update settings");
     }
     Json(safe_settings_map(&db)).into_response()
