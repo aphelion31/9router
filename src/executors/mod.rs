@@ -45,6 +45,15 @@ pub struct ExecutorRequest {
     pub provider_specific_data: Option<Value>,
 }
 
+fn retry_policy(status: u16) -> (usize, std::time::Duration) {
+    match status {
+        502 => (3, std::time::Duration::from_secs(3)),
+        503 => (3, std::time::Duration::from_secs(2)),
+        504 => (2, std::time::Duration::from_secs(3)),
+        _ => (0, std::time::Duration::ZERO),
+    }
+}
+
 /// Sends a translated request and leaves the upstream body unbuffered.
 /// The response exposes both `status()` and `bytes_stream()`, including on errors.
 pub async fn execute(
@@ -102,6 +111,9 @@ pub async fn execute(
     let endpoint = request
         .base_url
         .as_deref()
+        .or_else(|| (provider.id == "xiaomi-tokenplan").then(|| xiaomi_tokenplan::endpoint(request.provider_specific_data.as_ref())))
+        .or_else(|| (provider.id == "azure").then(|| request.provider_specific_data.as_ref()
+            .and_then(|v| v.get("azureEndpoint")).and_then(Value::as_str).filter(|s| !s.is_empty())).flatten())
         .or_else(|| (provider.id == "azure").then_some(azure_endpoint.as_str()))
         .or_else(|| {
             matches!(provider.id.as_str(), "vertex" | "vertex-partner").then_some(vertex_endpoint)
@@ -127,14 +139,23 @@ pub async fn execute(
     }
     let responses = matches!(provider.id.as_str(), "opencode-go" | "opencode-zen")
         && opencode_go::is_responses(&provider.id, &request.model);
-    let mut url = if responses {
+    let mut url = if provider.id == "ollama-local" && request.base_url.is_none() {
+        let host = request.provider_specific_data.as_ref()
+            .and_then(|data| data.get("baseUrl"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|host| !host.is_empty())
+            .unwrap_or("http://localhost:11434")
+            .trim_end_matches('/');
+        reqwest::Url::parse(&format!("{host}/api/chat")).context("invalid Ollama host")?
+    } else if responses {
         opencode_go::url(endpoint)?
     } else if provider.id == "opencode" {
         opencode::url(endpoint, &request.model)?
     } else if provider.id == "xiaomi-tokenplan" {
         xiaomi_tokenplan::url(endpoint, request.model.ends_with("-claude"))?
     } else if provider.id == "azure" {
-        azure::url(endpoint, &request.model)?
+        azure::url(endpoint, &request.model, request.provider_specific_data.as_ref())?
     } else if provider.id == "antigravity" {
         antigravity::url(endpoint, &request.model, request.stream)?
     } else if provider.id == "gemini-cli" {
@@ -148,6 +169,7 @@ pub async fn execute(
             request.stream,
             request.api_key.as_deref(),
             request.access_token.as_deref(),
+            request.provider_specific_data.as_ref(),
         )?
     } else {
         reqwest::Url::parse(endpoint).context("invalid upstream URL")?
@@ -325,7 +347,9 @@ pub async fn execute(
         {
             builder = builder.header("api-key", key);
         }
-        if let Ok(organization) = std::env::var("AZURE_ORGANIZATION") {
+        if let Some(organization) = request.provider_specific_data.as_ref()
+            .and_then(|v| v.get("organization")).and_then(Value::as_str).filter(|s| !s.is_empty())
+            .map(str::to_owned).or_else(|| std::env::var("AZURE_ORGANIZATION").ok()) {
             builder = builder.header("openai-organization", organization);
         }
     } else if matches!(provider.id.as_str(), "vertex" | "vertex-partner") {
@@ -358,10 +382,19 @@ pub async fn execute(
     {
         builder = builder.bearer_auth(token);
     }
-    let response = builder
-        .body(serde_json::to_vec(&request.body)?)
-        .send()
-        .await?;
+    let outgoing = builder.body(serde_json::to_vec(&request.body)?).build()?;
+    let mut attempts = 0;
+    let response = loop {
+        let cloned = outgoing.try_clone().context("upstream request cannot be retried")?;
+        let result = client.execute(cloned).await;
+        let status = result.as_ref().map(|r| r.status().as_u16()).unwrap_or(502);
+        let (limit, delay) = retry_policy(status);
+        if attempts >= limit || result.as_ref().is_err_and(|e| e.is_timeout()) {
+            break result?;
+        }
+        attempts += 1;
+        tokio::time::sleep(delay).await;
+    };
     if provider.id == "minimax-code" && matches!(response.status().as_u16(), 402 | 403) {
         let status = response.status();
         let headers = response.headers().clone();
@@ -846,7 +879,7 @@ mod tests {
                 stream: false,
                 api_key: None,
                 access_token: None,
-                base_url: Some(url),
+                provider_specific_data: Some(json!({"baseUrl": format!(" {}/// ", url.trim_end_matches("/api/chat"))})),
                 ..Default::default()
             },
         )
@@ -855,6 +888,30 @@ mod tests {
         let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
         assert_eq!(result["uri"], "/api/chat");
         assert_eq!(result["body"]["model"], "model");
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn retries_transient_upstream_status() {
+        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+        let count = Arc::new(AtomicUsize::new(0));
+        let seen = count.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/api/chat", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(move || {
+                let seen = seen.clone();
+                async move {
+                    if seen.fetch_add(1, Ordering::SeqCst) == 0 { StatusCode::SERVICE_UNAVAILABLE } else { StatusCode::OK }
+                }
+            }))).await.unwrap()
+        });
+        let response = execute(&reqwest::Client::new(), ExecutorRequest {
+            provider: "ollama-local".into(), model: "model".into(), body: json!({}), base_url: Some(url), ..Default::default()
+        }).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+        assert_eq!(retry_policy(429).0, 0);
         task.abort();
     }
 
@@ -911,7 +968,7 @@ mod tests {
                 stream: true,
                 api_key: Some("secret".into()),
                 access_token: None,
-                base_url: Some(url),
+                provider_specific_data: Some(json!({"azureEndpoint": url, "deployment": "override", "apiVersion": "test-version", "organization": "org"})),
                 ..Default::default()
             },
         )
@@ -922,7 +979,7 @@ mod tests {
             result["uri"]
                 .as_str()
                 .unwrap()
-                .starts_with("/openai/deployments/deployment/chat/completions?api-version=")
+                .starts_with("/openai/deployments/override/chat/completions?api-version=test-version")
         );
         assert_eq!(result["key"], "secret");
         assert_eq!(result["authorization"], Value::Null);
