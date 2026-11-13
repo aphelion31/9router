@@ -6,6 +6,84 @@ pub fn read_numbered(input: &str) -> String {
     truncate(input, true)
 }
 
+pub fn git_status(input: &str) -> String {
+    if input.trim().is_empty() {
+        return "Clean working tree".into();
+    }
+    let mut branch = "";
+    let mut staged = Vec::new();
+    let mut modified = Vec::new();
+    let mut untracked = Vec::new();
+    let mut conflicts = 0;
+    for raw in input.split('\n') {
+        if let Some(value) = raw.strip_prefix("On branch ") {
+            branch = value.split_whitespace().next().unwrap_or("");
+            continue;
+        }
+        if let Some(value) = raw.strip_prefix("##") {
+            branch = value.trim_start();
+            continue;
+        }
+        let bytes = raw.as_bytes();
+        if bytes.len() >= 3
+            && bytes[2] == b' '
+            && b" MADRCU?!".contains(&bytes[0])
+            && b" MADRCU?!".contains(&bytes[1])
+        {
+            let file = &raw[3..];
+            if &bytes[..2] == b"??" {
+                untracked.push(file);
+                continue;
+            }
+            if b"MADRC".contains(&bytes[0]) {
+                staged.push(file);
+            } else if bytes[0] == b'U' {
+                conflicts += 1;
+            }
+            if b"MD".contains(&bytes[1]) {
+                modified.push(file);
+            }
+            continue;
+        }
+        if let Some((kind, path)) = raw.trim_start().split_once(':') {
+            let path = path.trim();
+            if path.is_empty() {
+                continue;
+            }
+            match kind {
+                "both modified" => conflicts += 1,
+                "modified" | "deleted" => modified.push(path),
+                "new file" | "renamed" => staged.push(path),
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if !branch.is_empty() {
+        out.push(format!("* {branch}"));
+    }
+    for (prefix, files) in [
+        ("+ Staged", &staged),
+        ("~ Modified", &modified),
+        ("? Untracked", &untracked),
+    ] {
+        if !files.is_empty() {
+            out.push(format!("{prefix}: {} files", files.len()));
+            out.extend(files.iter().take(10).map(|f| format!("   {f}")));
+            if files.len() > 10 {
+                out.push(format!("   ... +{} more", files.len() - 10));
+            }
+        }
+    }
+    if conflicts > 0 {
+        out.push(format!("conflicts: {conflicts} files"));
+    }
+    if staged.is_empty() && modified.is_empty() && untracked.is_empty() && conflicts == 0 {
+        out.push("clean — nothing to commit".into());
+    }
+    out.join("\n")
+}
+
 pub fn tree(input: &str) -> String {
     let mut lines = Vec::new();
     for line in input.split('\n') {
@@ -87,6 +165,14 @@ pub fn dedup_log(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn git_status_formats_porcelain() {
+        assert_eq!(
+            git_status("## main\nM  a\n M b\n?? c\n"),
+            "* main\n+ Staged: 1 files\n   a\n~ Modified: 1 files\n   b\n? Untracked: 1 files\n   c"
+        );
+        assert_eq!(git_status(""), "Clean working tree");
+    }
     #[test]
     fn tree_removes_summary_and_blank_edges() {
         assert_eq!(tree("\n.\n├── a\n\n1 directory, 1 file\n"), ".\n├── a");
