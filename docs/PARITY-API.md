@@ -125,14 +125,14 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` depends on an
 | /api/proxy-pools | GET, POST | todo |
 | /api/proxy-pools/test-all | GET, POST | todo |
 | /api/proxy-pools/vercel-deploy | POST | todo |
-| /api/pxpipe/health | POST | todo |
-| /api/pxpipe/install | POST | todo |
-| /api/pxpipe/logs | GET | todo |
-| /api/pxpipe/restart | POST | todo |
-| /api/pxpipe/start | POST | todo |
-| /api/pxpipe/stats | GET | todo |
-| /api/pxpipe/status | GET | todo |
-| /api/pxpipe/stop | POST | todo |
+| /api/pxpipe/health | POST | done |
+| /api/pxpipe/install | POST | 501 |
+| /api/pxpipe/logs | GET | done |
+| /api/pxpipe/restart | POST | 501 |
+| /api/pxpipe/start | POST | 501 |
+| /api/pxpipe/stats | GET | done |
+| /api/pxpipe/status | GET | done |
+| /api/pxpipe/stop | POST | 501 |
 | /api/security-log | GET | todo |
 | /api/settings/backup/[id] | GET, POST | todo |
 | /api/settings/backup | GET, POST | todo |
