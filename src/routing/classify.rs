@@ -31,7 +31,18 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// `retry_after` is the upstream `retry-after` header in seconds, when present.
 pub fn classify(provider: &str, status: u16, body: &str, now_ms: u64) -> Verdict {
+    classify_with_retry_after(provider, status, body, None, now_ms)
+}
+
+pub fn classify_with_retry_after(
+    provider: &str,
+    status: u16,
+    body: &str,
+    retry_after: Option<Duration>,
+    now_ms: u64,
+) -> Verdict {
     let lower = body.to_ascii_lowercase();
     if (400..500).contains(&status) && !matches!(status, 401 | 402 | 403 | 404 | 429) {
         return Verdict::RequestScoped;
@@ -45,6 +56,12 @@ pub fn classify(provider: &str, status: u16, body: &str, now_ms: u64) -> Verdict
         }
     }
     if status == 429 || lower.contains("overloaded") || BACKOFF_TEXT.iter().any(|t| lower.contains(t)) {
+        // Upstream-stated wait wins over our own backoff, capped like quota cooldowns.
+        if let Some(wait) = retry_after.or_else(|| {
+            quota_reset_ms(body, now_ms).map(|r| Duration::from_millis(r.saturating_sub(now_ms)))
+        }) {
+            return Verdict::Fixed(wait.min(MAX_RATE_LIMIT_COOLDOWN));
+        }
         return Verdict::Backoff;
     }
     match status {
@@ -54,7 +71,6 @@ pub fn classify(provider: &str, status: u16, body: &str, now_ms: u64) -> Verdict
 }
 
 /// `error.resets_at` (unix s, future only), else `error.resets_in_seconds`.
-/// The `retry-after` header is not seen here (ceiling: classify takes the body only).
 fn quota_reset_ms(body: &str, now_ms: u64) -> Option<u64> {
     let v: Value = serde_json::from_str(body).ok()?;
     let err = v.get("error")?;

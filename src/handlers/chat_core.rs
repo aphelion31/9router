@@ -57,6 +57,8 @@ pub struct ChatCoreOptions {
     pub user_agent: Option<String>,
     pub client_tool: Option<String>,
     pub provider_session_id: Option<String>,
+    /// Upper bound for upstream response headers. Exceeding it returns status 504.
+    pub first_response_timeout: Option<std::time::Duration>,
 }
 
 pub enum ChatCoreResult {
@@ -65,6 +67,8 @@ pub enum ChatCoreResult {
         status: u16,
         message: String,
         headers: Vec<(String, String)>,
+        /// Upstream `retry-after` header, in seconds.
+        retry_after: Option<u64>,
     },
 }
 
@@ -871,13 +875,29 @@ pub async fn handle_chat_core(
         client_tool: options.client_tool.clone(),
     };
 
-    let mut provider_resp = match executor.execute(exec_req.clone()).await {
+    let first = executor.execute(exec_req.clone());
+    let first = match options.first_response_timeout {
+        Some(limit) => match tokio::time::timeout(limit, first).await {
+            Ok(r) => r,
+            Err(_) => {
+                return ChatCoreResult::Error {
+                    status: 504,
+                    message: format!("No first response within {}s", limit.as_secs()),
+                    headers: vec![],
+                    retry_after: None,
+                };
+            }
+        },
+        None => first.await,
+    };
+    let mut provider_resp = match first {
         Ok(r) => r,
         Err(err) => {
             return ChatCoreResult::Error {
                 status: 502,
                 message: err,
                 headers: vec![],
+                retry_after: None,
             };
         }
     };
@@ -897,6 +917,10 @@ pub async fn handle_chat_core(
     if !(200..300).contains(&provider_resp.status) {
         let status = provider_resp.status;
         let headers = provider_resp.headers;
+        let retry_after = headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("retry-after"))
+            .and_then(|(_, v)| v.trim().parse::<u64>().ok());
         let bytes = read_body_bytes(provider_resp.body).await.unwrap_or_default();
         let message = serde_json::from_slice::<Value>(&bytes)
             .ok()
@@ -918,6 +942,7 @@ pub async fn handle_chat_core(
             status,
             message,
             headers,
+            retry_after,
         };
     }
 
@@ -938,6 +963,7 @@ pub async fn handle_chat_core(
                         status: 502,
                         message: "Invalid JSON response from upstream".to_string(),
                         headers: provider_resp.headers,
+                        retry_after: None,
                     };
                 }
             }
@@ -954,6 +980,7 @@ pub async fn handle_chat_core(
                         status: 502,
                         message: "Invalid streaming body for non-stream request".to_string(),
                         headers: provider_resp.headers,
+                        retry_after: None,
                     };
                 }
             }

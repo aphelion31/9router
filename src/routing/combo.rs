@@ -6,8 +6,8 @@ pub fn grace_key(combo: &str, member: &str) -> String {
 }
 
 /// Keeps configured order. Drops members still in grace for this combo.
-// ponytail: grace applies only to multi-member combos (as combo.js). No streaming
-// first-response timeout yet, so nothing sets grace from here.
+// Grace is set by chat.rs when a member sends no first byte within
+// COMBO_FIRST_RESPONSE_TIMEOUT_MS. It applies only to multi-member combos (as combo.js).
 pub fn plan(cd: &Cooldowns, combo: &str, members: &[String]) -> Vec<String> {
     if members.len() <= 1 {
         return members.to_vec();
