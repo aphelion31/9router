@@ -74,8 +74,8 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` depends on an
 | /api/models/disabled | DELETE, GET, POST | todo |
 | /api/models | GET, PUT | todo |
 | /api/models/test | POST | todo |
-| /api/monitoring | GET | todo |
-| /api/notifications | GET, POST | todo |
+| /api/monitoring | GET | done |
+| /api/notifications | GET, POST | done |
 | /api/oauth/[provider]/[action] | GET, POST | todo |
 | /api/oauth/codex/bulk-import | POST | todo |
 | /api/oauth/codex/import-token | POST | todo |
@@ -133,7 +133,7 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` depends on an
 | /api/pxpipe/stats | GET | todo |
 | /api/pxpipe/status | GET | todo |
 | /api/pxpipe/stop | POST | todo |
-| /api/security-log | GET | todo |
+| /api/security-log | GET | done |
 | /api/settings/backup/[id] | GET, POST | todo |
 | /api/settings/backup | GET, POST | todo |
 | /api/settings/database | GET, POST | todo |
