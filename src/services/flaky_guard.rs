@@ -144,10 +144,216 @@ pub fn detect_flaky_response(json: &Value) -> Option<&'static str> {
     None
 }
 
+/// Verdict for an SSE stream that ended inside the probe window: any assistant content
+/// across deltas is judged together. Tools or reasoning anywhere makes it legitimate.
+pub fn sse_ended_verdict(text: &str) -> Option<&'static str> {
+    let mut acc = String::new();
+    let (mut has_tools, mut has_reasoning, mut saw_payload) = (false, false, false);
+    for line in text.lines().map(|l| l.trim_end_matches('\r')) {
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let payload = data.trim();
+        if payload.is_empty() || payload == "[DONE]" {
+            continue;
+        }
+        let Ok(json) = serde_json::from_str::<Value>(payload) else {
+            continue;
+        };
+        saw_payload = true;
+        let sig = extract_response_signals(&json);
+        acc.push_str(&sig.text);
+        has_tools |= sig.has_tools;
+        has_reasoning |= sig.has_reasoning;
+        if let (Some(delta), Some(kind)) = (json["delta"].as_str(), json["type"].as_str()) {
+            if kind.contains("output_text") {
+                acc.push_str(delta);
+            }
+        }
+    }
+    if !saw_payload || has_tools || has_reasoning {
+        return None;
+    }
+    if acc.trim().is_empty() {
+        return Some("empty");
+    }
+    is_degenerate_text(&acc).then_some("degenerate")
+}
+
+/// Pulls the raw `"content"` string value out of a body that is not valid JSON
+/// (unescaped control chars, trailing junk). Returns the unescaped text when possible.
+fn salvage_content(body: &str) -> Option<String> {
+    let at = body.find("\"content\"")? + "\"content\"".len();
+    let rest = body[at..].trim_start().strip_prefix(':')?.trim_start().strip_prefix('"')?;
+    let mut raw = String::new();
+    let mut escaped = false;
+    for c in rest.chars() {
+        if escaped {
+            raw.push('\\');
+            raw.push(c);
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == '"' {
+            return Some(serde_json::from_str::<String>(&format!("\"{raw}\"")).unwrap_or(raw));
+        } else {
+            raw.push(c);
+        }
+    }
+    None
+}
+
+/// Judges a finished body (materialized JSON or an SSE stream that closed).
+/// `None` means not flaky. Unknown shapes and unusable input fail open.
+pub fn judge_finished_text(text: &str) -> Option<&'static str> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Some("empty");
+    }
+    if trimmed.starts_with('{') {
+        return match serde_json::from_str::<Value>(trimmed) {
+            Ok(json) => detect_flaky_response(&json),
+            Err(_) => {
+                if trimmed.contains("\"tool_calls\"") || trimmed.contains("\"function_call\"") {
+                    return None;
+                }
+                let content = salvage_content(trimmed)?;
+                if content.trim().is_empty() {
+                    Some("empty")
+                } else {
+                    is_degenerate_text(&content).then_some("degenerate")
+                }
+            }
+        };
+    }
+    if trimmed.starts_with("data:") || trimmed.starts_with("event:") {
+        return sse_ended_verdict(trimmed);
+    }
+    None
+}
+
+/// Result of a bounded probe. `buffered` holds every byte read so far; the caller must
+/// replay it before reading the rest of the response, because reqwest responses cannot be cloned.
+#[derive(Debug)]
+pub struct Probe {
+    pub flaky: Option<&'static str>,
+    pub buffered: Vec<u8>,
+    pub ended: bool,
+}
+
+/// Reads up to `budget` / `max_bytes`. Only a stream that finishes inside the window is judged;
+/// a live stream is released as not flaky, fail open.
+pub async fn probe_response(
+    response: &mut reqwest::Response,
+    budget: std::time::Duration,
+    max_bytes: usize,
+) -> Probe {
+    let deadline = tokio::time::Instant::now() + budget;
+    let mut buffered = Vec::new();
+    let mut ended = false;
+    while buffered.len() <= max_bytes {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(remaining, response.chunk()).await {
+            Ok(Ok(Some(chunk))) => buffered.extend_from_slice(&chunk),
+            Ok(Ok(None)) => {
+                ended = true;
+                break;
+            }
+            _ => break,
+        }
+    }
+    let flaky = if ended {
+        judge_finished_text(&String::from_utf8_lossy(&buffered))
+    } else {
+        None
+    };
+    Probe {
+        flaky,
+        buffered,
+        ended,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::time::{Duration, Instant};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn judges_finished_bodies() {
+        assert_eq!(judge_finished_text(""), Some("empty"));
+        assert_eq!(
+            judge_finished_text(r#"{"choices":[{"message":{"content":"ok fine"}}]}"#),
+            None
+        );
+        assert_eq!(
+            judge_finished_text(r#"data: {"choices":[{"delta":{"content":""}}]}
+
+data: [DONE]
+"#),
+            Some("empty")
+        );
+        assert_eq!(
+            judge_finished_text(r#"data: {"choices":[{"delta":{"content":"ab"}}]}
+
+data: {"choices":[{"delta":{"content":"ab"}}]}
+"#),
+            None
+        );
+        // Malformed JSON with a salvageable degenerate content field.
+        let bad = format!(r#"{{"choices":[{{"message":{{"content":"{}"}}}}],"x":"#, "xyz".repeat(12));
+        assert_eq!(judge_finished_text(&bad), Some("degenerate"));
+        assert_eq!(
+            judge_finished_text(r#"{"choices":[{"message":{"tool_calls":[{}]}}"#),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn probe_judges_fast_stream_and_releases_live_stream() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            // Connection 1: complete SSE with no content, then close.
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = sock.read(&mut buf).await;
+            let body = "data: {\"choices\":[{\"delta\":{\"content\":\"\"}}]}\n\ndata: [DONE]\n\n";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            sock.write_all(resp.as_bytes()).await.unwrap();
+
+            // Connection 2: headers and a partial chunk, then stay open.
+            let (mut live, _) = listener.accept().await.unwrap();
+            let _ = live.read(&mut buf).await;
+            live.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        });
+
+        let client = reqwest::Client::new();
+        let mut fast = client.get(format!("http://{addr}/a")).send().await.unwrap();
+        let probe = probe_response(&mut fast, Duration::from_millis(500), 2_000_000).await;
+        assert!(probe.ended);
+        assert_eq!(probe.flaky, Some("empty"));
+
+        let mut live = client.get(format!("http://{addr}/b")).send().await.unwrap();
+        let started = Instant::now();
+        let probe = probe_response(&mut live, Duration::from_millis(150), 2_000_000).await;
+        assert!(!probe.ended);
+        assert_eq!(probe.flaky, None);
+        assert!(!probe.buffered.is_empty(), "buffered bytes must be replayable");
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
     #[test]
     fn classifies_empty_repetition_tools_and_reasoning() {
         assert_eq!(
