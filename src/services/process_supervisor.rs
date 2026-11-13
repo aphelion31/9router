@@ -64,8 +64,6 @@ pub enum SupervisorError {
     SpawnFailed(String),
     #[error("{0}")]
     Timeout(String),
-    #[error("{0}")]
-    ExitFailed(String),
 }
 
 pub struct ProcessSupervisor {

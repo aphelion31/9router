@@ -15,6 +15,12 @@ use std::collections::{HashMap, HashSet};
 const MAX_BULK_ITEMS: usize = 50;
 const QUOTA_WINDOWS: &[i64] = &[24, 168, 720];
 
+fn limits_usage(id: &str, tpm_used: i64) -> Value {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+    let usage = crate::services::key_rate_limiter::limiter().usage(id, now);
+    json!({"rpmUsed":usage.rpm_used,"rphUsed":usage.rph_used,"rpdUsed":usage.rpd_used,"inFlight":usage.in_flight,"tpmUsed":tpm_used})
+}
+
 fn err(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({ "error": message }))).into_response()
 }
@@ -303,13 +309,7 @@ async fn list_keys(State(s): State<AppState>) -> Response {
             obj.insert("limits".into(), limits.unwrap_or(Value::Null));
             obj.insert(
                 "limitsUsage".into(),
-                json!({
-                    "rpmUsed": 0,
-                    "rphUsed": 0,
-                    "rpdUsed": 0,
-                    "inFlight": 0,
-                    "tpmUsed": tpm_used
-                }),
+                limits_usage(&id, tpm_used),
             );
         }
     }
@@ -579,13 +579,7 @@ async fn get_key(State(s): State<AppState>, Path(id): Path<String>) -> Response 
     if let Some(obj) = key.as_object_mut() {
         obj.insert(
             "limitsUsage".into(),
-            json!({
-                "rpmUsed": 0,
-                "rphUsed": 0,
-                "rpdUsed": 0,
-                "inFlight": 0,
-                "tpmUsed": tpm_used
-            }),
+            limits_usage(&id, tpm_used),
         );
     }
     Json(json!({ "key": key })).into_response()
@@ -758,13 +752,7 @@ async fn update_key(
         obj.insert("limits".into(), saved_limits.unwrap_or(Value::Null));
         obj.insert(
             "limitsUsage".into(),
-            json!({
-                "rpmUsed": 0,
-                "rphUsed": 0,
-                "rpdUsed": 0,
-                "inFlight": 0,
-                "tpmUsed": tpm_used
-            }),
+            limits_usage(&id, tpm_used),
         );
     }
 
@@ -793,6 +781,18 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Method, Request};
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn reports_live_limit_usage() {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        let slot = crate::services::key_rate_limiter::limiter().admit("limits-usage-test", now);
+        let usage = limits_usage("limits-usage-test", 17);
+        assert_eq!(usage["rpmUsed"], 1);
+        assert_eq!(usage["inFlight"], 1);
+        assert_eq!(usage["tpmUsed"], 17);
+        drop(slot);
+        assert_eq!(limits_usage("limits-usage-test", 0)["inFlight"], 0);
+    }
 
     fn keys_app() -> (Router, Arc<Mutex<Connection>>) {
         let db = Connection::open_in_memory().unwrap();
