@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::handlers::chat_core::{
-    ChatCoreHooks, ChatCoreOptions, ChatCoreResult, handle_chat_core,
+    ChatCoreHooks, ChatCoreOptions, ChatCoreResult, TokenSaverConfig, handle_chat_core,
 };
 use crate::handlers::{BoxFuture, Credentials, Executor, RefreshedCredentials};
 use crate::providers;
@@ -111,6 +111,10 @@ pub trait ChatHooks: Send + Sync {
         _model: &'a str,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async {})
+    }
+
+    fn get_token_saver_config<'a>(&'a self, _model: &'a str) -> BoxFuture<'a, Option<TokenSaverConfig>> {
+        Box::pin(async { None })
     }
 
     fn on_account_error<'a>(
@@ -264,6 +268,7 @@ pub async fn handle_chat(
             let first_response_timeout = (targets_len > 1).then(|| {
                 Duration::from_millis(crate::config::COMBO_FIRST_RESPONSE_TIMEOUT_MS)
             });
+            let token_saver = hooks.get_token_saver_config(&model_str).await;
             let options = ChatCoreOptions {
                 body: body.clone(),
                 provider: target.provider.clone(),
@@ -276,6 +281,7 @@ pub async fn handle_chat(
                 client_tool: None,
                 provider_session_id: None,
                 first_response_timeout,
+                token_saver,
             };
 
             match handle_chat_core(options, executor, &core_hooks).await {
