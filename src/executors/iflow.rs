@@ -54,3 +54,21 @@ pub(super) fn prepare(
         ("x-iflow-signature", signature),
     ])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn iflow_prepare_signs_and_injects_stream_options() {
+        let mut body = json!({"model": "qwen3", "messages": [{"role": "user", "content": "hi"}]});
+        let headers = prepare(&mut body, true, Some("secret-key"), None).unwrap();
+        assert_eq!(body["stream_options"]["include_usage"], true);
+        let sig = headers
+            .iter()
+            .find(|(k, _)| *k == "x-iflow-signature")
+            .map(|(_, v)| v.as_str())
+            .unwrap();
+        assert_eq!(sig.len(), 64);
+    }
+}

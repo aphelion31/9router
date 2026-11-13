@@ -3,6 +3,77 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use ring::{digest, hmac};
 use serde_json::Value;
 
+fn load_aws_profile_credentials_from_str(
+    ini: &str,
+    profile: &str,
+) -> Option<(String, String, Option<String>)> {
+    let target = format!("[{profile}]");
+    let mut in_section = false;
+    let mut key = None;
+    let mut secret = None;
+    let mut session = None;
+    for raw in ini.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            in_section = line == target;
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            let k = k.trim();
+            let v = v.trim().to_string();
+            match k {
+                "aws_access_key_id" => key = Some(v),
+                "aws_secret_access_key" => secret = Some(v),
+                "aws_session_token" => session = Some(v),
+                _ => {}
+            }
+        }
+    }
+    Some((key?, secret?, session))
+}
+
+fn load_aws_profile_credentials(profile: &str) -> Option<(String, String, Option<String>)> {
+    let path = std::env::var("AWS_SHARED_CREDENTIALS_FILE")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| std::path::PathBuf::from(h).join(".aws/credentials"))
+        })?;
+    let text = std::fs::read_to_string(path).ok()?;
+    load_aws_profile_credentials_from_str(&text, profile)
+}
+
+pub(crate) fn parse_bedrock_error(status: u16, body: &str) -> (u16, String) {
+    let parsed: Option<Value> = serde_json::from_str(body).ok();
+    let msg = parsed
+        .as_ref()
+        .and_then(|v| {
+            v.get("message")
+                .or_else(|| v.get("Message"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or(body);
+    let mapped_status = if msg.contains("ThrottlingException") || status == 429 {
+        429
+    } else if msg.contains("AccessDenied") || msg.contains("UnrecognizedClient") {
+        401
+    } else if msg.contains("ValidationException") {
+        400
+    } else {
+        status
+    };
+    (mapped_status, msg.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -36,6 +107,19 @@ mod tests {
         decoder.finish().unwrap();
         frame[8] ^= 1;
         assert!(Decoder::new(false).push(&frame).is_err());
+    }
+
+    #[test]
+    fn ini_profile_and_error_parsing_work() {
+        let ini = "[default]\naws_access_key_id = AKIA1\naws_secret_access_key = SEC1\n[dev]\naws_access_key_id = AKIA2\naws_secret_access_key = SEC2\naws_session_token = TOK2\n";
+        let (k, s, t) = load_aws_profile_credentials_from_str(ini, "dev").unwrap();
+        assert_eq!(k, "AKIA2");
+        assert_eq!(s, "SEC2");
+        assert_eq!(t.as_deref(), Some("TOK2"));
+        assert_eq!(
+            parse_bedrock_error(400, r#"{"message":"ThrottlingException: rate"}"#).0,
+            429
+        );
     }
 }
 
@@ -228,9 +312,19 @@ pub(super) fn prepare(
     {
         bail!("invalid AWS region");
     }
-    let key = std::env::var("AWS_ACCESS_KEY_ID").context("missing AWS_ACCESS_KEY_ID")?;
-    let secret = std::env::var("AWS_SECRET_ACCESS_KEY").context("missing AWS_SECRET_ACCESS_KEY")?;
-    let session = std::env::var("AWS_SESSION_TOKEN").ok();
+    let (env_key, env_secret, env_session) = (
+        std::env::var("AWS_ACCESS_KEY_ID").ok(),
+        std::env::var("AWS_SECRET_ACCESS_KEY").ok(),
+        std::env::var("AWS_SESSION_TOKEN").ok(),
+    );
+    let (key, secret, session) = match (env_key, env_secret) {
+        (Some(k), Some(s)) if !k.is_empty() && !s.is_empty() => (k, s, env_session),
+        _ => {
+            let profile = std::env::var("AWS_PROFILE").unwrap_or_else(|_| "default".into());
+            load_aws_profile_credentials(&profile)
+                .context("missing AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY and ~/.aws/credentials profile")?
+        }
+    };
     let base = endpoint
         .map(str::to_owned)
         .unwrap_or_else(|| format!("https://bedrock-runtime.{region}.amazonaws.com"));

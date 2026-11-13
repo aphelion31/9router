@@ -1,9 +1,48 @@
 use anyhow::{Context, bail};
 use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const MARKER: &str =
     "You are MiMoCode, an interactive CLI tool that helps users with software engineering tasks.";
 const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+static JWT_CACHE: OnceLock<Mutex<HashMap<String, (String, u64)>>> = OnceLock::new();
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn get_cached_jwt(key: &str) -> Option<String> {
+    let cache = JWT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().ok()?;
+    let now = now_secs();
+    if let Some((tok, exp)) = guard.get(key) {
+        if *exp > now + 60 {
+            return Some(tok.clone());
+        }
+        guard.remove(key);
+    }
+    None
+}
+
+fn set_cached_jwt(key: String, tok: String) {
+    let cache = JWT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(key, (tok, now_secs() + 3000));
+    }
+}
+
+fn clear_cached_jwt(key: &str) {
+    let cache = JWT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut guard) = cache.lock() {
+        guard.remove(key);
+    }
+}
 
 pub(super) async fn execute(
     client: &reqwest::Client,
@@ -36,20 +75,28 @@ async fn execute_with(
             messages.insert(0, json!({"role":"system","content":MARKER}));
         }
     }
+    let cache_key = format!("{bootstrap}:{client_id}");
     for attempt in 0..2 {
-        let response = client
-            .post(bootstrap)
-            .header("user-agent", UA)
-            .header("content-type", "application/json")
-            .body(json!({"client":client_id}).to_string())
-            .send()
-            .await?
-            .error_for_status()?;
-        let value: Value = serde_json::from_slice(&response.bytes().await?)?;
-        let token = value
-            .get("jwt")
-            .and_then(Value::as_str)
-            .context("MiMo bootstrap returned no JWT")?;
+        let token = if let Some(cached) = get_cached_jwt(&cache_key) {
+            cached
+        } else {
+            let response = client
+                .post(bootstrap)
+                .header("user-agent", UA)
+                .header("content-type", "application/json")
+                .body(json!({"client":client_id}).to_string())
+                .send()
+                .await?
+                .error_for_status()?;
+            let value: Value = serde_json::from_slice(&response.bytes().await?)?;
+            let tok = value
+                .get("jwt")
+                .and_then(Value::as_str)
+                .context("MiMo bootstrap returned no JWT")?
+                .to_string();
+            set_cached_jwt(cache_key.clone(), tok.clone());
+            tok
+        };
         let response = client
             .post(endpoint)
             .header("user-agent", UA)
@@ -64,13 +111,14 @@ async fn execute_with(
                 },
             )
             .header("content-type", "application/json")
-            .bearer_auth(token)
+            .bearer_auth(&token)
             .body(serde_json::to_vec(body)?)
             .send()
             .await?;
         if attempt == 1 || !matches!(response.status().as_u16(), 401 | 403) {
             return Ok(response);
         }
+        clear_cached_jwt(&cache_key);
     }
     bail!("MiMo authentication failed")
 }

@@ -43,3 +43,69 @@ pub(super) fn prepare(model: &str, body: &mut Value) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+pub(crate) fn supports_responses_endpoint(model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    !(m.contains("gemini") || m.contains("claude"))
+}
+
+pub(crate) fn responses_url(endpoint: &str) -> anyhow::Result<reqwest::Url> {
+    let trimmed = endpoint.trim_end_matches('/');
+    let base = trimmed
+        .strip_suffix("/chat/completions")
+        .or_else(|| trimmed.strip_suffix("/v1/messages"))
+        .unwrap_or(trimmed);
+    Ok(reqwest::Url::parse(&format!("{base}/responses"))?)
+}
+
+pub(crate) fn prepare_responses_fallback(model: &str, body: &Value) -> Value {
+    let mut out = json!({
+        "model": model,
+        "stream": body.get("stream").and_then(Value::as_bool).unwrap_or(true),
+        "input": body.get("messages").cloned().unwrap_or_else(|| json!([])),
+    });
+    if let Some(obj) = out.as_object_mut() {
+        if let Some(tools) = body.get("tools") {
+            obj.insert("tools".into(), tools.clone());
+        }
+        if let Some(tc) = body.get("tool_choice") {
+            obj.insert("tool_choice".into(), tc.clone());
+        }
+        if let Some(max_tok) = body
+            .get("max_completion_tokens")
+            .or_else(|| body.get("max_tokens"))
+        {
+            obj.insert("max_output_tokens".into(), max_tok.clone());
+        }
+        if let Some(effort) = body.get("reasoning_effort").and_then(Value::as_str)
+            && effort != "none"
+        {
+            obj.insert("reasoning".into(), json!({ "effort": effort }));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn github_responses_helpers_work() {
+        assert!(supports_responses_endpoint("gpt-5-codex"));
+        assert!(!supports_responses_endpoint("claude-sonnet-4"));
+        assert!(!supports_responses_endpoint("gemini-2.5-pro"));
+        assert_eq!(
+            responses_url("https://api.githubcopilot.com/chat/completions")
+                .unwrap()
+                .as_str(),
+            "https://api.githubcopilot.com/responses"
+        );
+        let fallback = prepare_responses_fallback(
+            "gpt-5-codex",
+            &json!({"messages":[{"role":"user","content":"hi"}],"max_tokens":100,"reasoning_effort":"high"}),
+        );
+        assert_eq!(fallback["max_output_tokens"], 100);
+        assert_eq!(fallback["reasoning"]["effort"], "high");
+    }
+}

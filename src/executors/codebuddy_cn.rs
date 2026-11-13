@@ -132,3 +132,42 @@ pub(super) fn prepare(body: &mut Value) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+pub(crate) fn parse_code_6004_reset_ms(body: &Value) -> Option<u64> {
+    let code = body
+        .pointer("/error/code")
+        .or_else(|| body.get("code"))
+        .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()));
+    if code != Some(6004) {
+        return None;
+    }
+    if let Some(ms) = body
+        .pointer("/error/retryAfterMs")
+        .or_else(|| body.get("retryAfterMs"))
+        .and_then(Value::as_u64)
+    {
+        return Some(ms);
+    }
+    if let Some(sec) = body
+        .pointer("/error/retryAfter")
+        .or_else(|| body.get("retryAfter"))
+        .and_then(Value::as_u64)
+    {
+        return Some(sec * 1000);
+    }
+    Some(60_000)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codebuddy_cn_6004_reset_parsing_works() {
+        assert_eq!(
+            parse_code_6004_reset_ms(&json!({"error": {"code": 6004, "retryAfter": 45}})),
+            Some(45_000)
+        );
+        assert_eq!(parse_code_6004_reset_ms(&json!({"error": {"code": 500}})), None);
+    }
+}

@@ -70,3 +70,41 @@ pub(super) fn prepare(
         ),
     ]
 }
+
+pub(crate) fn parse_retry_info_ms(body: &Value) -> Option<u64> {
+    let details = body.pointer("/error/details").and_then(Value::as_array)?;
+    for d in details {
+        let is_retry = d
+            .get("@type")
+            .and_then(Value::as_str)
+            .is_some_and(|t| t.contains("RetryInfo"));
+        if is_retry
+            && let Some(delay) = d.get("retryDelay").and_then(Value::as_str)
+            && let Some(secs_str) = delay.trim().strip_suffix('s')
+            && let Ok(secs) = secs_str.parse::<f64>()
+            && secs > 0.0
+        {
+            return Some((secs * 1000.0).ceil() as u64);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gemini_cli_retry_info_parses_seconds() {
+        let body = json!({
+            "error": {
+                "code": 429,
+                "details": [{
+                    "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                    "retryDelay": "4.5s"
+                }]
+            }
+        });
+        assert_eq!(parse_retry_info_ms(&body), Some(4500));
+    }
+}
