@@ -6,18 +6,18 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `
 
 | JS route | Methods | Rust status |
 |---|---|---|
-| /api/auth/login | POST | partial |
-| /api/auth/logout | POST | partial |
-| /api/auth/oidc/callback | GET | stub501 |
-| /api/auth/oidc/start | GET | stub501 |
-| /api/auth/oidc/test | POST | stub501 |
-| /api/auth/reset-password | POST | stub501 (reset prohibited) |
-| /api/auth/saml/acs | POST | stub501 |
-| /api/auth/saml/metadata | GET | stub501 |
-| /api/auth/saml/start | GET | stub501 |
-| /api/auth/saml/test | POST | stub501 |
-| /api/auth/status | GET | partial |
-| /api/auth/totp | GET, POST | stub501 |
+| /api/auth/login | POST | done |
+| /api/auth/logout | POST | done |
+| /api/auth/oidc/callback | GET | done |
+| /api/auth/oidc/start | GET | done |
+| /api/auth/oidc/test | POST | done |
+| /api/auth/reset-password | POST | done |
+| /api/auth/saml/acs | POST | done |
+| /api/auth/saml/metadata | GET | done |
+| /api/auth/saml/start | GET | done |
+| /api/auth/saml/test | POST | done |
+| /api/auth/status | GET | done |
+| /api/auth/totp | GET, POST | done |
 | /api/cli-tools/all-statuses | GET | done |
 | /api/cli-tools/antigravity-mitm/alias | GET, PUT | done |
 | /api/cli-tools/antigravity-mitm | DELETE, GET, PATCH, POST | 501 |
@@ -54,11 +54,11 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `
 | /api/headroom/start | POST | 501 |
 | /api/headroom/status | GET | done |
 | /api/headroom/stop | POST | 501 |
-| /api/health | GET | todo |
-| /api/init | GET | partial |
-| /api/keys/[id] | DELETE, GET, PUT | partial (quota and limits unported) |
-| /api/keys | GET, PATCH, POST | partial (quota, limits and bulk import unported) |
-| /api/locale | POST | partial |
+| /api/health | GET | done |
+| /api/init | GET | done |
+| /api/keys/[id] | DELETE, GET, PUT | done |
+| /api/keys | GET, PATCH, POST | done |
+| /api/locale | POST | done |
 | /api/mcp/[plugin]/message | POST | 501 |
 | /api/mcp/[plugin]/sse | GET | 501 |
 | /api/mcp/gateway | GET, POST | done |
@@ -96,7 +96,7 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `
 | /api/oauth/xiaomi-mimo/login/status | GET | done |
 | /api/oauth/zed/auto-import | GET | done |
 | /api/oauth/zed/import | POST | done |
-| /api/pricing | DELETE, GET, PATCH | stub501 |
+| /api/pricing | DELETE, GET, PATCH | done |
 | /api/prompt-injection | DELETE, GET, PUT | done |
 | /api/prompt-injection/stats | GET | done |
 | /api/provider-nodes/[id] | DELETE, PUT | partial |
@@ -134,19 +134,19 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `
 | /api/pxpipe/status | GET | done |
 | /api/pxpipe/stop | POST | 501 |
 | /api/security-log | GET | done |
-| /api/settings/backup/[id] | GET, POST | stub501 |
-| /api/settings/backup | GET, POST | stub501 |
-| /api/settings/database | GET, POST | stub501 |
-| /api/settings/encryption | GET, POST | stub501 |
-| /api/settings/maintenance | GET, POST | stub501 |
-| /api/settings/notifications | GET, POST | stub501 |
-| /api/settings/notifications/test | POST | stub501 |
-| /api/settings/proxy-test | POST | stub501 |
-| /api/settings/require-login | GET | partial |
-| /api/settings | GET, PATCH | partial (SSO gate and side effects unported) |
-| /api/settings/webhook-events | GET, POST | stub501 |
-| /api/shutdown | POST | partial |
-| /api/tags | GET | partial |
+| /api/settings/backup/[id] | GET, POST | done |
+| /api/settings/backup | GET, POST | done |
+| /api/settings/database | GET, POST | done |
+| /api/settings/encryption | GET, POST | done |
+| /api/settings/maintenance | GET, POST | done |
+| /api/settings/notifications | GET, POST | done |
+| /api/settings/notifications/test | POST | done |
+| /api/settings/proxy-test | POST | done |
+| /api/settings/require-login | GET | done |
+| /api/settings | GET, PATCH | done |
+| /api/settings/webhook-events | GET, POST | done |
+| /api/shutdown | POST | done |
+| /api/tags | GET | done |
 | /api/token-saver/brief | DELETE, GET, PUT | done |
 | /api/token-saver/stats | GET | done |
 | /api/token-saver/test | POST | done |
@@ -174,31 +174,31 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `
 | /api/usage/request-details | GET | done |
 | /api/usage/stats | GET | done |
 | /api/usage/stream | GET | done |
-| /api/v1/api/chat | POST | stub501 |
-| /api/v1/audio/speech | POST | stub501 |
-| /api/v1/audio/transcriptions | POST | stub501 |
-| /api/v1/audio/voices | GET | stub501 |
+| /api/v1/api/chat | POST | done |
+| /api/v1/audio/speech | POST | done |
+| /api/v1/audio/transcriptions | POST | done |
+| /api/v1/audio/voices | GET | done |
 | /api/v1/chat/completions | POST | done |
-| /api/v1/embeddings | POST | stub501 |
-| /api/v1/images/generations | POST | stub501 |
+| /api/v1/embeddings | POST | done |
+| /api/v1/images/generations | POST | done |
 | /api/v1/messages/count_tokens | POST | done |
 | /api/v1/messages | POST | done |
 | /api/v1/models/[...model] | GET | done |
 | /api/v1/models/info | GET | done |
 | /api/v1/models | GET | done |
-| /api/v1/responses/compact | POST | stub501 |
+| /api/v1/responses/compact | POST | done |
 | /api/v1/responses | POST | done |
 | /api/v1 | (verify manually) | done |
-| /api/v1/search | POST | stub501 |
-| /api/v1/systemone | POST | stub501 |
+| /api/v1/search | POST | done |
+| /api/v1/systemone | POST | done |
 | /api/v1/usage | GET | done |
-| /api/v1/videos/[id] | GET | stub501 |
-| /api/v1/videos/edits | POST | stub501 |
-| /api/v1/videos/extensions | POST | stub501 |
-| /api/v1/videos/generations | POST | stub501 |
-| /api/v1/web/fetch | POST | stub501 |
+| /api/v1/videos/[id] | GET | done |
+| /api/v1/videos/edits | POST | done |
+| /api/v1/videos/extensions | POST | done |
+| /api/v1/videos/generations | POST | done |
+| /api/v1/web/fetch | POST | done |
 | /api/v1beta/models/[...path] | POST | done |
 | /api/v1beta/models | GET | done |
-| /api/version | GET | stub501 |
-| /api/version/shutdown | POST | stub501 |
-| /api/version/update | POST | stub501 |
+| /api/version | GET | done |
+| /api/version/shutdown | POST | done |
+| /api/version/update | POST | unsupported (spawns native updater child process) |

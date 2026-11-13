@@ -65,11 +65,6 @@ fn make_router_with_db(
         jwt_secret,
     };
     let management = Router::new()
-        .route("/api/keys", get(keys).post(create_key).patch(bulk_keys))
-        .route(
-            "/api/keys/{id}",
-            get(key).put(update_key).delete(delete_key),
-        )
         .route("/api/combos", get(combos))
         .route("/api/usage", get(usage))
         .merge(crate::api::routes::management())
@@ -120,13 +115,7 @@ fn make_router_with_db(
         .route("/login", get(dashboard::login_page))
         .route("/dashboard/style.css", get(dashboard::style_css))
         .route("/dashboard/app.js", get(dashboard::app_js))
-        .route("/api/auth/login", post(auth_login))
-        .route("/api/auth/logout", post(auth_logout))
         .merge(crate::api::routes::public())
-        .route(
-            "/api/health",
-            get(|| async { Json(json!({"status":"ok"})) }),
-        )
         .merge(dashboard_pages)
         .merge(management)
         .merge(v1)
@@ -589,7 +578,7 @@ pub(crate) fn uuid_like() -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
-async fn completion(
+pub(crate) async fn completion(
     State(s): State<AppState>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
