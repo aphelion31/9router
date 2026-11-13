@@ -4,6 +4,7 @@ pub mod browser;
 pub mod claude_signature;
 pub mod client_detector;
 pub mod empty_failover;
+pub mod flaky_guard;
 pub mod gemini_cookies;
 pub mod grok_cli_models;
 pub mod kimchi_models;
