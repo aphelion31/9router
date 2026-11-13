@@ -65,7 +65,6 @@ fn make_router_with_db(
         jwt_secret,
     };
     let management = Router::new()
-        .route("/api/combos", get(combos))
         .route("/api/usage", get(usage))
         .merge(crate::api::routes::management())
         .route_layer(middleware::from_fn_with_state(
@@ -468,13 +467,6 @@ async fn providers(State(s): State<AppState>) -> Response {
     let rows = s.db.lock().ok().and_then(|db| { let mut stmt=db.prepare("SELECT id,provider,name,isActive FROM providerConnections").ok()?; let rows=stmt.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"provider":r.get::<_,String>(1)?,"name":r.get::<_,Option<String>>(2)?,"isActive":r.get::<_,Option<i64>>(3)?.unwrap_or(0)!=0}))).ok()?.collect::<rusqlite::Result<Vec<_>>>().ok(); rows });
     match rows {
         Some(rows) => Json(json!({"connections":rows})).into_response(),
-        None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
-}
-async fn combos(State(s): State<AppState>) -> Response {
-    let rows = s.db.lock().ok().and_then(|db| {let mut st=db.prepare("SELECT id,name,kind,models,createdAt,updatedAt FROM combos").ok()?; let rows=st.query_map([],|r| {let models:String=r.get(3)?;Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"kind":r.get::<_,Option<String>>(2)?,"models":serde_json::from_str::<Value>(&models).unwrap_or(json!([])),"createdAt":r.get::<_,String>(4)?,"updatedAt":r.get::<_,String>(5)?}))}).ok()?.collect::<rusqlite::Result<Vec<_>>>().ok(); rows});
-    match rows {
-        Some(rows) => Json(json!({"combos":rows})).into_response(),
         None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }

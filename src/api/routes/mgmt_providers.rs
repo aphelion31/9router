@@ -1,13 +1,15 @@
 use crate::server::AppState;
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use rusqlite::{OptionalExtension, params};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Mutex, OnceLock};
 
 fn err(code: StatusCode, msg: &str) -> Response {
     (code, Json(json!({"error":msg}))).into_response()
@@ -48,9 +50,45 @@ async fn get_connection(State(s): State<AppState>, Path(id): Path<String>) -> Re
         ),
     }
 }
+fn lite_connection(c: &Value) -> Value {
+    let psd = &c["providerSpecificData"];
+    let mut trimmed_psd = Map::new();
+    for k in [
+        "nodeName",
+        "prefix",
+        "proxyPoolId",
+        "enabledModels",
+        "customModels",
+        "defaultModel",
+        "uid",
+        "mimoUserId",
+    ] {
+        if let Some(v) = psd.get(k).filter(|v| !v.is_null()) {
+            trimmed_psd.insert(k.into(), v.clone());
+        }
+    }
+    let mut out = json!({
+        "id": c["id"],
+        "provider": c["provider"],
+        "authType": c["authType"],
+        "name": c["name"],
+        "email": c["email"],
+        "isActive": c["isActive"],
+        "priority": c["priority"],
+        "testStatus": c["testStatus"],
+        "createdAt": c["createdAt"],
+        "updatedAt": c["updatedAt"],
+        "providerSpecificData": trimmed_psd,
+    });
+    if !c["defaultModel"].is_null() {
+        out["defaultModel"] = c["defaultModel"].clone();
+    }
+    out
+}
+
 async fn list_connections(
     State(s): State<AppState>,
-    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+    Query(q): Query<HashMap<String, String>>,
 ) -> Response {
     if !q.contains_key("provider")
         && !q.contains_key("page")
@@ -62,23 +100,111 @@ async fn list_connections(
             "Use ?summary=1, ?lite=1, or ?provider=<id>&page=<n> to list connections.",
         );
     }
-    // ponytail: summary and paginated provider statistics require the unported statistics repository.
-    if q.contains_key("page") || q.get("summary").is_some_and(|v| v == "1") {
-        return unavailable().await;
-    }
     let Ok(db) = s.db.lock() else {
         return err(StatusCode::INTERNAL_SERVER_ERROR, "Database unavailable");
     };
+    if q.get("summary").is_some_and(|v| v == "1") {
+        let result = (|| -> rusqlite::Result<Map<String, Value>> {
+            let mut st = db.prepare(
+                "SELECT provider, COUNT(*), SUM(CASE WHEN isActive=1 THEN 1 ELSE 0 END) FROM providerConnections GROUP BY provider",
+            )?;
+            let rows = st.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                ))
+            })?;
+            let mut stats = Map::new();
+            for row in rows {
+                let (provider, total, active) = row?;
+                stats.insert(
+                    provider,
+                    json!({ "total": total, "active": active, "inactive": total - active }),
+                );
+            }
+            Ok(stats)
+        })();
+        return match result {
+            Ok(stats) => Json(json!({ "stats": stats, "breakers": {} })).into_response(),
+            Err(_) => err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to fetch provider summary",
+            ),
+        };
+    }
+
+    let lite = q.get("lite").is_some_and(|v| v == "1");
+    let provider_filter = q.get("provider").filter(|s| !s.is_empty());
+
+    if q.contains_key("page") {
+        let page = q
+            .get("page")
+            .and_then(|v| v.parse::<i64>().ok())
+            .filter(|&p| p > 0)
+            .unwrap_or(1);
+        let page_size = q
+            .get("pageSize")
+            .and_then(|v| v.parse::<i64>().ok())
+            .filter(|&p| p > 0)
+            .unwrap_or(100)
+            .min(500);
+        let search = q.get("search").map(String::as_str).unwrap_or("").trim();
+        let search_like = (!search.is_empty()).then(|| format!("%{search}%"));
+        let offset = (page - 1) * page_size;
+        let result = (|| -> rusqlite::Result<(Vec<Value>, i64)> {
+            let total: i64 = db.query_row(
+                "SELECT COUNT(*) FROM providerConnections WHERE (?1 IS NULL OR provider=?1) AND (?2 IS NULL OR name LIKE ?2 OR email LIKE ?2 OR provider LIKE ?2)",
+                params![provider_filter, search_like],
+                |r| r.get(0),
+            )?;
+            let mut st = db.prepare(
+                "SELECT id FROM providerConnections WHERE (?1 IS NULL OR provider=?1) AND (?2 IS NULL OR name LIKE ?2 OR email LIKE ?2 OR provider LIKE ?2) ORDER BY priority,createdAt LIMIT ?3 OFFSET ?4",
+            )?;
+            let ids = st
+                .query_map(params![provider_filter, search_like, page_size, offset], |r| {
+                    r.get::<_, String>(0)
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let conns = ids
+                .iter()
+                .map(|id| {
+                    connection(&db, id)
+                        .and_then(|v| v.ok_or(rusqlite::Error::QueryReturnedNoRows))
+                        .map(redact)
+                        .map(|v| if lite { lite_connection(&v) } else { v })
+                })
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok((conns, total))
+        })();
+        return match result {
+            Ok((connections, total)) => Json(json!({
+                "connections": connections,
+                "total": total,
+                "page": page,
+                "pageSize": page_size,
+            }))
+            .into_response(),
+            Err(_) => err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to fetch providers",
+            ),
+        };
+    }
+
     let result = (|| -> rusqlite::Result<Vec<Value>> {
-        let mut st=db.prepare("SELECT id FROM providerConnections WHERE (?1 IS NULL OR provider=?1) ORDER BY priority,createdAt")?;
+        let mut st = db.prepare(
+            "SELECT id FROM providerConnections WHERE (?1 IS NULL OR provider=?1) ORDER BY priority,createdAt",
+        )?;
         let ids = st
-            .query_map([q.get("provider")], |r| r.get::<_, String>(0))?
+            .query_map([provider_filter], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         ids.iter()
             .map(|id| {
                 connection(&db, id)
                     .and_then(|v| v.ok_or(rusqlite::Error::QueryReturnedNoRows))
                     .map(redact)
+                    .map(|v| if lite { lite_connection(&v) } else { v })
             })
             .collect()
     })();
@@ -89,6 +215,52 @@ async fn list_connections(
             "Failed to fetch providers",
         ),
     }
+}
+
+async fn bulk_toggle_connections(State(s): State<AppState>, Json(body): Json<Value>) -> Response {
+    let Some(provider) = body["provider"].as_str().filter(|s| !s.is_empty()) else {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "provider and authTypes are required",
+        );
+    };
+    let Some(auth_types) = body["authTypes"].as_array().filter(|a| !a.is_empty()) else {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "provider and authTypes are required",
+        );
+    };
+    let is_active = if body["isActive"].as_bool().unwrap_or(false) {
+        1
+    } else {
+        0
+    };
+    let types: Vec<&str> = auth_types.iter().filter_map(Value::as_str).collect();
+    if types.is_empty() {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "provider and authTypes are required",
+        );
+    }
+    let Ok(db) = s.db.lock() else {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "Database unavailable");
+    };
+    let mut updated = 0usize;
+    for at in types {
+        match db.execute(
+            "UPDATE providerConnections SET isActive=?1,updatedAt=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE provider=?2 AND authType=?3",
+            params![is_active, provider, at],
+        ) {
+            Ok(n) => updated += n,
+            Err(_) => {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to update connections",
+                );
+            }
+        }
+    }
+    Json(json!({ "updated": updated })).into_response()
 }
 async fn create_connection(State(s): State<AppState>, Json(body): Json<Value>) -> Response {
     let Some(provider) = body["provider"].as_str().filter(|v| !v.is_empty()) else {
@@ -290,17 +462,13 @@ async fn delete_connection(State(s): State<AppState>, Path(id): Path<String>) ->
         ),
     }
 }
-// ponytail: provider-specific discovery, validation and connection tests require unported services.
-async fn unavailable() -> Response {
-    err(StatusCode::NOT_IMPLEMENTED, "Service not implemented")
-}
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route(
             "/api/providers",
             get(list_connections)
                 .post(create_connection)
-                .patch(unavailable),
+                .patch(bulk_toggle_connections),
         )
         .route(
             "/api/providers/{id}",
@@ -308,23 +476,25 @@ pub fn routes() -> Router<AppState> {
                 .put(update_connection)
                 .delete(delete_connection),
         )
-        .route("/api/providers/{id}/models", get(unavailable))
+        .route("/api/providers/{id}/models", get(provider_models))
         .route(
             "/api/providers/{id}/overrides",
-            get(unavailable).put(unavailable),
+            get(get_overrides).put(put_overrides),
         )
-        .route("/api/providers/{id}/test", post(unavailable))
-        .route("/api/providers/{id}/test-models", post(unavailable))
-        .route("/api/providers/bulk-proxy", post(unavailable))
-        .route("/api/providers/client", get(unavailable))
-        .route("/api/providers/kilo/free-models", get(unavailable))
-        .route("/api/providers/suggested-models", get(unavailable))
-        .route("/api/providers/test-batch", post(unavailable))
-        .route("/api/providers/test-batch/stop", post(unavailable))
-        .route("/api/providers/validate", post(unavailable))
+        .route("/api/providers/{id}/test", post(test_connection))
+        .route("/api/providers/{id}/test-models", post(test_provider_models))
+        .route("/api/providers/bulk-proxy", post(bulk_proxy))
+        .route("/api/providers/client", get(client_connections))
+        .route("/api/providers/kilo/free-models", get(kilo_free_models))
+        .route("/api/providers/suggested-models", get(suggested_models))
+        .route("/api/providers/test-batch", post(test_batch))
+        .route("/api/providers/test-batch/stop", post(test_batch_stop))
+        .route("/api/providers/validate", post(validate_provider))
         .route(
             "/api/providers/web-login",
-            get(unavailable).post(unavailable).delete(unavailable),
+            get(web_login_get)
+                .post(web_login_post)
+                .delete(web_login_delete),
         )
         .route("/api/provider-nodes", get(list_nodes).post(create_node))
         .route(
@@ -490,6 +660,923 @@ fn public_address(ip: std::net::IpAddr) -> bool {
     }
 }
 
+fn canonical_provider_id(id: &str) -> String {
+    crate::providers::lookup(id)
+        .map(|p| p.id.clone())
+        .unwrap_or_else(|| id.to_string())
+}
+
+async fn provider_models(State(s): State<AppState>, Path(id): Path<String>) -> Response {
+    let conn = {
+        let Ok(db) = s.db.lock() else {
+            return err(StatusCode::INTERNAL_SERVER_ERROR, "Database unavailable");
+        };
+        match connection(&db, &id) {
+            Ok(Some(c)) => c,
+            Ok(None) => return err(StatusCode::NOT_FOUND, "Connection not found"),
+            Err(_) => {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to fetch connection",
+                );
+            }
+        }
+    };
+    let provider = conn["provider"].as_str().unwrap_or("");
+    let psd = &conn["providerSpecificData"];
+    if provider.starts_with("openai-compatible-") || provider.starts_with("anthropic-compatible-")
+    {
+        if let Some(base) = psd["baseUrl"].as_str().filter(|s| !s.is_empty()) {
+            let url = format!("{}/models", base.trim_end_matches('/'));
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .unwrap_or_default();
+            let mut req = client.get(&url);
+            if let Some(key) = conn["apiKey"].as_str().filter(|s| !s.is_empty()) {
+                req = if provider.starts_with("anthropic-compatible-") {
+                    req.header("x-api-key", key)
+                        .header("anthropic-version", "2023-06-01")
+                } else {
+                    req.bearer_auth(key)
+                };
+            }
+            if let Ok(resp) = req.send().await
+                && resp.status().is_success()
+                && let Ok(text) = resp.text().await
+                && let Ok(parsed) = serde_json::from_str::<Value>(&text)
+            {
+                let list = parsed["data"]
+                    .as_array()
+                    .or_else(|| parsed["models"].as_array())
+                    .or_else(|| parsed.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                return Json(json!({ "provider": provider, "models": list })).into_response();
+            }
+        }
+        return Json(json!({ "provider": provider, "models": [] })).into_response();
+    }
+
+    let models: Vec<Value> = crate::providers::lookup(provider)
+        .map(|p| {
+            p.models
+                .iter()
+                .map(|m| {
+                    json!({
+                        "id": m.id,
+                        "name": m.name.as_deref().unwrap_or(&m.id),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Json(json!({ "provider": provider, "models": models })).into_response()
+}
+
+fn read_provider_overrides(db: &rusqlite::Connection) -> Map<String, Value> {
+    db.query_row(
+        "SELECT value FROM kv WHERE scope='settings' AND key='providerOverrides'",
+        [],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .and_then(|raw| serde_json::from_str::<Map<String, Value>>(&raw).ok())
+    .unwrap_or_default()
+}
+
+fn normalize_override(body: &Value) -> Result<Option<Value>, &'static str> {
+    let Some(raw_headers) = body.get("headers") else {
+        return Ok(None);
+    };
+    if raw_headers.is_null() {
+        return Ok(None);
+    }
+    let Some(obj) = raw_headers.as_object() else {
+        return Err("headers must be an object");
+    };
+    let blocked = [
+        "host",
+        "content-length",
+        "content-type",
+        "connection",
+        "transfer-encoding",
+        "authorization",
+        "cookie",
+    ];
+    let mut clean = Map::new();
+    for (name, val) in obj {
+        let Some(s) = val.as_str() else {
+            if val.is_null() {
+                continue;
+            }
+            return Err("Invalid header value");
+        };
+        if s.is_empty() {
+            continue;
+        }
+        if !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            || name.is_empty()
+        {
+            return Err("Invalid header name");
+        }
+        if s.contains('\r') || s.contains('\n') || s.len() > 8192 {
+            return Err("Invalid header value");
+        }
+        if blocked.contains(&name.to_ascii_lowercase().as_str()) {
+            return Err("Header cannot be overridden");
+        }
+        clean.insert(name.clone(), json!(s));
+    }
+    if clean.len() > 20 {
+        return Err("Too many headers (max 20)");
+    }
+    Ok((!clean.is_empty()).then(|| json!({ "headers": clean })))
+}
+
+async fn get_overrides(State(s): State<AppState>, Path(id): Path<String>) -> Response {
+    let canonical = canonical_provider_id(&id);
+    let Ok(db) = s.db.lock() else {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "Database unavailable");
+    };
+    let all = read_provider_overrides(&db);
+    let headers = all
+        .get(&canonical)
+        .and_then(|v| v.get("headers"))
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    Json(json!({ "headers": headers, "builtinHeaders": {} })).into_response()
+}
+
+async fn put_overrides(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    let canonical = canonical_provider_id(&id);
+    let normalized = match normalize_override(&body) {
+        Ok(v) => v,
+        Err(msg) => return err(StatusCode::BAD_REQUEST, msg),
+    };
+    let Ok(db) = s.db.lock() else {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "Database unavailable");
+    };
+    let mut all = read_provider_overrides(&db);
+    if let Some(ref ov) = normalized {
+        all.insert(canonical.clone(), ov.clone());
+    } else {
+        all.remove(&canonical);
+    }
+    match crate::db::kv_set(
+        &db,
+        "settings",
+        "providerOverrides",
+        &Value::Object(all).to_string(),
+    ) {
+        Ok(()) => Json(json!({
+            "headers": normalized.and_then(|v| v.get("headers").cloned()).unwrap_or_else(|| json!({})),
+            "builtinHeaders": {}
+        }))
+        .into_response(),
+        Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "Failed to save overrides"),
+    }
+}
+
+async fn run_connection_test(conn: &Value, model_override: Option<&str>) -> (bool, Option<String>, &'static str) {
+    let provider = conn["provider"].as_str().unwrap_or("");
+    let model = model_override
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| conn["defaultModel"].as_str().filter(|s| !s.is_empty()).map(str::to_string))
+        .or_else(|| {
+            crate::providers::lookup(provider)
+                .and_then(|p| p.models.first().map(|m| m.id.clone()))
+        })
+        .unwrap_or_else(|| "gpt-4o-mini".to_string());
+    let api_key = conn["apiKey"].as_str().map(str::to_owned);
+    let access_token = conn["accessToken"].as_str().map(str::to_owned);
+    let psd = conn["providerSpecificData"].clone();
+    let base_url = psd["baseUrl"].as_str().map(str::to_owned);
+    if api_key.as_deref().unwrap_or("").is_empty()
+        && access_token.as_deref().unwrap_or("").is_empty()
+        && provider != "ollama-local"
+    {
+        return (false, Some("Missing credentials".to_string()), "auth");
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .unwrap_or_default();
+    let req = crate::executors::ExecutorRequest {
+        provider: provider.to_string(),
+        model,
+        body: json!({
+            "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": 1,
+            "stream": false
+        }),
+        stream: false,
+        api_key,
+        access_token,
+        base_url,
+        provider_specific_data: Some(psd),
+    };
+    match crate::executors::execute(&client, req).await {
+        Ok(resp) if resp.status().is_success() => (true, None, "ok"),
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            let stage = match status {
+                401 | 403 => "auth",
+                400 | 404 | 422 => "model",
+                429 => "rate_limit",
+                _ => "upstream",
+            };
+            let text = resp.text().await.unwrap_or_default();
+            let msg: String = text.chars().take(200).collect();
+            (false, Some(if msg.is_empty() { format!("HTTP {status}") } else { msg }), stage)
+        }
+        Err(e) => (false, Some(e.to_string()), "network"),
+    }
+}
+
+async fn test_connection(State(s): State<AppState>, Path(id): Path<String>) -> Response {
+    let conn = {
+        let Ok(db) = s.db.lock() else {
+            return err(StatusCode::INTERNAL_SERVER_ERROR, "Database unavailable");
+        };
+        match connection(&db, &id) {
+            Ok(Some(c)) => c,
+            Ok(None) => return err(StatusCode::NOT_FOUND, "Connection not found"),
+            Err(_) => {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to fetch connection",
+                );
+            }
+        }
+    };
+    let (valid, error_msg, stage) = run_connection_test(&conn, None).await;
+    if let Ok(db) = s.db.lock()
+        && let Ok(raw) = db.query_row(
+            "SELECT data FROM providerConnections WHERE id=?1",
+            [&id],
+            |r| r.get::<_, String>(0),
+        )
+        && let Ok(mut data) = serde_json::from_str::<Value>(&raw)
+    {
+        data["testStatus"] = json!(if valid { "active" } else { "error" });
+        data["lastError"] = error_msg.as_ref().map(|e| json!(e)).unwrap_or(Value::Null);
+        let _ = db.execute(
+            "UPDATE providerConnections SET data=?1,updatedAt=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?2",
+            params![data.to_string(), id],
+        );
+    }
+    Json(json!({
+        "valid": valid,
+        "error": error_msg,
+        "stage": stage,
+        "refreshed": false,
+    }))
+    .into_response()
+}
+
+async fn test_provider_models(State(s): State<AppState>, Path(id): Path<String>) -> Response {
+    let conn = {
+        let Ok(db) = s.db.lock() else {
+            return err(StatusCode::INTERNAL_SERVER_ERROR, "Database unavailable");
+        };
+        match connection(&db, &id) {
+            Ok(Some(c)) => c,
+            Ok(None) => return err(StatusCode::NOT_FOUND, "Connection not found"),
+            Err(_) => {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to fetch connection",
+                );
+            }
+        }
+    };
+    let provider = conn["provider"].as_str().unwrap_or("");
+    let models: Vec<(String, String)> = crate::providers::lookup(provider)
+        .map(|p| {
+            p.models
+                .iter()
+                .map(|m| (m.id.clone(), m.name.clone().unwrap_or_else(|| m.id.clone())))
+                .collect()
+        })
+        .unwrap_or_default();
+    if models.is_empty() {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "No models configured for this provider",
+        );
+    }
+    let mut results = Vec::new();
+    for (model_id, model_name) in models.into_iter().take(10) {
+        let (ok, error_msg, stage) = run_connection_test(&conn, Some(&model_id)).await;
+        results.push(json!({
+            "modelId": model_id,
+            "name": model_name,
+            "ok": ok,
+            "stage": stage,
+            "error": error_msg,
+        }));
+    }
+    Json(json!({
+        "provider": provider,
+        "connectionId": id,
+        "results": results,
+    }))
+    .into_response()
+}
+
+async fn bulk_proxy(State(s): State<AppState>, Json(body): Json<Value>) -> Response {
+    let Some(provider) = body["provider"].as_str().map(str::trim).filter(|s| !s.is_empty())
+    else {
+        return err(StatusCode::BAD_REQUEST, "provider is required");
+    };
+    let mode = body["mode"].as_str().unwrap_or("");
+    let Ok(db) = s.db.lock() else {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "Database unavailable");
+    };
+    let pool_ids: Option<Vec<String>> = match mode {
+        "none" => None,
+        "single" => {
+            let Some(pid) = body["proxyPoolId"]
+                .as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            else {
+                return err(StatusCode::BAD_REQUEST, "proxyPoolId is required");
+            };
+            let exists: bool = db
+                .query_row("SELECT 1 FROM proxyPools WHERE id=?1", [pid], |_| Ok(true))
+                .optional()
+                .ok()
+                .flatten()
+                .unwrap_or(false);
+            if !exists {
+                return err(StatusCode::NOT_FOUND, "Proxy pool not found");
+            }
+            Some(vec![pid.to_string()])
+        }
+        "rotate" => {
+            let Ok(mut st) = db.prepare("SELECT id FROM proxyPools WHERE isActive=1") else {
+                return err(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
+            };
+            let ids = st
+                .query_map([], |r| r.get::<_, String>(0))
+                .ok()
+                .map(|rows| rows.filter_map(Result::ok).collect::<Vec<_>>())
+                .unwrap_or_default();
+            if ids.is_empty() {
+                return err(StatusCode::BAD_REQUEST, "No active proxy pools available");
+            }
+            Some(ids)
+        }
+        _ => return err(StatusCode::BAD_REQUEST, "mode must be single, rotate or none"),
+    };
+
+    let result = (|| -> rusqlite::Result<usize> {
+        let mut st = db.prepare("SELECT id,data FROM providerConnections WHERE provider=?1")?;
+        let rows = st
+            .query_map([provider], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(st);
+        let mut updated = 0usize;
+        for (cid, raw) in rows {
+            let mut data: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
+            if data.get("providerSpecificData").and_then(Value::as_object).is_none() {
+                data["providerSpecificData"] = json!({});
+            }
+            if let Some(ref ids) = pool_ids {
+                data["providerSpecificData"]["proxyPoolId"] = json!(ids);
+            } else if let Some(obj) = data["providerSpecificData"].as_object_mut() {
+                obj.remove("proxyPoolId");
+            }
+            updated += db.execute(
+                "UPDATE providerConnections SET data=?1,updatedAt=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?2",
+                params![data.to_string(), cid],
+            )?;
+        }
+        Ok(updated)
+    })();
+    match result {
+        Ok(updated) => Json(json!({ "updated": updated })).into_response(),
+        Err(_) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to bulk assign proxy pool",
+        ),
+    }
+}
+
+fn sanitize_client_connection(c: &Value) -> Value {
+    let mut safe = Map::new();
+    for f in [
+        "id",
+        "provider",
+        "authType",
+        "name",
+        "email",
+        "displayName",
+        "priority",
+        "globalPriority",
+        "isActive",
+        "defaultModel",
+        "testStatus",
+        "lastError",
+        "lastErrorAt",
+        "errorCode",
+        "expiresAt",
+        "lastUsedAt",
+        "consecutiveUseCount",
+        "createdAt",
+        "updatedAt",
+    ] {
+        if let Some(v) = c.get(f) {
+            safe.insert(f.into(), v.clone());
+        }
+    }
+    if let Some(psd) = c.get("providerSpecificData").and_then(Value::as_object) {
+        let mut safe_psd = Map::new();
+        for f in [
+            "baseUrl",
+            "azureEndpoint",
+            "deployment",
+            "apiVersion",
+            "accountId",
+            "region",
+            "projectId",
+            "resourceUrl",
+            "proxyPoolId",
+            "connectionProxyEnabled",
+            "connectionProxyUrl",
+            "connectionNoProxy",
+            "githubLogin",
+            "githubName",
+            "githubEmail",
+            "githubUserId",
+            "username",
+            "firstName",
+            "lastName",
+            "authMethod",
+            "authKind",
+            "profileArn",
+        ] {
+            if let Some(v) = psd.get(f) {
+                safe_psd.insert(f.into(), v.clone());
+            }
+        }
+        safe.insert("providerSpecificData".into(), Value::Object(safe_psd));
+    }
+    Value::Object(safe)
+}
+
+async fn client_connections(
+    State(s): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    let provider = q.get("provider").map(String::as_str).unwrap_or("all");
+    let account_status = q.get("accountStatus").map(String::as_str).unwrap_or("all");
+    let page = q
+        .get("page")
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&p| p > 0)
+        .unwrap_or(1);
+    let page_size = q
+        .get("pageSize")
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&p| p > 0)
+        .unwrap_or(20)
+        .min(500);
+    let Ok(db) = s.db.lock() else {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "Database unavailable");
+    };
+    let Ok(mut st) = db.prepare("SELECT id FROM providerConnections ORDER BY priority,provider")
+    else {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
+    };
+    let ids = st
+        .query_map([], |r| r.get::<_, String>(0))
+        .ok()
+        .map(|rows| rows.filter_map(Result::ok).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let all_conns: Vec<Value> = ids
+        .iter()
+        .filter_map(|id| connection(&db, id).ok().flatten())
+        .collect();
+    let mut provider_options: Vec<String> = all_conns
+        .iter()
+        .filter_map(|c| c["provider"].as_str().map(str::to_string))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    provider_options.sort();
+    let filtered: Vec<Value> = all_conns
+        .into_iter()
+        .filter(|c| provider == "all" || c["provider"].as_str() == Some(provider))
+        .filter(|c| match account_status {
+            "active" => c["isActive"].as_bool().unwrap_or(true),
+            "inactive" => !c["isActive"].as_bool().unwrap_or(true),
+            _ => true,
+        })
+        .map(|c| sanitize_client_connection(&c))
+        .collect();
+    let total = filtered.len();
+    let total_pages = (total / page_size + usize::from(total % page_size != 0)).max(1);
+    let current_page = page.min(total_pages);
+    let offset = (current_page - 1) * page_size;
+    let page_connections: Vec<Value> = filtered.into_iter().skip(offset).take(page_size).collect();
+    Json(json!({
+        "connections": page_connections,
+        "providerOptions": provider_options,
+        "pagination": {
+            "page": current_page,
+            "pageSize": page_size,
+            "total": total,
+            "totalPages": total_pages,
+        }
+    }))
+    .into_response()
+}
+
+fn kilo_cache() -> &'static Mutex<(Option<Vec<Value>>, Option<std::time::Instant>)> {
+    static CACHE: OnceLock<Mutex<(Option<Vec<Value>>, Option<std::time::Instant>)>> =
+        OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new((None, None)))
+}
+
+async fn kilo_free_models() -> Response {
+    {
+        let guard = kilo_cache().lock().unwrap();
+        if let (Some(models), Some(at)) = (&guard.0, guard.1)
+            && at.elapsed() < std::time::Duration::from_secs(3600)
+        {
+            return Json(json!({ "models": models, "cached": true })).into_response();
+        }
+    }
+    let url = std::env::var("KILO_MODELS_URL")
+        .unwrap_or_else(|_| "https://api.kilo.ai/api/gateway/models".to_string());
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+    match client
+        .get(&url)
+        .header("Accept", "application/json")
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            let text = resp.text().await.unwrap_or_default();
+            if let Ok(parsed) = serde_json::from_str::<Value>(&text)
+                && let Some(arr) = parsed["data"].as_array()
+            {
+                let free: Vec<Value> = arr
+                    .iter()
+                    .filter(|m| m["isFree"].as_bool() == Some(true))
+                    .map(|m| {
+                        json!({
+                            "id": m["id"],
+                            "name": m["name"],
+                            "isFree": true,
+                            "context_length": m["context_length"].as_u64().unwrap_or(0),
+                        })
+                    })
+                    .collect();
+                let mut guard = kilo_cache().lock().unwrap();
+                *guard = (Some(free.clone()), Some(std::time::Instant::now()));
+                return Json(json!({ "models": free, "cached": false })).into_response();
+            }
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "models": [], "error": "Invalid Kilo API response" })),
+            )
+                .into_response()
+        }
+        Ok(resp) => {
+            let msg = format!("Failed to fetch Kilo models: Kilo API returned {}", resp.status().as_u16());
+            let guard = kilo_cache().lock().unwrap();
+            if let Some(ref cached) = guard.0 {
+                return Json(json!({ "models": cached, "cached": true, "warning": msg }))
+                    .into_response();
+            }
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "models": [], "error": msg })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            let msg = format!("Failed to fetch Kilo models: {e}");
+            let guard = kilo_cache().lock().unwrap();
+            if let Some(ref cached) = guard.0 {
+                return Json(json!({ "models": cached, "cached": true, "warning": msg }))
+                    .into_response();
+            }
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "models": [], "error": msg })),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn suggested_models(Query(q): Query<HashMap<String, String>>) -> Response {
+    let (Some(url), Some(filter_type)) = (
+        q.get("url").filter(|s| !s.is_empty()),
+        q.get("type").filter(|s| !s.is_empty()),
+    ) else {
+        return err(StatusCode::BAD_REQUEST, "Missing url or type");
+    };
+    let supported = [
+        "openrouter-free",
+        "opencode-free",
+        "opencode-go",
+        "mimo-free",
+        "minimax-code",
+        "airforce-free",
+        "nous-free",
+        "pricing",
+    ];
+    if !supported.contains(&filter_type.as_str()) {
+        return err(StatusCode::BAD_REQUEST, "Unknown filter type");
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+    let Ok(resp) = client.get(url).send().await else {
+        return Json(json!({ "data": [] })).into_response();
+    };
+    if !resp.status().is_success() {
+        return Json(json!({ "data": [] })).into_response();
+    }
+    let Ok(text) = resp.text().await else {
+        return Json(json!({ "data": [] })).into_response();
+    };
+    let Ok(parsed) = serde_json::from_str::<Value>(&text) else {
+        return Json(json!({ "data": [] })).into_response();
+    };
+    let raw_arr: Vec<Value> = parsed
+        .get("data")
+        .or_else(|| parsed.get("models"))
+        .and_then(Value::as_array)
+        .cloned()
+        .or_else(|| parsed.as_array().cloned())
+        .unwrap_or_else(|| {
+            if parsed.is_object() {
+                vec![parsed]
+            } else {
+                Vec::new()
+            }
+        });
+    let data: Vec<Value> = match filter_type.as_str() {
+        "openrouter-free" => raw_arr
+            .into_iter()
+            .filter(|m| {
+                m["pricing"]["prompt"].as_str() == Some("0")
+                    && m["pricing"]["completion"].as_str() == Some("0")
+                    && m["context_length"].as_u64().unwrap_or(0) >= 200_000
+            })
+            .map(|m| json!({ "id": m["id"], "name": m["name"], "contextLength": m["context_length"] }))
+            .collect(),
+        "opencode-free" => raw_arr
+            .into_iter()
+            .filter(|m| {
+                let id = m["id"].as_str().unwrap_or("");
+                (id.ends_with("-free") || id == "big-pickle") && id != "deepseek-v4-flash-free"
+            })
+            .map(|m| json!({ "id": m["id"], "name": m["id"] }))
+            .collect(),
+        "opencode-go" => raw_arr
+            .into_iter()
+            .filter(|m| m["id"].is_string())
+            .map(|m| json!({ "id": m["id"], "name": m["id"] }))
+            .collect(),
+        "mimo-free" => raw_arr
+            .into_iter()
+            .filter(|m| {
+                let id = m["id"].as_str().unwrap_or("");
+                let name = m["name"].as_str().unwrap_or("").to_ascii_lowercase();
+                id.starts_with("mimo") || name.contains("mimo")
+            })
+            .map(|m| json!({ "id": m["id"], "name": m["name"].as_str().or(m["id"].as_str()).unwrap_or("") }))
+            .collect(),
+        "pricing" => raw_arr
+            .into_iter()
+            .filter(|m| m["model_ratio"].as_f64() == Some(0.0) || m["model_ratio"].as_i64() == Some(0))
+            .filter_map(|m| {
+                let id = m["model_name"].as_str().or_else(|| m["id"].as_str())?;
+                Some(json!({ "id": id, "name": id }))
+            })
+            .collect(),
+        _ => raw_arr
+            .into_iter()
+            .filter_map(|m| {
+                let id = m["id"].as_str()?;
+                Some(json!({ "id": id, "name": m["name"].as_str().unwrap_or(id) }))
+            })
+            .collect(),
+    };
+    Json(json!({ "data": data })).into_response()
+}
+
+fn batch_jobs() -> &'static Mutex<HashMap<String, bool>> {
+    static JOBS: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+    JOBS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+async fn test_batch_stop(Json(body): Json<Value>) -> Response {
+    let Some(job_id) = body["jobId"].as_str().filter(|s| !s.is_empty()) else {
+        return err(StatusCode::BAD_REQUEST, "jobId is required");
+    };
+    let mut jobs = batch_jobs().lock().unwrap();
+    let found = if let Some(stopped) = jobs.get_mut(job_id) {
+        *stopped = true;
+        true
+    } else {
+        false
+    };
+    Json(json!({ "ok": true, "found": found })).into_response()
+}
+
+async fn test_batch(State(s): State<AppState>, Json(body): Json<Value>) -> Response {
+    let Some(mode) = body["mode"].as_str().filter(|s| !s.is_empty()) else {
+        return err(StatusCode::BAD_REQUEST, "mode is required");
+    };
+    if !matches!(
+        mode,
+        "provider" | "oauth" | "free" | "apikey" | "compatible" | "all"
+    ) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "Invalid mode. Use: provider, oauth, free, apikey, compatible, all",
+        );
+    }
+    let provider_id = body["providerId"].as_str();
+    let job_id = body["jobId"].as_str().map(str::to_string);
+    let connections = {
+        let Ok(db) = s.db.lock() else {
+            return err(StatusCode::INTERNAL_SERVER_ERROR, "Database unavailable");
+        };
+        let Ok(mut st) =
+            db.prepare("SELECT id FROM providerConnections WHERE isActive=1 ORDER BY priority")
+        else {
+            return err(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
+        };
+        let ids = st
+            .query_map([], |r| r.get::<_, String>(0))
+            .ok()
+            .map(|rows| rows.filter_map(Result::ok).collect::<Vec<_>>())
+            .unwrap_or_default();
+        ids.into_iter()
+            .filter_map(|id| connection(&db, &id).ok().flatten())
+            .filter(|c| {
+                let p = c["provider"].as_str().unwrap_or("");
+                let auth = c["authType"].as_str().unwrap_or("apikey");
+                match mode {
+                    "provider" => provider_id.is_some_and(|pid| pid == p),
+                    "oauth" => auth == "oauth",
+                    "apikey" => auth == "apikey",
+                    "compatible" => {
+                        p.starts_with("openai-compatible-")
+                            || p.starts_with("anthropic-compatible-")
+                    }
+                    "free" => matches!(p, "kilo" | "opencode" | "openrouter"),
+                    "all" => true,
+                    _ => false,
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+
+    if let Some(ref jid) = job_id {
+        batch_jobs().lock().unwrap().insert(jid.clone(), false);
+    }
+    let mut results = Vec::new();
+    let mut passed = 0usize;
+    let mut failed = 0usize;
+    let mut stopped = false;
+    for conn in &connections {
+        if let Some(ref jid) = job_id
+            && batch_jobs().lock().unwrap().get(jid).copied().unwrap_or(false)
+        {
+            stopped = true;
+            break;
+        }
+        let (valid, error_msg, stage) = run_connection_test(conn, None).await;
+        if valid {
+            passed += 1;
+        } else {
+            failed += 1;
+        }
+        results.push(json!({
+            "connectionId": conn["id"],
+            "provider": conn["provider"],
+            "valid": valid,
+            "stage": stage,
+            "error": error_msg,
+        }));
+    }
+    if let Some(ref jid) = job_id {
+        batch_jobs().lock().unwrap().remove(jid);
+    }
+    Json(json!({
+        "mode": mode,
+        "providerId": provider_id,
+        "results": results,
+        "summary": { "total": results.len(), "passed": passed, "failed": failed },
+        "stopped": stopped,
+    }))
+    .into_response()
+}
+
+async fn validate_provider(State(s): State<AppState>, Json(body): Json<Value>) -> Response {
+    let Some(provider_raw) = body["provider"].as_str().filter(|s| !s.is_empty()) else {
+        return err(StatusCode::BAD_REQUEST, "Provider is required");
+    };
+    let provider = canonical_provider_id(provider_raw);
+    let api_key = body["apiKey"].as_str().unwrap_or("");
+    let psd = &body["providerSpecificData"];
+    let is_compatible = provider.starts_with("openai-compatible-")
+        || provider.starts_with("anthropic-compatible-");
+    if !is_compatible && crate::providers::lookup(&provider).is_none() {
+        return err(StatusCode::BAD_REQUEST, "Invalid provider");
+    }
+    if api_key.is_empty() && provider != "ollama-local" {
+        return err(StatusCode::BAD_REQUEST, "API Key is required");
+    }
+    let base_url = if is_compatible {
+        let Ok(db) = s.db.lock() else {
+            return err(StatusCode::INTERNAL_SERVER_ERROR, "Database unavailable");
+        };
+        node(&db, &provider)
+            .ok()
+            .flatten()
+            .and_then(|n| n["baseUrl"].as_str().map(str::to_owned))
+    } else {
+        psd["baseUrl"].as_str().map(str::to_owned)
+    };
+    let model = crate::providers::lookup(&provider)
+        .and_then(|p| p.models.first().map(|m| m.id.clone()))
+        .unwrap_or_else(|| "gpt-4o-mini".to_string());
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .unwrap_or_default();
+    let req = crate::executors::ExecutorRequest {
+        provider,
+        model,
+        body: json!({
+            "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": 1,
+            "stream": false
+        }),
+        stream: false,
+        api_key: Some(api_key.to_string()),
+        access_token: None,
+        base_url,
+        provider_specific_data: Some(psd.clone()),
+    };
+    match crate::executors::execute(&client, req).await {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            let valid = status != 401 && status != 403;
+            Json(json!({ "valid": valid, "status": status })).into_response()
+        }
+        Err(e) => Json(json!({ "valid": false, "error": e.to_string() })).into_response(),
+    }
+}
+
+async fn web_login_get(Query(q): Query<HashMap<String, String>>) -> Response {
+    let Some(_provider) = q.get("provider").filter(|s| !s.is_empty()) else {
+        return Json(json!({ "providers": [], "profiles": [] })).into_response();
+    };
+    err(StatusCode::NOT_FOUND, "No login session for this provider")
+}
+
+async fn web_login_post() -> Response {
+    err(
+        StatusCode::NOT_IMPLEMENTED,
+        "Interactive browser web-login is not supported in this runtime",
+    )
+}
+
+async fn web_login_delete(Query(q): Query<HashMap<String, String>>) -> Response {
+    if q.get("provider").is_none_or(String::is_empty) {
+        return err(StatusCode::BAD_REQUEST, "Provider is required");
+    }
+    Json(json!({ "ok": true, "cancelled": false })).into_response()
+}
+
 #[cfg(test)]
 mod node_validation_tests {
     use super::*;
@@ -520,6 +1607,86 @@ mod node_validation_tests {
                 StatusCode::BAD_REQUEST
             );
         }
+    }
+
+    #[tokio::test]
+    async fn provider_nodes_crud_lifecycle() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrate(&db).unwrap();
+        let state = AppState {
+            db: Arc::new(Mutex::new(db)),
+            executor: Arc::new(crate::api::executor::HttpExecutor(reqwest::Client::new())),
+            jwt_secret: None,
+        };
+        let app = routes().with_state(state);
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::post("/api/provider-nodes")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"name":"My Node","prefix":"my","type":"openai-compatible","apiType":"chat","baseUrl":"https://api.example.com/v1"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let created: Value = serde_json::from_slice(
+            &axum::body::to_bytes(res.into_body(), 10000).await.unwrap(),
+        )
+        .unwrap();
+        let id = created["node"]["id"].as_str().unwrap().to_string();
+        assert!(id.starts_with("openai-compatible-chat-"));
+
+        let res = app
+            .clone()
+            .oneshot(Request::get("/api/provider-nodes").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let listed: Value = serde_json::from_slice(
+            &axum::body::to_bytes(res.into_body(), 10000).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(listed["nodes"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["nodes"][0]["id"], id);
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::put(format!("/api/provider-nodes/{id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"name":"My Node 2","prefix":"my2","apiType":"responses","baseUrl":"https://api2.example.com/v1"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let updated: Value = serde_json::from_slice(
+            &axum::body::to_bytes(res.into_body(), 10000).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(updated["node"]["name"], "My Node 2");
+        assert_eq!(updated["node"]["prefix"], "my2");
+
+        let res = app
+            .oneshot(
+                Request::delete(format!("/api/provider-nodes/{id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let deleted: Value = serde_json::from_slice(
+            &axum::body::to_bytes(res.into_body(), 10000).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(deleted["success"], true);
     }
 }
 
@@ -792,5 +1959,371 @@ async fn list_nodes(State(s): State<AppState>) -> Response {
             StatusCode::INTERNAL_SERVER_ERROR,
             "Failed to fetch provider nodes",
         ),
+    }
+}
+
+#[cfg(test)]
+mod providers_parity_tests {
+    use super::*;
+    use axum::{body::Body, http::Request};
+    use std::sync::{Arc, Mutex};
+    use tower::ServiceExt;
+
+    fn test_app() -> (axum::Router, AppState) {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrate(&db).unwrap();
+        let state = AppState {
+            db: Arc::new(Mutex::new(db)),
+            executor: Arc::new(crate::api::executor::HttpExecutor(reqwest::Client::new())),
+            jwt_secret: None,
+        };
+        (routes().with_state(state.clone()), state)
+    }
+
+    async fn json_body(res: axum::response::Response) -> Value {
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn providers_listing_bulk_toggle_client_and_proxy() {
+        let (app, state) = test_app();
+
+        // Create two connections
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/providers")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"provider":"openai","apiKey":"sk-secret-1","name":"Primary OpenAI","email":"a@example.com"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let c1 = json_body(res).await;
+        let id1 = c1["connection"]["id"].as_str().unwrap().to_string();
+
+        // summary=1
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/providers?summary=1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let sum = json_body(res).await;
+        assert_eq!(sum["stats"]["openai"]["total"], 1);
+        assert_eq!(sum["stats"]["openai"]["active"], 1);
+
+        // page=1&lite=1
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/providers?page=1&pageSize=10&lite=1&search=Primary")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let paged = json_body(res).await;
+        assert_eq!(paged["total"], 1);
+        assert_eq!(paged["connections"][0]["id"], id1);
+
+        // PATCH /api/providers bulk toggle
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/api/providers")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"provider":"openai","authTypes":["apikey"],"isActive":false}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(json_body(res).await["updated"], 1);
+
+        // GET /api/providers/client (redacted, paginated)
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/providers/client?provider=openai&accountStatus=inactive&page=1&pageSize=5")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let client_res = json_body(res).await;
+        assert_eq!(client_res["pagination"]["total"], 1);
+        assert!(client_res["connections"][0].get("apiKey").is_none());
+
+        // bulk-proxy: create proxyPool then assign single & none
+        {
+            let db = state.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO proxyPools (id,isActive,testStatus,data,createdAt,updatedAt) VALUES ('pool-1',1,NULL,'{\"name\":\"Test Pool\"}','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        }
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/providers/bulk-proxy")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"provider":"openai","mode":"single","proxyPoolId":"pool-1"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(json_body(res).await["updated"], 1);
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/providers/bulk-proxy")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"provider":"openai","mode":"none"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(json_body(res).await["updated"], 1);
+    }
+
+    #[tokio::test]
+    async fn providers_models_overrides_validation_and_web_login() {
+        let (app, _state) = test_app();
+
+        // Create connection
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/providers")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"provider":"openai","apiKey":"sk-test","name":"Test OpenAI"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let id = json_body(res).await["connection"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // GET /api/providers/{id}/models
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(&format!("/api/providers/{id}/models"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let models_res = json_body(res).await;
+        assert_eq!(models_res["provider"], "openai");
+        assert!(!models_res["models"].as_array().unwrap().is_empty());
+
+        // PUT & GET /api/providers/{id}/overrides
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/providers/openai/overrides")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"headers":{"X-Custom":"val"}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(json_body(res).await["headers"]["X-Custom"], "val");
+
+        // Blocked header rejected
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/providers/openai/overrides")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"headers":{"Authorization":"Bearer x"}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/providers/openai/overrides")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(json_body(res).await["headers"]["X-Custom"], "val");
+
+        // suggested-models validation
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/providers/suggested-models?url=https://example.com&type=unknown")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+        // validate endpoint validation
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/providers/validate")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"provider":"openai","apiKey":""}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+        // test-batch & test-batch/stop
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/providers/test-batch/stop")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"jobId":"job-1"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(json_body(res).await["ok"], true);
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/providers/test-batch")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"mode":"oauth"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(json_body(res).await["summary"]["total"], 0);
+
+        // web-login
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/providers/web-login")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/providers/web-login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"provider":"claude"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_IMPLEMENTED);
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/providers/web-login?provider=claude")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        // 404 on missing connection test
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/providers/nonexistent/test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/providers/nonexistent/test-models")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 }
