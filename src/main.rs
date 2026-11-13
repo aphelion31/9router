@@ -6,6 +6,7 @@ mod executors;
 mod handlers;
 mod oauth;
 mod providers;
+mod routing;
 mod server;
 mod translator;
 
