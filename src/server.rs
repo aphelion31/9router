@@ -268,10 +268,34 @@ async fn usage(State(s): State<AppState>, Query(q): Query<HashMap<String, String
         None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
-async fn models() -> Json<Value> {
-    Json(
-        json!({"object":"list","data":crate::providers::all().iter().flat_map(|p|p.models.iter().map(move |m|json!({"id":format!("{}/{}",p.id,m.id),"object":"model","owned_by":p.id}))).collect::<Vec<_>>()}),
-    )
+async fn models(State(state): State<AppState>) -> Json<Value> {
+    let connections: Vec<(String, Value)> = state.db.lock().ok().and_then(|db| {
+        let mut stmt = db.prepare("SELECT id,provider,data FROM providerConnections WHERE isActive=1 ORDER BY priority ASC").ok()?;
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))).ok()?;
+        Some(rows.flatten().filter_map(|(id, provider, raw)| {
+            let mut data: Value = serde_json::from_str(&raw).ok()?;
+            data.as_object_mut()?.insert("id".into(), json!(id));
+            data.as_object_mut()?.insert("provider".into(), json!(provider));
+            Some((provider, data))
+        }).collect())
+    }).unwrap_or_default();
+    let mut live = HashMap::new();
+    for (provider, conn) in connections {
+        if !live.contains_key(&provider) {
+            if let Some(models) = crate::api::routes::mgmt_providers::live_models(&provider, &conn, false).await.filter(|m| !m.is_empty()) {
+                live.insert(provider, models);
+            }
+        }
+    }
+    let mut data = Vec::new();
+    for p in crate::providers::all() {
+        if let Some(models) = live.remove(&p.id) {
+            data.extend(models.iter().filter_map(|m| m["id"].as_str()).map(|id| json!({"id":format!("{}/{}",p.id,id),"object":"model","owned_by":p.id})));
+        } else {
+            data.extend(p.models.iter().map(|m| json!({"id":format!("{}/{}",p.id,m.id),"object":"model","owned_by":p.id})));
+        }
+    }
+    Json(json!({"object":"list","data":data}))
 }
 /// Per-request chat hooks. `api_key_id` is the `apiKeys.id` of the caller, if known.
 struct Hooks {
