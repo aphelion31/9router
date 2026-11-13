@@ -20,6 +20,7 @@ pub fn v1() -> Router<AppState> {
 }
 
 /// 501 for routes whose upstream service is not ported yet.
+#[allow(dead_code)]
 pub(crate) fn not_available() -> Response {
     (
         StatusCode::NOT_IMPLEMENTED,
