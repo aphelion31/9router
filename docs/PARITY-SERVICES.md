@@ -74,7 +74,7 @@ Status: **in progress**. Partial entries cover only the functions named, not ful
 | `open-sse/utils/streamHelpers.js` | Partial: SSE parser only |
 | `open-sse/utils/toolDeduper.js` | Ported: tool normalization |
 | `open-sse/utils/upstreamHeaders.js` | Ported: allowed response headers |
-| `open-sse/utils/webCookieAuth.js` | Partial: cookie parsing and Grok header |
+| `open-sse/utils/webCookieAuth.js` | Ported: cookie parsing, Grok header, Playwright cookie entries (`services::web_cookie_auth`) |
 | Remaining `open-sse/utils/*` | Not ported |
 
 ## Library and MITM

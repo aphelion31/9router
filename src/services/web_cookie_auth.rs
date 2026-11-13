@@ -120,3 +120,45 @@ mod tests {
         assert_eq!(extract_cookie_value("foo=x; other=y", "sso"), "");
     }
 }
+
+/// Playwright-style cookie entry, the shape of `toPlaywrightCookies`.
+#[derive(Debug, PartialEq, Eq)]
+pub struct PlaywrightCookie {
+    pub name: String,
+    pub value: String,
+    pub domain: String,
+}
+
+/// Parse a Cookie header into cookie entries. `__Host-` cookies get the bare host
+/// (no leading dot) because Chrome rejects a Domain attribute on them.
+pub fn to_playwright_cookies(raw: &str, default_domain: &str) -> Vec<PlaywrightCookie> {
+    const ATTRS: [&str; 7] = ["path", "domain", "expires", "max-age", "secure", "httponly", "samesite"];
+    let bare = default_domain.trim_start_matches('.');
+    raw.split(';')
+        .filter_map(|part| {
+            let (name, value) = part.trim().split_once('=')?;
+            let (name, value) = (name.trim(), value.trim());
+            if name.is_empty() || value.is_empty() || ATTRS.contains(&name.to_ascii_lowercase().as_str()) {
+                return None;
+            }
+            let domain = if name.starts_with("__Host-") { bare } else { default_domain };
+            Some(PlaywrightCookie {
+                name: name.into(),
+                value: value.into(),
+                domain: domain.into(),
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod playwright_tests {
+    use super::*;
+    #[test]
+    fn host_cookies_drop_domain_dot_and_attributes_are_skipped() {
+        let cookies = to_playwright_cookies("__Host-id=1; Path=/; sso=2", ".grok.com");
+        assert_eq!(cookies.len(), 2);
+        assert_eq!(cookies[0].domain, "grok.com");
+        assert_eq!(cookies[1].domain, ".grok.com");
+    }
+}
