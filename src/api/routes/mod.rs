@@ -1,8 +1,19 @@
 //! Ported 9router-pro API routes. Add one file per route group and merge it below.
 //! `management()` is wrapped in dashboard auth, `v1()` in API-key auth (see server.rs).
-use axum::Router;
+use axum::{
+    Json, Router,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
+use serde_json::json;
 
 use crate::server::AppState;
+
+mod v1_catalog;
+mod v1_count_tokens;
+mod v1_models;
+mod v1_stubs;
+mod v1_usage;
 
 pub fn management() -> Router<AppState> {
     Router::new()
@@ -10,4 +21,59 @@ pub fn management() -> Router<AppState> {
 
 pub fn v1() -> Router<AppState> {
     Router::new()
+        .merge(v1_count_tokens::router())
+        .merge(v1_usage::router())
+        .merge(v1_stubs::router())
+        .merge(v1_catalog::router())
+        .merge(v1_models::router())
+}
+
+/// 501 for routes whose upstream service is not ported yet.
+#[allow(dead_code)]
+pub(crate) fn not_available() -> Response {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(json!({"error":"not available"})),
+    )
+        .into_response()
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use crate::server::AppState;
+    use axum::{
+        Router,
+        body::{Body, to_bytes},
+        http::{Request, StatusCode},
+    };
+    use rusqlite::Connection;
+    use serde_json::Value;
+    use std::sync::{Arc, Mutex};
+    use tower::ServiceExt;
+
+    /// v1 router over an in-memory DB with one active key `sk-test` ("Test key", id `k1`).
+    pub fn app() -> (Router, Arc<Mutex<Connection>>) {
+        let db = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&db).unwrap();
+        db.execute(
+            "INSERT INTO apiKeys(id,key,name,createdAt,isActive,accessRestricted,accessAllow) \
+             VALUES('k1','sk-test','Test key','2026-01-01T00:00:00.000Z',1,0,'[]')",
+            [],
+        )
+        .unwrap();
+        let db = Arc::new(Mutex::new(db));
+        let state = AppState {
+            db: Arc::clone(&db),
+            executor: Arc::new(crate::api::executor::HttpExecutor(reqwest::Client::new())),
+            jwt_secret: None,
+        };
+        (super::v1().with_state(state), db)
+    }
+
+    pub async fn call(app: Router, req: Request<Body>) -> (StatusCode, Value) {
+        let res = app.oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
 }
