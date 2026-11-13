@@ -6,6 +6,39 @@ pub fn read_numbered(input: &str) -> String {
     truncate(input, true)
 }
 
+pub fn grep(input: &str) -> String {
+    let mut files = std::collections::BTreeMap::<&str, Vec<(&str, &str)>>::new();
+    let mut total = 0;
+    for line in input.split('\n') {
+        let mut fields = line.splitn(3, ':');
+        let (Some(file), Some(number), Some(content)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        total += 1;
+        files.entry(file).or_default().push((number, content));
+    }
+    if total == 0 {
+        return input.into();
+    }
+    let mut out = format!("{total} matches in {}F:\n\n", files.len());
+    for (file, matches) in files {
+        out.push_str(&format!("[file] {file} ({}):\n", matches.len()));
+        for (number, content) in matches.iter().take(10) {
+            out.push_str(&format!("  {number:>4}: {}\n", content.trim()));
+        }
+        if matches.len() > 10 {
+            out.push_str(&format!("  +{}\n", matches.len() - 10));
+        }
+        out.push('\n');
+    }
+    out
+}
+
 pub fn find(input: &str) -> String {
     let lines: Vec<_> = input
         .split('\n')
@@ -200,6 +233,14 @@ pub fn dedup_log(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn grep_groups_matches_and_preserves_colons() {
+        assert_eq!(
+            grep("b:2: x:y\na:1: hello"),
+            "2 matches in 2F:\n\n[file] a (1):\n     1: hello\n\n[file] b (1):\n     2: x:y\n\n"
+        );
+        assert_eq!(grep("no matches"), "no matches");
+    }
     #[test]
     fn find_groups_unix_and_windows_paths() {
         assert_eq!(
