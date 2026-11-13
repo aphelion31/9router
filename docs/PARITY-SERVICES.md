@@ -41,7 +41,7 @@ Status: **in progress**. Partial entries cover only the functions named, not ful
 | `open-sse/services/cursorModels.js` | Partial: protobuf catalog parsing and selection, discovery pending |
 | `open-sse/services/grokCliModels.js` | Partial: model parsing, no live discovery or refresh |
 | `open-sse/services/kimchiModels.js` | Ported: `services::kimchi_models` (metadata discovery, auth, cache) |
-| `open-sse/services/kiroModels.js` | Partial: variant expansion, discovery and refresh pending |
+| `open-sse/services/kiroModels.js` | Ported: `services::kiro_models` (ListAvailableModels discovery, fingerprint headers, 401 refresh, cache) |
 | `open-sse/services/qoderModels.js` | Partial: PAT identification and catalog visibility |
 | `open-sse/services/capacityAdapter.js` | Partial: pool selection, no history stripping |
 | `open-sse/services/emptyFailover.js` | Partial: classification, no streaming peek/reconstruction |
