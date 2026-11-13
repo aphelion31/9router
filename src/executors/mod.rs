@@ -237,6 +237,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ollama_local_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/api/chat", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(mock)))
+                .await
+                .unwrap()
+        });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "ollama-local".into(),
+                model: "model".into(),
+                body: json!({"model": "model", "messages": []}),
+                stream: false,
+                api_key: None,
+                access_token: None,
+                base_url: Some(url),
+            },
+        )
+        .await
+        .unwrap();
+        let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(result["uri"], "/api/chat");
+        assert_eq!(result["body"]["model"], "model");
+        task.abort();
+    }
+
+    #[tokio::test]
     async fn vertex_mock_request() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
