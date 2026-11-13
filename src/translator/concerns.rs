@@ -544,8 +544,8 @@ pub fn fix_missing_tool_responses(messages: &[Value]) -> Vec<Value> {
 // ---------- maxTokens ----------
 
 pub fn adjust_max_tokens(body: &Value) -> u64 {
-    const DEFAULT_MAX_TOKENS: u64 = 64000;
-    const MIN_MAX_TOKENS: u64 = 32000;
+    const DEFAULT_MAX_TOKENS: u64 = crate::config::DEFAULT_MAX_TOKENS as u64;
+    const MIN_MAX_TOKENS: u64 = crate::config::DEFAULT_MIN_TOKENS as u64;
     const GEMINI_3_HIGH_THINKING_MIN: u64 = 65535;
     const THINKING_BUFFER: u64 = 8192;
 

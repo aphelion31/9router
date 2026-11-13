@@ -8,7 +8,6 @@ pub struct Provider {
     pub alias: String,
     pub base_url: Option<String>,
     pub format: Option<String>,
-    pub auth_type: Option<String>,
     pub models: Vec<Model>,
 }
 

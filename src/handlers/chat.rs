@@ -347,7 +347,12 @@ pub async fn handle_chat(
             let first_response_timeout = (targets_len > 1).then(|| {
                 Duration::from_millis(crate::config::COMBO_FIRST_RESPONSE_TIMEOUT_MS)
             });
-            let token_saver = hooks.get_token_saver_config(&model_str).await;
+            let mut token_saver = hooks.get_token_saver_config(&model_str).await;
+            if headers.get(crate::config::TOKEN_SAVER_HEADER).and_then(|v| v.to_str().ok()).is_some_and(|v| v.eq_ignore_ascii_case("off")) {
+                if let Some(config) = token_saver.as_mut() {
+                    config.token_saver_enabled = false;
+                }
+            }
             let options = ChatCoreOptions {
                 body: body.clone(),
                 provider: target.provider.clone(),

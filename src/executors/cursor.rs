@@ -17,8 +17,7 @@ const WIRE_LEN: u8 = 2;
 const WIRE_FIXED32: u8 = 5;
 
 const DNS_NAMESPACE: [u8; 16] = [
-    0x6b, 0xa7, 0xb8, 0x10, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30,
-    0xc8,
+    0x6b, 0xa7, 0xb8, 0x10, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8,
 ];
 
 fn unix_secs() -> u64 {
@@ -140,7 +139,10 @@ pub fn build_cursor_headers(
         ("x-amzn-trace-id".into(), format!("Root={}", random_uuid())),
         ("x-client-key".into(), client_key),
         ("x-cursor-checksum".into(), checksum),
-        ("x-cursor-client-version".into(), CURSOR_CLIENT_VERSION.into()),
+        (
+            "x-cursor-client-version".into(),
+            CURSOR_CLIENT_VERSION.into(),
+        ),
         ("x-cursor-client-commit".into(), CURSOR_CLIENT_COMMIT.into()),
         ("x-cursor-client-type".into(), "ide".into()),
         ("x-cursor-client-os".into(), os.into()),
@@ -219,7 +221,10 @@ fn decode_message(data: &[u8]) -> BTreeMap<u32, Vec<FieldVal<'_>>> {
                     break;
                 };
                 pos = next;
-                fields.entry(field_num).or_default().push(FieldVal::Varint(v));
+                fields
+                    .entry(field_num)
+                    .or_default()
+                    .push(FieldVal::Varint(v));
             }
             WIRE_LEN => {
                 let Some((len, next)) = decode_varint(data, pos) else {
@@ -316,7 +321,12 @@ fn parse_tool_name(formatted: &str) -> (String, String) {
     }
     (
         "custom".to_string(),
-        if formatted.is_empty() { "tool" } else { formatted }.to_string(),
+        if formatted.is_empty() {
+            "tool"
+        } else {
+            formatted
+        }
+        .to_string(),
     )
 }
 
@@ -334,20 +344,14 @@ fn encode_tool_result(tr: &Value) -> Vec<u8> {
         .and_then(Value::as_str)
         .unwrap_or("");
     let tool_name = format_tool_name(original_name);
-    let raw_args = tr
-        .get("raw_args")
-        .and_then(Value::as_str)
-        .unwrap_or("{}");
+    let raw_args = tr.get("raw_args").and_then(Value::as_str).unwrap_or("{}");
     let result_content = tr
         .get("result_content")
         .or_else(|| tr.get("result"))
         .and_then(Value::as_str)
         .unwrap_or("");
-    let (tool_call_id, model_call_id) = parse_tool_id(
-        tr.get("tool_call_id")
-            .and_then(Value::as_str)
-            .unwrap_or(""),
-    );
+    let (tool_call_id, model_call_id) =
+        parse_tool_id(tr.get("tool_call_id").and_then(Value::as_str).unwrap_or(""));
     let tool_index = tr
         .get("tool_index")
         .or_else(|| tr.get("index"))
@@ -477,15 +481,13 @@ pub fn generate_cursor_body(
                 obj.insert("tool_results".into(), json!([]));
             }
             normalized.push(first);
-            let next_same = messages
-                .get(i + 1)
-                .is_some_and(|nm| {
-                    nm.get("role").and_then(Value::as_str) == Some("assistant")
-                        && nm
-                            .get("tool_results")
-                            .and_then(Value::as_array)
-                            .is_some_and(|a| !a.is_empty())
-                });
+            let next_same = messages.get(i + 1).is_some_and(|nm| {
+                nm.get("role").and_then(Value::as_str) == Some("assistant")
+                    && nm
+                        .get("tool_results")
+                        .and_then(Value::as_array)
+                        .is_some_and(|a| !a.is_empty())
+            });
             if !next_same {
                 normalized.push(json!({
                     "role": "assistant",
@@ -868,14 +870,16 @@ impl Decoder {
     }
 
     fn emit_delta(&self, delta: Value, out: &mut Vec<u8>) {
-        let chunk = json!({
-            "id": self.response_id,
-            "object": "chat.completion.chunk",
-            "created": self.created,
-            "model": self.model,
-            "choices": [{"index": 0, "delta": delta, "finish_reason": null}]
-        });
-        out.extend_from_slice(format!("data: {chunk}\n\n").as_bytes());
+        out.extend_from_slice(
+            crate::services::stream_helpers::chat_chunk_sse(
+                &self.response_id,
+                self.created as i64,
+                &self.model,
+                delta,
+                None,
+            )
+            .as_bytes(),
+        );
     }
 
     pub fn finish(&mut self) -> Vec<u8> {
@@ -885,7 +889,7 @@ impl Decoder {
         self.finished = true;
         let mut out = Vec::new();
         if let Some(err) = &self.error {
-            out.extend_from_slice(format!("data: {err}\n\n").as_bytes());
+            out.extend_from_slice(crate::services::stream_helpers::sse_chunk(err).as_bytes());
             out.extend_from_slice(b"data: [DONE]\n\n");
             return out;
         }
@@ -897,14 +901,16 @@ impl Decoder {
         } else {
             "tool_calls"
         };
-        let done = json!({
-            "id": self.response_id,
-            "object": "chat.completion.chunk",
-            "created": self.created,
-            "model": self.model,
-            "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}]
-        });
-        out.extend_from_slice(format!("data: {done}\n\n").as_bytes());
+        out.extend_from_slice(
+            crate::services::stream_helpers::chat_chunk_sse(
+                &self.response_id,
+                self.created as i64,
+                &self.model,
+                json!({}),
+                Some(finish_reason),
+            )
+            .as_bytes(),
+        );
         out.extend_from_slice(b"data: [DONE]\n\n");
         out
     }
@@ -1046,10 +1052,7 @@ pub async fn execute(
         .and_then(Value::as_array)
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    let reasoning_effort = request
-        .body
-        .get("reasoning_effort")
-        .and_then(Value::as_str);
+    let reasoning_effort = request.body.get("reasoning_effort").and_then(Value::as_str);
     let body = generate_cursor_body(messages, &request.model, tools, reasoning_effort, false);
 
     let mut builder = client.post(parsed).body(body);

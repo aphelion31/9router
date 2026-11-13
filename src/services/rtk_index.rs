@@ -10,9 +10,7 @@ use crate::services::rtk_constants::{RAW_CAP, MIN_COMPRESS_SIZE};
 
 #[derive(Debug, Clone)]
 pub struct RtkHit {
-    pub shape: &'static str,
     pub filter: &'static str,
-    pub saved: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -153,7 +151,7 @@ fn compress_kiro_msg(msg: &mut Value, stats: &mut RtkStats) {
     }
 }
 
-fn compress_text(text: &str, stats: &mut RtkStats, shape: &'static str) -> String {
+fn compress_text(text: &str, stats: &mut RtkStats, _shape: &'static str) -> String {
     let bytes_in = text.len();
     stats.bytes_before += bytes_in;
 
@@ -175,9 +173,7 @@ fn compress_text(text: &str, stats: &mut RtkStats, shape: &'static str) -> Strin
 
     stats.bytes_after += out.len();
     stats.hits.push(RtkHit {
-        shape,
         filter: kind.name(),
-        saved: bytes_in - out.len(),
     });
     out
 }

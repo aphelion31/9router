@@ -104,7 +104,8 @@ pub fn parse_event_frame(
 }
 
 // Build one string-header frame. Test fixtures only; mirrors encodeEventFrame.
-pub fn encode_event_frame(headers: &[(&str, &str)], payload: Option<&Value>) -> Vec<u8> {
+#[cfg(test)]
+fn encode_event_frame(headers: &[(&str, &str)], payload: Option<&Value>) -> Vec<u8> {
     let mut header_bytes = Vec::new();
     for (name, value) in headers {
         header_bytes.push(name.len() as u8);

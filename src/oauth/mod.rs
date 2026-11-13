@@ -318,11 +318,6 @@ pub async fn refresh_token(config: &Config, refresh: &str) -> Result<Tokens> {
     )
 }
 
-pub async fn refresh_token_with_client(config: &Config, refresh: &str, client: &reqwest::Client) -> Result<Tokens> {
-    ensure!(!refresh.is_empty(), "refresh token required");
-    tokens(post_with_client(config, &config.token_url, vec![("grant_type", "refresh_token"), ("refresh_token", refresh)], client).await?)
-}
-
 /// Connection data remains compatible with the upstream providerConnections JSON column.
 #[derive(Clone)]
 pub struct Connection {

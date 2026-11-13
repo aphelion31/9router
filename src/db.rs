@@ -237,51 +237,6 @@ pub fn settings_put(conn: &Connection, value: &serde_json::Value) -> Result<()> 
     Ok(())
 }
 
-// ---- combos repo ----
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Combo {
-    pub id: String,
-    pub name: String,
-    pub kind: Option<String>,
-    pub models: Vec<String>,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-pub fn combo_insert(conn: &Connection, c: &Combo) -> Result<()> {
-    let models = serde_json::to_string(&c.models)?;
-    conn.execute(
-        "INSERT INTO combos(id, name, kind, models, createdAt, updatedAt) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
-        params![c.id, c.name, c.kind, models, c.created_at, c.updated_at],
-    )?;
-    Ok(())
-}
-
-pub fn combo_get_by_id(conn: &Connection, id: &str) -> Result<Option<Combo>> {
-    conn.query_row(
-        "SELECT id, name, kind, models, createdAt, updatedAt FROM combos WHERE id = ?1",
-        params![id],
-        |r| {
-            let models: String = r.get(3)?;
-            Ok(Combo {
-                id: r.get(0)?,
-                name: r.get(1)?,
-                kind: r.get(2)?,
-                models: serde_json::from_str(&models).unwrap_or_default(),
-                created_at: r.get(4)?,
-                updated_at: r.get(5)?,
-            })
-        },
-    )
-    .optional()
-    .map_err(Into::into)
-}
-
-pub fn combo_delete(conn: &Connection, id: &str) -> Result<bool> {
-    Ok(conn.execute("DELETE FROM combos WHERE id = ?1", params![id])? > 0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -401,34 +356,9 @@ mod tests {
     }
 
     #[test]
-    fn combo_roundtrip() {
-        let c = mem();
-        let combo = Combo {
-            id: "id1".into(),
-            name: "fast".into(),
-            kind: None,
-            models: vec!["a/x".into(), "b/y".into()],
-            created_at: "2026-01-01T00:00:00Z".into(),
-            updated_at: "2026-01-01T00:00:00Z".into(),
-        };
-        combo_insert(&c, &combo).unwrap();
-        assert_eq!(combo_get_by_id(&c, "id1").unwrap(), Some(combo));
-        assert!(combo_delete(&c, "id1").unwrap());
-        assert_eq!(combo_get_by_id(&c, "id1").unwrap(), None);
-    }
-
-    #[test]
     fn combo_name_case_insensitive_unique() {
         let c = mem();
-        let mk = |id: &str, name: &str| Combo {
-            id: id.into(),
-            name: name.into(),
-            kind: None,
-            models: vec![],
-            created_at: "t".into(),
-            updated_at: "t".into(),
-        };
-        combo_insert(&c, &mk("1", "Fast")).unwrap();
-        assert!(combo_insert(&c, &mk("2", "fast")).is_err());
+        c.execute("INSERT INTO combos(id,name,models,createdAt,updatedAt) VALUES(?1,?2,'[]','t','t')", params!["1", "Fast"]).unwrap();
+        assert!(c.execute("INSERT INTO combos(id,name,models,createdAt,updatedAt) VALUES(?1,?2,'[]','t','t')", params!["2", "fast"]).is_err());
     }
 }

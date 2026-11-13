@@ -5,12 +5,13 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 
-use crate::translator::formats::{
-    FORMAT_CLAUDE, FORMAT_OPENAI_RESPONSE, FORMAT_OPENAI_RESPONSES,
-};
+use crate::translator::formats::{FORMAT_CLAUDE, FORMAT_OPENAI_RESPONSE, FORMAT_OPENAI_RESPONSES};
 use crate::translator::{init_state, translate_response};
 
-use crate::services::stream_helpers::SSE_DONE;
+use crate::services::stream_helpers::{
+    SSE_DONE, build_stream_error_bytes, ensure_stream_tool_call_ids, fix_invalid_id,
+    has_valuable_content,
+};
 
 #[derive(Debug, PartialEq)]
 pub enum SseLine {
@@ -25,7 +26,9 @@ pub fn parse_sse_line(line: &str) -> Option<SseLine> {
         return None;
     }
     if trimmed.starts_with('{') {
-        return serde_json::from_str::<Value>(trimmed).ok().map(SseLine::Json);
+        return serde_json::from_str::<Value>(trimmed)
+            .ok()
+            .map(SseLine::Json);
     }
     if let Some(rest) = trimmed.strip_prefix("data:") {
         let data = rest.trim();
@@ -39,25 +42,15 @@ pub fn parse_sse_line(line: &str) -> Option<SseLine> {
 
 /// Format a translated JSON event as an SSE frame for `source_format`.
 pub fn format_sse(data: &Value, source_format: &str) -> String {
-    let json_str = serde_json::to_string(data).unwrap_or_else(|_| "null".to_string());
-    if (source_format == FORMAT_CLAUDE
-        || source_format == FORMAT_OPENAI_RESPONSES
-        || source_format == FORMAT_OPENAI_RESPONSE)
+    if (source_format == FORMAT_OPENAI_RESPONSES || source_format == FORMAT_OPENAI_RESPONSE)
         && let Some(ev_type) = data.get("type").and_then(|v| v.as_str())
     {
-        return format!("event: {ev_type}\ndata: {json_str}\n\n");
+        return crate::services::stream_helpers::format_sse(
+            &json!({"event": ev_type, "data": data}),
+            source_format,
+        );
     }
-    format!("data: {json_str}\n\n")
-}
-
-pub fn format_sse_error(message: &str, source_format: &str) -> String {
-    let err = json!({ "error": { "message": message } });
-    if source_format == FORMAT_CLAUDE {
-        let ev = json!({ "type": "error", "error": { "message": message } });
-        format_sse(&ev, source_format)
-    } else {
-        format!("{}{}", format_sse(&err, source_format), SSE_DONE)
-    }
+    crate::services::stream_helpers::format_sse(data, source_format)
 }
 
 struct MpscByteStream {
@@ -84,36 +77,62 @@ pub fn translate_sse_to_body(
         let mut raw_buf: Vec<u8> = Vec::new();
         let mut state = init_state(&source_format);
         let mut done_sent = false;
+        let mut seen_tool_call_ids = std::collections::HashMap::new();
+        let responses_passthrough = matches!(
+            source_format.as_str(),
+            FORMAT_OPENAI_RESPONSES | FORMAT_OPENAI_RESPONSE
+        ) && target_format == source_format;
+        let mut responses_terminal = false;
+        let mut event_name = String::new();
 
-        let flush_terminal = |state: &mut crate::translator::TranslateState,
-                              done_sent: &mut bool|
-         -> Vec<Bytes> {
-            let mut frames = Vec::new();
-            let tail = translate_response(&target_format, &source_format, None, state);
-            for item in tail {
-                frames.push(Bytes::from(format_sse(&item, &source_format)));
-            }
-            if !*done_sent
-                && source_format != FORMAT_CLAUDE
-                && source_format != FORMAT_OPENAI_RESPONSES
-                && source_format != FORMAT_OPENAI_RESPONSE
-            {
-                frames.push(Bytes::from_static(SSE_DONE.as_bytes()));
-                *done_sent = true;
-            }
-            frames
-        };
+        let flush_terminal =
+            |state: &mut crate::translator::TranslateState, done_sent: &mut bool| -> Vec<Bytes> {
+                let mut frames = Vec::new();
+                let tail = translate_response(&target_format, &source_format, None, state);
+                for item in tail {
+                    frames.push(Bytes::from(format_sse(&item, &source_format)));
+                }
+                if !*done_sent
+                    && source_format != FORMAT_CLAUDE
+                    && source_format != FORMAT_OPENAI_RESPONSES
+                    && source_format != FORMAT_OPENAI_RESPONSE
+                {
+                    frames.push(Bytes::from_static(SSE_DONE.as_bytes()));
+                    *done_sent = true;
+                }
+                frames
+            };
 
-        while let Some(chunk_res) = upstream_rx.recv().await {
+        let mut first_chunk = true;
+        loop {
+            let timeout = if first_chunk { crate::config::STREAM_FIRST_CHUNK_TIMEOUT_MS } else { crate::config::STREAM_STALL_TIMEOUT_MS };
+            let chunk_res = match tokio::time::timeout(std::time::Duration::from_millis(timeout), upstream_rx.recv()).await {
+                Ok(Some(chunk)) => chunk,
+                Ok(None) => break,
+                Err(_) => Err("Stream stalled".to_owned()),
+            };
+            first_chunk = false;
             match chunk_res {
                 Ok(bytes) => {
                     raw_buf.extend_from_slice(&bytes);
                     while let Some(pos) = raw_buf.iter().position(|&b| b == b'\n') {
                         let line_bytes: Vec<u8> = raw_buf.drain(..=pos).collect();
                         let line = String::from_utf8_lossy(&line_bytes);
+                        if let Some(event) = line.trim().strip_prefix("event:") {
+                            event_name = event.trim().to_owned();
+                        }
                         if let Some(parsed) = parse_sse_line(&line) {
                             match parsed {
                                 SseLine::Done => {
+                                    if responses_passthrough && !responses_terminal {
+                                        let now = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap_or_default()
+                                            .as_millis()
+                                            as u64;
+                                        let _ = tx.send(Ok(Bytes::from(crate::services::responses_stream_helpers::build_aborted_responses_terminal_bytes(now)))).await;
+                                        return;
+                                    }
                                     for frame in flush_terminal(&mut state, &mut done_sent) {
                                         if tx.send(Ok(frame)).await.is_err() {
                                             return;
@@ -121,7 +140,21 @@ pub fn translate_sse_to_body(
                                     }
                                     return;
                                 }
-                                SseLine::Json(val) => {
+                                SseLine::Json(mut val) => {
+                                    if responses_passthrough {
+                                        responses_terminal |= crate::services::responses_stream_helpers::is_openai_responses_terminal_event(Some(&event_name), &val);
+                                        event_name.clear();
+                                    }
+                                    if target_format == "openai" && source_format == "openai" {
+                                        fix_invalid_id(&mut val);
+                                        ensure_stream_tool_call_ids(
+                                            &mut val,
+                                            &mut seen_tool_call_ids,
+                                        );
+                                        if !has_valuable_content(&val, "openai") {
+                                            continue;
+                                        }
+                                    }
                                     let translated = translate_response(
                                         &target_format,
                                         &source_format,
@@ -129,8 +162,7 @@ pub fn translate_sse_to_body(
                                         &mut state,
                                     );
                                     for item in translated {
-                                        let frame =
-                                            Bytes::from(format_sse(&item, &source_format));
+                                        let frame = Bytes::from(format_sse(&item, &source_format));
                                         if tx.send(Ok(frame)).await.is_err() {
                                             return;
                                         }
@@ -141,7 +173,15 @@ pub fn translate_sse_to_body(
                     }
                 }
                 Err(err_msg) => {
-                    let frame = Bytes::from(format_sse_error(&err_msg, &source_format));
+                    let frame = if responses_passthrough {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
+                        Bytes::from(crate::services::responses_stream_helpers::build_aborted_responses_terminal_bytes(now))
+                    } else {
+                        Bytes::from(build_stream_error_bytes(502, &err_msg, &source_format))
+                    };
                     let _ = tx.send(Ok(frame)).await;
                     return;
                 }
@@ -152,6 +192,9 @@ pub fn translate_sse_to_body(
         if !raw_buf.is_empty() {
             let line = String::from_utf8_lossy(&raw_buf);
             if let Some(SseLine::Json(val)) = parse_sse_line(&line) {
+                if responses_passthrough {
+                    responses_terminal |= crate::services::responses_stream_helpers::is_openai_responses_terminal_event(Some(&event_name), &val);
+                }
                 let translated =
                     translate_response(&target_format, &source_format, Some(&val), &mut state);
                 for item in translated {
@@ -163,6 +206,14 @@ pub fn translate_sse_to_body(
             }
         }
 
+        if responses_passthrough && !responses_terminal {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let _ = tx.send(Ok(Bytes::from(crate::services::responses_stream_helpers::format_incomplete_openai_responses_stream_failure(now)))).await;
+            return;
+        }
         for frame in flush_terminal(&mut state, &mut done_sent) {
             if tx.send(Ok(frame)).await.is_err() {
                 return;
@@ -171,4 +222,21 @@ pub fn translate_sse_to_body(
     });
 
     Body::from_stream(MpscByteStream { rx })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn incomplete_responses_stream_emits_failure() {
+        let (tx, rx) = mpsc::channel(1);
+        tx.send(Ok(b"event: response.created\ndata: {\"type\":\"response.created\"}\n\n".to_vec())).await.unwrap();
+        drop(tx);
+        let body = translate_sse_to_body(rx, FORMAT_OPENAI_RESPONSES.into(), FORMAT_OPENAI_RESPONSES.into());
+        let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        let output = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(output.contains("event: response.failed"));
+        assert!(output.contains("stream_disconnected"));
+    }
 }
