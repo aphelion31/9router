@@ -6,4 +6,5 @@ pub mod latency_stats;
 pub mod minimax_code_lease;
 pub mod rtk_filters;
 pub mod stream_helpers;
+pub mod web_cookie_auth;
 pub mod web_identity;
