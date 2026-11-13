@@ -2,10 +2,8 @@
 
 pub const RAW_CAP: usize = 10 * 1024 * 1024;
 pub const MIN_COMPRESS_SIZE: usize = 500;
-pub const HEADROOM_TOOL_OUTPUT_MAX_DEPTH: usize = 8;
 pub const DETECT_WINDOW: usize = 1024;
 pub const GIT_DIFF_HUNK_MAX_LINES: usize = 100;
-pub const GIT_DIFF_CONTEXT_KEEP: usize = 3;
 pub const GIT_LOG_MAX_LINES: usize = 200;
 pub const DEDUP_LINE_MAX: usize = 2000;
 

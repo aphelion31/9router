@@ -265,7 +265,7 @@ pub fn openai_to_commandcode_request(
         .get("max_tokens")
         .or_else(|| body.get("max_output_tokens"))
         .and_then(|v| v.as_u64())
-        .unwrap_or(64000);
+        .unwrap_or(crate::config::DEFAULT_MAX_TOKENS as u64);
     let temperature = body
         .get("temperature")
         .and_then(|v| v.as_f64())

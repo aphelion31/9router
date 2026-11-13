@@ -4,16 +4,6 @@ pub fn smart_truncate(input: &str) -> String {
     truncate(input, false)
 }
 
-pub fn safe_apply(filter: Option<fn(&str) -> String>, text: &str) -> String {
-    let Some(filter) = filter else {
-        return text.to_owned();
-    };
-    std::panic::catch_unwind(|| filter(text)).unwrap_or_else(|_| {
-        tracing::warn!("rtk filter panicked, passing through raw output");
-        text.to_owned()
-    })
-}
-
 pub fn read_numbered(input: &str) -> String {
     truncate(input, true)
 }
@@ -247,16 +237,16 @@ pub fn git_status(input: &str) -> String {
     if !branch.is_empty() {
         out.push(format!("* {branch}"));
     }
-    for (prefix, files) in [
-        ("+ Staged", &staged),
-        ("~ Modified", &modified),
-        ("? Untracked", &untracked),
+    for (prefix, files, limit) in [
+        ("+ Staged", &staged, caps::STATUS_MAX_FILES),
+        ("~ Modified", &modified, caps::STATUS_MAX_FILES),
+        ("? Untracked", &untracked, caps::STATUS_MAX_UNTRACKED),
     ] {
         if !files.is_empty() {
             out.push(format!("{prefix}: {} files", files.len()));
-            out.extend(files.iter().take(10).map(|f| format!("   {f}")));
-            if files.len() > 10 {
-                out.push(format!("   ... +{} more", files.len() - 10));
+            out.extend(files.iter().take(limit).map(|f| format!("   {f}")));
+            if files.len() > limit {
+                out.push(format!("   ... +{} more", files.len() - limit));
             }
         }
     }
@@ -580,12 +570,6 @@ pub fn git_log(input: &str, max_lines: usize) -> String {
     }
 }
 
-const LS_NOISE_DIRS: &[&str] = &[
-    "node_modules", ".git", "target", "__pycache__", ".next", "dist", "build", ".cache",
-    ".turbo", ".vercel", ".pytest_cache", ".mypy_cache", ".tox", ".venv", "venv", "env",
-    "coverage", ".nyc_output", ".DS_Store", "Thumbs.db", ".idea", ".vscode", ".vs",
-    "*.egg-info", ".eggs",
-];
 const MONTHS: &[&str] = &[
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
@@ -645,7 +629,7 @@ pub fn ls(input: &str) -> String {
         let Some((ftype, size, name)) = parse_ls_line(line) else {
             continue;
         };
-        if name == "." || name == ".." || LS_NOISE_DIRS.contains(&name) {
+        if name == "." || name == ".." || caps::LS_NOISE_DIRS.contains(&name) {
             continue;
         }
         if ftype == 'd' {
@@ -676,10 +660,10 @@ pub fn ls(input: &str) -> String {
     if !by_ext.is_empty() {
         let mut ext: Vec<(&str, usize)> = by_ext.into_iter().collect();
         ext.sort_by(|a, b| b.1.cmp(&a.1));
-        let parts: Vec<String> = ext.iter().take(5).map(|(e, c)| format!("{c} {e}")).collect();
+        let parts: Vec<String> = ext.iter().take(caps::LS_EXT_SUMMARY_TOP).map(|(e, c)| format!("{c} {e}")).collect();
         out.push_str(&format!(" ({}", parts.join(", ")));
-        if ext.len() > 5 {
-            out.push_str(&format!(", +{} more", ext.len() - 5));
+        if ext.len() > caps::LS_EXT_SUMMARY_TOP {
+            out.push_str(&format!(", +{} more", ext.len() - caps::LS_EXT_SUMMARY_TOP));
         }
         out.push(')');
     }
@@ -689,14 +673,6 @@ pub fn ls(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn safe_apply_preserves_raw_text_on_panic() {
-        fn fail(_: &str) -> String {
-            panic!("filter failed")
-        }
-        assert_eq!(safe_apply(Some(fail), "raw"), "raw");
-        assert_eq!(safe_apply(None, "raw"), "raw");
-    }
     #[test]
     fn git_diff_summarizes_changes() {
         assert_eq!(

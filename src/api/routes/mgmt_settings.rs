@@ -9,9 +9,8 @@ use axum::{
 };
 use base64::{
     Engine,
-    engine::general_purpose::{STANDARD as B64, URL_SAFE_NO_PAD},
+    engine::general_purpose::URL_SAFE_NO_PAD,
 };
-use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
 use ring::rand::SecureRandom;
 use rusqlite::{Connection, params};
 use serde_json::{Map, Value, json};

@@ -952,7 +952,7 @@ pub async fn handle_chat_core(
     };
 
     let first = executor.execute(exec_req.clone());
-    let first = match options.first_response_timeout {
+    let first = match options.first_response_timeout.or(Some(std::time::Duration::from_millis(crate::config::TOTAL_REQUEST_TIMEOUT_MS))) {
         Some(limit) => match tokio::time::timeout(limit, first).await {
             Ok(r) => r,
             Err(_) => {

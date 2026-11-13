@@ -60,7 +60,7 @@ fn make_router_with_db(
 ) -> (Router, Arc<Mutex<Connection>>) {
     let state = AppState {
         db: Arc::clone(&db),
-        executor: Arc::new(HttpExecutor(reqwest::Client::new())),
+        executor: Arc::new(HttpExecutor(reqwest::Client::builder().connect_timeout(std::time::Duration::from_millis(crate::config::FETCH_CONNECT_TIMEOUT_MS)).build().expect("valid HTTP client"))),
         jwt_secret,
     };
     let management = Router::new()

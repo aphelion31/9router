@@ -243,7 +243,7 @@ pub fn openai_to_cursor_request(
         }
     }
     out.insert("messages".to_string(), Value::Array(msgs));
-    out.insert("max_tokens".to_string(), json!(32000));
+    out.insert("max_tokens".to_string(), json!(crate::config::DEFAULT_MIN_TOKENS));
     Value::Object(out)
 }
 
