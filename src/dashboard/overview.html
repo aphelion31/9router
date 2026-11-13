@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dashboard — 9Router</title>
+  <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body data-page="overview">
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">9</span>
+        <span>9Router</span>
+      </div>
+      <nav aria-label="Main navigation">
+        <ul class="nav-list">
+          <li><a class="nav-link" href="/dashboard" aria-current="page">Dashboard</a></li>
+          <li><a class="nav-link" href="/dashboard/endpoint">Endpoint &amp; Key</a></li>
+          <li><a class="nav-link" href="/dashboard/providers">Providers</a></li>
+          <li><a class="nav-link" href="/dashboard/combos">Combos</a></li>
+        </ul>
+      </nav>
+      <div class="sidebar-footer">
+        <button id="logout-btn" type="button" class="btn" style="width:100%">Sign out</button>
+      </div>
+    </aside>
+    <main class="main">
+      <div id="error-banner" class="banner banner-error hidden" role="alert" aria-live="polite"></div>
+      <header class="page-header">
+        <div>
+          <h1 class="page-title">Overview</h1>
+          <p class="page-subtitle">Router status and configured resources</p>
+        </div>
+      </header>
+      <section class="grid" aria-label="Summary statistics">
+        <div class="card">
+          <div class="stat-label">Service Status</div>
+          <div id="stat-health" class="stat-value">-</div>
+        </div>
+        <div class="card">
+          <div class="stat-label">API Keys</div>
+          <div id="stat-keys" class="stat-value">-</div>
+        </div>
+        <div class="card">
+          <div class="stat-label">Providers</div>
+          <div id="stat-providers" class="stat-value">-</div>
+        </div>
+        <div class="card">
+          <div class="stat-label">Combos</div>
+          <div id="stat-combos" class="stat-value">-</div>
+        </div>
+      </section>
+      <section class="card" aria-labelledby="quick-links-heading">
+        <h2 id="quick-links-heading" class="card-title">Quick Actions</h2>
+        <div class="row">
+          <a class="btn btn-primary" href="/dashboard/endpoint">Manage Endpoint &amp; Keys</a>
+          <a class="btn" href="/dashboard/providers">View Providers</a>
+          <a class="btn" href="/dashboard/combos">View Combos</a>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="/dashboard/app.js"></script>
+</body>
+</html>

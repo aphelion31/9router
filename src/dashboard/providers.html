@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Providers — 9Router</title>
+  <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body data-page="providers">
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">9</span>
+        <span>9Router</span>
+      </div>
+      <nav aria-label="Main navigation">
+        <ul class="nav-list">
+          <li><a class="nav-link" href="/dashboard">Dashboard</a></li>
+          <li><a class="nav-link" href="/dashboard/endpoint">Endpoint &amp; Key</a></li>
+          <li><a class="nav-link" href="/dashboard/providers" aria-current="page">Providers</a></li>
+          <li><a class="nav-link" href="/dashboard/combos">Combos</a></li>
+        </ul>
+      </nav>
+      <div class="sidebar-footer">
+        <button id="logout-btn" type="button" class="btn" style="width:100%">Sign out</button>
+      </div>
+    </aside>
+    <main class="main">
+      <div id="error-banner" class="banner banner-error hidden" role="alert" aria-live="polite"></div>
+      <header class="page-header">
+        <div>
+          <h1 class="page-title">Providers</h1>
+          <p class="page-subtitle">Connected upstream provider accounts</p>
+        </div>
+      </header>
+      <section class="card" aria-labelledby="providers-heading">
+        <h2 id="providers-heading" class="card-title">Connections</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Provider</th>
+                <th>Name</th>
+                <th>Connection ID</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="providers-tbody">
+              <tr><td colspan="4" class="mono">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="/dashboard/app.js"></script>
+</body>
+</html>
