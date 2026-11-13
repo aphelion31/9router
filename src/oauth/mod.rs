@@ -200,14 +200,16 @@ pub struct Tokens {
 }
 
 async fn post(config: &Config, url: &str, mut fields: Vec<(&str, &str)>) -> Result<Value> {
+    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build()?;
+    post_with_client(config, url, fields, &client).await
+}
+
+async fn post_with_client(config: &Config, url: &str, mut fields: Vec<(&str, &str)>, client: &reqwest::Client) -> Result<Value> {
     fields.push(("client_id", &config.client_id));
     if let Some(secret) = &config.client_secret {
         fields.push(("client_secret", secret));
     }
     // Never include upstream response bodies or request URLs in errors: they can contain credentials.
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?;
     let request = client.post(url).header("Accept", "application/json");
     let request = if config.json {
         request
@@ -314,6 +316,11 @@ pub async fn refresh_token(config: &Config, refresh: &str) -> Result<Tokens> {
         )
         .await?,
     )
+}
+
+pub async fn refresh_token_with_client(config: &Config, refresh: &str, client: &reqwest::Client) -> Result<Tokens> {
+    ensure!(!refresh.is_empty(), "refresh token required");
+    tokens(post_with_client(config, &config.token_url, vec![("grant_type", "refresh_token"), ("refresh_token", refresh)], client).await?)
 }
 
 /// Connection data remains compatible with the upstream providerConnections JSON column.

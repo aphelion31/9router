@@ -37,6 +37,7 @@ pub mod stream_helpers;
 pub mod systemone_router;
 pub mod tool_deduper;
 pub mod upstream_headers;
+pub mod usage;
 pub mod usage_shared;
 pub mod web_cookie_auth;
 pub mod web_identity;
