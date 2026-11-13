@@ -19,11 +19,11 @@ Status: **in progress**. Partial entries cover only the functions named, not ful
 | `open-sse/rtk/filters/ls.js` | Not ported |
 | `open-sse/rtk/filters/buildOutput.js` | Not ported |
 | `open-sse/rtk/applyFilter.js` | Ported: `services::rtk_filters::safe_apply` |
-| `open-sse/rtk/flakyGuard.js` | Partial: response classification, no stream inspection |
+| `open-sse/rtk/flakyGuard.js` | Ported: `services::flaky_guard` (classification, SSE end verdict, bounded probe, replay buffer) |
 | `open-sse/rtk/autodetect.js` | Not ported |
 | `open-sse/rtk/caveman.js` | Not ported |
 | `open-sse/rtk/cavemanPrompts.js` | Not ported |
-| `open-sse/rtk/constants.js` | Partial: filter constants embedded in implementations |
+| `open-sse/rtk/constants.js` | Ported: `services::rtk_constants` |
 | `open-sse/rtk/headroom.js` | Not ported |
 | `open-sse/rtk/index.js` | Not ported |
 | `open-sse/rtk/registry.js` | Not ported |
