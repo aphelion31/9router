@@ -18,55 +18,55 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `
 | /api/auth/saml/test | POST | stub501 |
 | /api/auth/status | GET | partial |
 | /api/auth/totp | GET, POST | stub501 |
-| /api/cli-tools/all-statuses | GET | todo |
-| /api/cli-tools/antigravity-mitm/alias | GET, PUT | todo |
-| /api/cli-tools/antigravity-mitm | DELETE, GET, PATCH, POST | todo |
-| /api/cli-tools/claude-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/cline-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/codewhale-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/codex-profiles | DELETE, GET, POST | todo |
-| /api/cli-tools/codex-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/copilot-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/cowork-mcp-registry | GET | todo |
-| /api/cli-tools/cowork-mcp-tools | POST | todo |
-| /api/cli-tools/cowork-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/crush-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/deepseek-tui-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/devin-settings | GET | todo |
-| /api/cli-tools/droid-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/forge-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/grok-build-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/hermes-profiles | GET | todo |
-| /api/cli-tools/hermes-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/jcode-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/kilo-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/omp-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/openclaw-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/opencode-settings | DELETE, GET, PATCH, POST | todo |
-| /api/cli-tools/pi-settings | DELETE, GET, POST | todo |
-| /api/cli-tools/smelt-settings | DELETE, GET, POST | todo |
+| /api/cli-tools/all-statuses | GET | done |
+| /api/cli-tools/antigravity-mitm/alias | GET, PUT | done |
+| /api/cli-tools/antigravity-mitm | DELETE, GET, PATCH, POST | 501 |
+| /api/cli-tools/claude-settings | DELETE, GET, POST | done |
+| /api/cli-tools/cline-settings | DELETE, GET, POST | done |
+| /api/cli-tools/codewhale-settings | DELETE, GET, POST | done |
+| /api/cli-tools/codex-profiles | DELETE, GET, POST | done |
+| /api/cli-tools/codex-settings | DELETE, GET, POST | done |
+| /api/cli-tools/copilot-settings | DELETE, GET, POST | done |
+| /api/cli-tools/cowork-mcp-registry | GET | done |
+| /api/cli-tools/cowork-mcp-tools | POST | done |
+| /api/cli-tools/cowork-settings | DELETE, GET, POST | done |
+| /api/cli-tools/crush-settings | DELETE, GET, POST | done |
+| /api/cli-tools/deepseek-tui-settings | DELETE, GET, POST | done |
+| /api/cli-tools/devin-settings | GET | done |
+| /api/cli-tools/droid-settings | DELETE, GET, POST | done |
+| /api/cli-tools/forge-settings | DELETE, GET, POST | done |
+| /api/cli-tools/grok-build-settings | DELETE, GET, POST | done |
+| /api/cli-tools/hermes-profiles | GET | done |
+| /api/cli-tools/hermes-settings | DELETE, GET, POST | done |
+| /api/cli-tools/jcode-settings | DELETE, GET, POST | done |
+| /api/cli-tools/kilo-settings | DELETE, GET, POST | done |
+| /api/cli-tools/omp-settings | DELETE, GET, POST | done |
+| /api/cli-tools/openclaw-settings | DELETE, GET, POST | done |
+| /api/cli-tools/opencode-settings | DELETE, GET, PATCH, POST | done |
+| /api/cli-tools/pi-settings | DELETE, GET, POST | done |
+| /api/cli-tools/smelt-settings | DELETE, GET, POST | done |
 | /api/combos/[id]/references | GET | partial |
 | /api/combos/[id] | DELETE, GET, PUT | partial |
 | /api/combos | GET, POST | partial |
-| /api/headroom/extras | DELETE, GET, POST | todo |
-| /api/headroom/proxy/[...path] | (verify manually) | todo |
-| /api/headroom/restart | POST | todo |
-| /api/headroom/start | POST | todo |
-| /api/headroom/status | GET | todo |
-| /api/headroom/stop | POST | todo |
+| /api/headroom/extras | DELETE, GET, POST | 501 |
+| /api/headroom/proxy/[...path] | (verify manually) | done |
+| /api/headroom/restart | POST | 501 |
+| /api/headroom/start | POST | 501 |
+| /api/headroom/status | GET | done |
+| /api/headroom/stop | POST | 501 |
 | /api/health | GET | todo |
 | /api/init | GET | partial |
 | /api/keys/[id] | DELETE, GET, PUT | partial (quota and limits unported) |
 | /api/keys | GET, PATCH, POST | partial (quota, limits and bulk import unported) |
 | /api/locale | POST | partial |
-| /api/mcp/[plugin]/message | POST | todo |
-| /api/mcp/[plugin]/sse | GET | todo |
-| /api/mcp/gateway | GET, POST | todo |
-| /api/media-providers/tts/deepgram/voices | GET | todo |
-| /api/media-providers/tts/elevenlabs/voices | GET | todo |
-| /api/media-providers/tts/inworld/voices | GET | todo |
-| /api/media-providers/tts/minimax/voices | GET | todo |
-| /api/media-providers/tts/voices | GET | todo |
+| /api/mcp/[plugin]/message | POST | 501 |
+| /api/mcp/[plugin]/sse | GET | 501 |
+| /api/mcp/gateway | GET, POST | done |
+| /api/media-providers/tts/deepgram/voices | GET | done |
+| /api/media-providers/tts/elevenlabs/voices | GET | done |
+| /api/media-providers/tts/inworld/voices | GET | done |
+| /api/media-providers/tts/minimax/voices | GET | done |
+| /api/media-providers/tts/voices | GET | done |
 | /api/models/alias | DELETE, GET, PUT | partial |
 | /api/models/availability | GET, POST | stub501 |
 | /api/models/catalog-sync | GET, POST | stub501 |
@@ -97,8 +97,8 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `
 | /api/oauth/zed/auto-import | GET | done |
 | /api/oauth/zed/import | POST | done |
 | /api/pricing | DELETE, GET, PATCH | stub501 |
-| /api/prompt-injection | DELETE, GET, PUT | todo |
-| /api/prompt-injection/stats | GET | todo |
+| /api/prompt-injection | DELETE, GET, PUT | done |
+| /api/prompt-injection/stats | GET | done |
 | /api/provider-nodes/[id] | DELETE, PUT | partial |
 | /api/provider-nodes | GET, POST | partial |
 | /api/provider-nodes/validate | POST | stub501 |
@@ -116,23 +116,23 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `
 | /api/providers/test-batch/stop | POST | stub501 |
 | /api/providers/validate | POST | stub501 |
 | /api/providers/web-login | DELETE, GET, POST | stub501 |
-| /api/proxy-pools/[id] | DELETE, GET, PUT | todo |
-| /api/proxy-pools/[id]/test | POST | todo |
-| /api/proxy-pools/cloudflare-deploy | POST | todo |
-| /api/proxy-pools/delete-failed | POST | todo |
-| /api/proxy-pools/deno-deploy | POST | todo |
-| /api/proxy-pools/netlify-deploy | POST | todo |
-| /api/proxy-pools | GET, POST | todo |
-| /api/proxy-pools/test-all | GET, POST | todo |
-| /api/proxy-pools/vercel-deploy | POST | todo |
-| /api/pxpipe/health | POST | todo |
-| /api/pxpipe/install | POST | todo |
-| /api/pxpipe/logs | GET | todo |
-| /api/pxpipe/restart | POST | todo |
-| /api/pxpipe/start | POST | todo |
-| /api/pxpipe/stats | GET | todo |
-| /api/pxpipe/status | GET | todo |
-| /api/pxpipe/stop | POST | todo |
+| /api/proxy-pools/[id] | DELETE, GET, PUT | done |
+| /api/proxy-pools/[id]/test | POST | done |
+| /api/proxy-pools/cloudflare-deploy | POST | 501 |
+| /api/proxy-pools/delete-failed | POST | done |
+| /api/proxy-pools/deno-deploy | POST | 501 |
+| /api/proxy-pools/netlify-deploy | POST | 501 |
+| /api/proxy-pools | GET, POST | done |
+| /api/proxy-pools/test-all | GET, POST | done |
+| /api/proxy-pools/vercel-deploy | POST | 501 |
+| /api/pxpipe/health | POST | done |
+| /api/pxpipe/install | POST | 501 |
+| /api/pxpipe/logs | GET | done |
+| /api/pxpipe/restart | POST | 501 |
+| /api/pxpipe/start | POST | 501 |
+| /api/pxpipe/stats | GET | done |
+| /api/pxpipe/status | GET | done |
+| /api/pxpipe/stop | POST | 501 |
 | /api/security-log | GET | done |
 | /api/settings/backup/[id] | GET, POST | stub501 |
 | /api/settings/backup | GET, POST | stub501 |
@@ -147,22 +147,22 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `
 | /api/settings/webhook-events | GET, POST | stub501 |
 | /api/shutdown | POST | partial |
 | /api/tags | GET | partial |
-| /api/token-saver/brief | DELETE, GET, PUT | todo |
-| /api/token-saver/stats | GET | todo |
-| /api/token-saver/test | POST | todo |
-| /api/translator/console-logs | DELETE, GET | todo |
-| /api/translator/console-logs/stream | GET | todo |
-| /api/translator/load | GET | todo |
-| /api/translator/save | POST | todo |
-| /api/translator/send | POST | todo |
-| /api/translator/translate | POST | todo |
-| /api/tunnel/disable | POST | todo |
-| /api/tunnel/enable | POST | todo |
-| /api/tunnel/status | GET | todo |
-| /api/tunnel/tailscale-check | GET | todo |
-| /api/tunnel/tailscale-disable | POST | todo |
-| /api/tunnel/tailscale-enable | POST | todo |
-| /api/tunnel/tailscale-install | POST | todo |
+| /api/token-saver/brief | DELETE, GET, PUT | done |
+| /api/token-saver/stats | GET | done |
+| /api/token-saver/test | POST | done |
+| /api/translator/console-logs | DELETE, GET | done |
+| /api/translator/console-logs/stream | GET | done |
+| /api/translator/load | GET | done |
+| /api/translator/save | POST | done |
+| /api/translator/send | POST | done |
+| /api/translator/translate | POST | done |
+| /api/tunnel/disable | POST | 501 |
+| /api/tunnel/enable | POST | 501 |
+| /api/tunnel/status | GET | done |
+| /api/tunnel/tailscale-check | GET | done |
+| /api/tunnel/tailscale-disable | POST | 501 |
+| /api/tunnel/tailscale-enable | POST | 501 |
+| /api/tunnel/tailscale-install | POST | 501 |
 | /api/usage/[connectionId]/claude-reset | POST | done |
 | /api/usage/[connectionId]/codex-reset-credits | GET, POST | done |
 | /api/usage/[connectionId] | GET | done |
