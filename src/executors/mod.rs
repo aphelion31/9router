@@ -10,6 +10,7 @@ mod iflow;
 mod kimchi;
 mod muse_web;
 mod vertex;
+mod xiaomi_tokenplan;
 
 #[derive(Debug, Clone)]
 pub struct ExecutorRequest {
@@ -74,7 +75,9 @@ pub async fn execute(
         })
         .or(provider.base_url.as_deref())
         .with_context(|| format!("provider {} has no endpoint", provider.id))?;
-    let mut url = if provider.id == "azure" {
+    let mut url = if provider.id == "xiaomi-tokenplan" {
+        xiaomi_tokenplan::url(endpoint, request.model.ends_with("-claude"))?
+    } else if provider.id == "azure" {
         azure::url(endpoint, &request.model)?
     } else if matches!(provider.id.as_str(), "vertex" | "vertex-partner") {
         vertex::url(
@@ -91,10 +94,17 @@ pub async fn execute(
     };
     let github_claude =
         provider.id == "github" && request.model.to_ascii_lowercase().contains("claude");
-    if github_claude {
-        url.set_path("/v1/messages");
+    let tokenplan_claude = provider.id == "xiaomi-tokenplan" && request.model.ends_with("-claude");
+    if github_claude || tokenplan_claude {
+        if github_claude {
+            url.set_path("/v1/messages");
+        }
+        let model = request
+            .model
+            .strip_suffix("-claude")
+            .unwrap_or(&request.model);
         request.body = crate::translator::claude::openai_to_claude_request(
-            &request.model,
+            model,
             &request.body,
             request.stream,
             None,
@@ -151,6 +161,9 @@ pub async fn execute(
             .header("x-vscode-user-agent-library-version", "electron-fetch")
             .header("x-initiator", "user")
             .header("anthropic-version", "2023-06-01");
+    }
+    if tokenplan_claude {
+        builder = builder.header("anthropic-version", "2023-06-01");
     }
     if provider.id == "iflow" {
         for (name, value) in iflow::prepare(
@@ -223,6 +236,43 @@ mod tests {
         routing::post,
     };
     use serde_json::json;
+
+    #[tokio::test]
+    async fn xiaomi_tokenplan_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/v1/chat/completions",
+            listener.local_addr().unwrap()
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(mock)))
+                .await
+                .unwrap()
+        });
+        for (model, path) in [
+            ("mimo-v2.5-pro", "/v1/chat/completions"),
+            ("mimo-v2.5-pro-claude", "/anthropic/v1/messages"),
+        ] {
+            let response = execute(
+                &reqwest::Client::new(),
+                ExecutorRequest {
+                    provider: "xiaomi-tokenplan".into(),
+                    model: model.into(),
+                    body: json!({"messages":[{"role":"user", "content":"hi"}]}),
+                    stream: false,
+                    api_key: Some("test".into()),
+                    access_token: None,
+                    base_url: Some(url.clone()),
+                },
+            )
+            .await
+            .unwrap();
+            let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+            assert_eq!(result["uri"], path);
+            assert_eq!(result["authorization"], "Bearer test");
+        }
+        task.abort();
+    }
 
     #[tokio::test]
     async fn kimchi_mock_request() {
