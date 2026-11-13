@@ -52,7 +52,7 @@ Status: **in progress**. Partial entries cover only the functions named, not ful
 | `open-sse/services/minimaxCodeUsage.js` | Ported: membership parsing and account request signing (`services::minimax_code_usage`); HTTP fetch and plan windows still pending |
 | `open-sse/services/nous.js` | Ported: catalog normalization, validation and credential probe request (`services::nous`) |
 | `open-sse/services/systemoneRouter.js` | Ported: prompt extraction, route answer parsing, ordering and sticky store (`services::systemone_router`) |
-| `open-sse/services/webIdentity.js` | Partial: cookie parsing, no probes |
+| `open-sse/services/webIdentity.js` | Ported: cookie parsing, probe verdicts and per-provider body checks (`services::web_identity`); live HTTP probes pending |
 | `open-sse/services/tokenRefresh.js` and `tokenRefresh/*` | Not ported |
 | `open-sse/services/browserPool.js` | Partial: enable flag, browser operations unsupported |
 | `open-sse/services/webLogin.js` | Unsupported |
