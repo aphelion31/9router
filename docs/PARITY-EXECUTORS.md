@@ -8,7 +8,7 @@ Status is deliberately conservative: partial means the upstream executor has beh
 | azure.js | partial | Provider-specific connection settings not wired. |
 | base.js | partial | Generic HTTP transport exists, retry and refresh parity incomplete. |
 | bedrock.js | partial | Environment SigV4, Claude/xAI event stream supported. AWS profile/SSO and full error parity missing. |
-| browserExecutableCheck.js | pending | Browser helper. |
+| browserExecutableCheck.js | ported | `src/executors/browser_executable_check.rs` (missing browser/display classification, Chrome executable resolution) |
 | chatgpt-web.js | unsupported | Browser automation required. |
 | chatgptWebTools.js | pending | Browser helper. |
 | codebuddy-cn.js | partial | Forced streaming, agent system-prompt neutralization, and reasoning_summary implemented; code 6004 reset parsing pending in error layer. |
@@ -16,7 +16,7 @@ Status is deliberately conservative: partial means the upstream executor has beh
 | codex.js | partial | Basic request shaping exists. |
 | commandcode.js | partial | CLI identity headers, forced streaming, and NDJSON-to-SSE decoder implemented; upstream retry loop pending. |
 | cursor.js | pending | |
-| deepseek-web-done-terminator.js | pending | |
+| deepseek-web-done-terminator.js | ported | `src/executors/deepseek_web_done_terminator.rs` (FinishOnce guard and DrainWindow scheduler) |
 | deepseek-web.js | pending | |
 | default.js | partial | Generic transport exists, provider quirks missing. |
 | devin-cli.js | partial | Explicitly refuses execution: upstream auto-approves host shell and filesystem access; ACP sandbox and permissions required. |
