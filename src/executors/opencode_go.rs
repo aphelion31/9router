@@ -52,6 +52,19 @@ pub(super) fn prepare(body: &mut Value, model: &str) {
                 }
             }
         }
+        if let Some(tools) = o.get_mut("tools").and_then(Value::as_array_mut) {
+            for tool in tools {
+                if let Some(t) = tool.as_object_mut()
+                    && !t.contains_key("parameters")
+                    && t.get("type").and_then(Value::as_str) == Some("function")
+                {
+                    t.insert(
+                        "parameters".into(),
+                        json!({"type":"object","properties":{}}),
+                    );
+                }
+            }
+        }
     }
 }
 

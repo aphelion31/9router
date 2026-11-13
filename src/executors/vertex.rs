@@ -4,6 +4,46 @@ use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+static TOKEN_CACHE: OnceLock<Mutex<HashMap<String, (String, Option<String>, u64)>>> =
+    OnceLock::new();
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+pub(super) async fn discover_project(
+    client: &reqwest::Client,
+    access_token: &str,
+    base_url: Option<&str>,
+) -> Option<String> {
+    let base = base_url
+        .unwrap_or("https://cloudresourcemanager.googleapis.com")
+        .trim_end_matches('/');
+    let res = client
+        .get(format!("{base}/v1/projects?filter=lifecycleState%3AACTIVE"))
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .ok()?;
+    if !res.status().is_success() {
+        return None;
+    }
+    let body: Value = serde_json::from_slice(&res.bytes().await.ok()?).ok()?;
+    body.get("projects")?
+        .as_array()?
+        .first()?
+        .get("projectId")?
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
 
 pub(super) async fn refresh(
     client: &reqwest::Client,
@@ -12,6 +52,14 @@ pub(super) async fn refresh(
     let Some(key) = key.filter(|s| s.trim_start().starts_with('{')) else {
         return Ok(None);
     };
+    let cache = TOKEN_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let now = now_secs();
+    if let Ok(guard) = cache.lock()
+        && let Some((tok, proj, exp)) = guard.get(key)
+        && *exp > now + 60
+    {
+        return Ok(Some((tok.clone(), proj.clone())));
+    }
     let credentials: Value =
         serde_json::from_str(key).context("invalid Vertex credentials JSON")?;
     let field = |name: &str| {
@@ -81,7 +129,7 @@ pub(super) async fn refresh(
         .filter(|s| !s.is_empty())
         .context("Vertex token response missing access_token")?
         .to_owned();
-    let project = credentials
+    let mut project = credentials
         .get(if kind == "service_account" {
             "project_id"
         } else {
@@ -89,6 +137,12 @@ pub(super) async fn refresh(
         })
         .and_then(Value::as_str)
         .map(str::to_owned);
+    if project.is_none() {
+        project = discover_project(client, &token, None).await;
+    }
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(key.to_string(), (token.clone(), project.clone(), now + 3000));
+    }
     Ok(Some((token, project)))
 }
 

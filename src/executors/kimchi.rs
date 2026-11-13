@@ -79,5 +79,27 @@ pub(super) fn prepare(model: &str, body: &mut Value) {
     {
         obj.remove("reasoning_effort");
         obj.remove("reasoning");
+    } else if obj.get("reasoning_effort").and_then(Value::as_str) == Some("auto") {
+        obj.insert("reasoning_effort".into(), json!("medium"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kimchi_prepare_hoists_system_and_normalizes_reasoning() {
+        let mut body = json!({
+            "system": "Be terse",
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "auto",
+            "thinking": {"type": "enabled"}
+        });
+        prepare("deepseek-r1", &mut body);
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(body["messages"][0]["content"], "Be terse");
+        assert_eq!(body["reasoning_effort"], "medium");
+        assert!(body.get("thinking").is_none());
     }
 }

@@ -36,6 +36,39 @@ pub(super) fn url(endpoint: &str, model: &str) -> anyhow::Result<reqwest::Url> {
     Ok(url)
 }
 
+pub(super) fn conversation_session(body: &Value) -> String {
+    if let Some(id) = body
+        .get("session_id")
+        .or_else(|| body.get("thread_id"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        return id.to_string();
+    }
+    let first_user = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .or_else(|| body.get("input").and_then(Value::as_array))
+        .and_then(|arr| {
+            arr.iter()
+                .find(|m| m.get("role").and_then(Value::as_str) == Some("user"))
+        });
+    if let Some(msg) = first_user {
+        let digest = ring::digest::digest(
+            &ring::digest::SHA256,
+            msg.to_string().as_bytes(),
+        );
+        let hex: String = digest
+            .as_ref()
+            .iter()
+            .take(12)
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        return format!("ses_{hex}");
+    }
+    session().to_string()
+}
+
 pub(super) fn prepare(body: &mut Value, model: &str) {
     if let Some(obj) = body.as_object_mut() {
         obj.entry("model").or_insert_with(|| model.into());
@@ -43,5 +76,21 @@ pub(super) fn prepare(body: &mut Value, model: &str) {
         if obj.get("reasoning_effort").and_then(Value::as_str) == Some("auto") {
             obj.remove("reasoning_effort");
         }
+    }
+    let responses = model.starts_with("muse-spark");
+    super::opencode_zen::prepare(body, responses);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn conversation_session_is_deterministic_per_first_user_message() {
+        let b1 = json!({"messages":[{"role":"user","content":"hello"}]});
+        let b2 = json!({"messages":[{"role":"user","content":"hello"},{"role":"assistant","content":"hi"}]});
+        assert_eq!(conversation_session(&b1), conversation_session(&b2));
+        assert!(conversation_session(&b1).starts_with("ses_"));
     }
 }

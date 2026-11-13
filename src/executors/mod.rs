@@ -11,10 +11,14 @@ mod chatgpt_web_tools;
 mod devin_cli;
 mod codebuddy_cn;
 mod codebuddy_intl;
+mod codex;
 pub(crate) mod commandcode;
+pub(crate) mod cursor;
+pub(crate) mod deepseek_web;
 mod gemini_cli;
 mod gemini_web;
 mod github;
+pub(crate) mod grok_web;
 mod grok_cli;
 mod iflow;
 mod kimchi;
@@ -25,11 +29,16 @@ mod muse_web;
 mod opencode;
 mod opencode_go;
 mod opencode_zen;
+mod orcarouter;
+pub(crate) mod perplexity_web;
+pub(crate) mod qoder;
 mod vertex;
 mod xiaomi_mimo;
 mod xiaomi_tokenplan;
 mod zed;
 pub(crate) mod trae;
+pub(crate) mod uc_web;
+pub(crate) mod veoaifree_web;
 pub(crate) mod windsurf;
 
 #[derive(Debug, Clone, Default)]
@@ -71,6 +80,27 @@ pub async fn execute(
     }
     if request.provider == "kiro" {
         return kiro::execute(client, &request).await;
+    }
+    if request.provider == "cursor" {
+        return cursor::execute(client, &request).await;
+    }
+    if request.provider == "qoder" || request.provider == "qoder-cn" {
+        return qoder::execute(client, &request).await;
+    }
+    if request.provider == "deepseek-web" {
+        return deepseek_web::execute(client, &request).await;
+    }
+    if request.provider == "grok-web" {
+        return grok_web::execute(client, &request).await;
+    }
+    if request.provider == "perplexity-web" {
+        return perplexity_web::execute(client, &request).await;
+    }
+    if request.provider == "uc-web" {
+        return uc_web::execute(client, &request).await;
+    }
+    if request.provider == "veoaifree-web" {
+        return veoaifree_web::execute(client, &request).await;
     }
     let provider = crate::providers::lookup(&request.provider)
         .with_context(|| format!("unknown provider: {}", request.provider))?;
@@ -213,15 +243,9 @@ pub async fn execute(
             url.query_pairs_mut().append_pair("alt", "sse");
         }
     }
+    let mut codex_headers: Vec<(&'static str, String)> = Vec::new();
     if provider.id == "codex" {
-        let body = request
-            .body
-            .as_object_mut()
-            .context("Codex request body must be an object")?;
-        body.insert("stream".into(), true.into());
-        body.insert("store".into(), false.into());
-        body.entry("instructions")
-            .or_insert_with(|| "You are a helpful assistant.".into());
+        codex_headers = codex::prepare(&mut request.body, request.provider_specific_data.as_ref())?;
     }
     if provider.id == "kimchi" {
         kimchi::prepare(&request.model, &mut request.body);
@@ -244,6 +268,9 @@ pub async fn execute(
     let mut builder = client
         .post(url)
         .header(reqwest::header::CONTENT_TYPE, "application/json");
+    for (name, value) in codex_headers {
+        builder = builder.header(name, value);
+    }
     if provider.id == "github" {
         builder = builder
             .header("copilot-integration-id", "vscode-chat")
@@ -257,23 +284,29 @@ pub async fn execute(
             .header("anthropic-version", "2023-06-01");
     }
     if provider.id == "opencode" {
-        let session = opencode::session();
+        let session = opencode::conversation_session(&request.body);
         builder = builder
             .header("user-agent", "opencode/latest/2.2.5/cli")
             .header("x-opencode-client", "cli")
             .header("x-opencode-project", "global")
-            .header("x-opencode-session", session)
-            .header("x-opencode-session-id", session)
-            .header("x-session-affinity", session)
-            .header("x-session-id", session)
+            .header("x-opencode-session", &session)
+            .header("x-opencode-session-id", &session)
+            .header("x-session-affinity", &session)
+            .header("x-session-id", &session)
             .bearer_auth("public");
     }
     if provider.id == "opencode-go" {
-        builder = builder.header("x-opencode-session", opencode::session());
+        builder = builder.header(
+            "x-opencode-session",
+            opencode::conversation_session(&request.body),
+        );
     }
     if provider.id == "opencode-zen" {
         builder = builder
-            .header("x-opencode-session", opencode::session())
+            .header(
+                "x-opencode-session",
+                opencode::conversation_session(&request.body),
+            )
             .header("user-agent", "opencode/latest/2.2.5/cli")
             .header("x-opencode-client", "desktop")
             .header("x-opencode-project", "global");
@@ -1494,6 +1527,441 @@ mod tests {
             body["request"]["toolConfig"]["functionCallingConfig"]["mode"],
             "VALIDATED"
         );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn cursor_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://{addr}");
+        let app = Router::new().route(
+            "/aiserver.v1.AiService/StreamUnifiedChatWithTools",
+            post(|headers: HeaderMap, body: Bytes| async move {
+                assert_eq!(
+                    headers.get("content-type").and_then(|v| v.to_str().ok()),
+                    Some("application/connect+proto")
+                );
+                assert_eq!(
+                    headers
+                        .get("connect-protocol-version")
+                        .and_then(|v| v.to_str().ok()),
+                    Some("1")
+                );
+                assert_eq!(
+                    headers.get("authorization").and_then(|v| v.to_str().ok()),
+                    Some("Bearer cur-tok")
+                );
+                assert!(
+                    headers
+                        .get("x-cursor-checksum")
+                        .and_then(|v| v.to_str().ok())
+                        .is_some_and(|s| s.ends_with("mach-123"))
+                );
+                assert!(body.len() > 5 && body[0] == 0x00);
+                assert!(String::from_utf8_lossy(&body[5..]).contains("claude-4.5-sonnet"));
+
+                // Encode ConnectRPC frame with StreamUnifiedChatResponse(field 2) -> text(field 1) = "Hi cursor"
+                let text = b"Hi cursor";
+                let mut inner = vec![(1 << 3) | 2, text.len() as u8];
+                inner.extend_from_slice(text);
+                let mut outer = vec![(2 << 3) | 2, inner.len() as u8];
+                outer.extend_from_slice(&inner);
+                (StatusCode::OK, cursor::wrap_connect_rpc_frame(&outer))
+            }),
+        );
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "cursor".into(),
+                model: "claude-4.5-sonnet".into(),
+                body: json!({"messages": [{"role": "user", "content": "hello"}]}),
+                stream: true,
+                access_token: Some("user_1::cur-tok".into()),
+                base_url: Some(base),
+                provider_specific_data: Some(json!({"machineId": "mach-123", "ghostMode": true})),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let raw = response.bytes().await.unwrap();
+        let mut decoder = cursor::Decoder::new("claude-4.5-sonnet");
+        let mut sse = String::from_utf8(decoder.push(&raw).unwrap()).unwrap();
+        sse.push_str(&String::from_utf8(decoder.finish()).unwrap());
+        assert!(sse.contains("\"content\":\"Hi cursor\""));
+        assert!(sse.contains("data: [DONE]"));
+        let non_stream: Value =
+            serde_json::from_slice(&cursor::decode_non_stream(&raw, "claude-4.5-sonnet")).unwrap();
+        assert_eq!(non_stream["choices"][0]["message"]["content"], "Hi cursor");
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn qoder_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://{addr}");
+        let app = Router::new().route(
+            "/algo/api/v2/service/pro/sse/agent_chat_generation",
+            post(|headers: HeaderMap, body: Bytes| async move {
+                assert!(
+                    headers
+                        .get("authorization")
+                        .and_then(|v| v.to_str().ok())
+                        .is_some_and(|s| s.starts_with("Bearer COSY."))
+                );
+                assert_eq!(
+                    headers.get("cosy-user").and_then(|v| v.to_str().ok()),
+                    Some("u-123")
+                );
+                assert_eq!(
+                    headers.get("cosy-sigpath").and_then(|v| v.to_str().ok()),
+                    Some("/api/v2/service/pro/sse/agent_chat_generation")
+                );
+                assert_eq!(
+                    headers.get("x-model-key").and_then(|v| v.to_str().ok()),
+                    Some("smodel")
+                );
+                assert_eq!(
+                    headers.get("cosy-bodyhash").and_then(|v| v.to_str().ok()),
+                    Some(qoder::md5_hex(&body).as_str())
+                );
+                let sse = concat!(
+                    "data: {\"statusCodeValue\":200,\"body\":\"{\\\"id\\\":\\\"q1\\\",\\\"choices\\\":[{\\\"delta\\\":{\\\"content\\\":\\\"Hi qoder\\\"}}]}\"}\n",
+                    "data: {\"statusCodeValue\":200,\"body\":\"{\\\"choices\\\":[{\\\"delta\\\":{},\\\"finish_reason\\\":\\\"stop\\\"}]}\"}\n",
+                    "data: {\"statusCodeValue\":200,\"body\":\"{\\\"choices\\\":[],\\\"usage\\\":{\\\"prompt_tokens\\\":5,\\\"completion_tokens\\\":2}}\"}\n",
+                );
+                (StatusCode::OK, sse)
+            }),
+        );
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "qoder".into(),
+                model: "qoder/smodel".into(),
+                body: json!({"messages": [{"role": "system", "content": "Be brief"}, {"role": "user", "content": "hi"}]}),
+                stream: true,
+                access_token: Some("dt-abc".into()),
+                base_url: Some(base),
+                provider_specific_data: Some(json!({"userId": "u-123"})),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let raw = response.bytes().await.unwrap();
+        let mut decoder = qoder::Decoder::new("smodel");
+        let mut sse = String::from_utf8(decoder.push(&raw).unwrap()).unwrap();
+        sse.push_str(&String::from_utf8(decoder.finish()).unwrap());
+        assert!(sse.contains("Hi qoder"));
+        assert!(sse.contains("\"prompt_tokens\":5"));
+        assert!(sse.contains("data: [DONE]"));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn deepseek_web_mock_request() {
+        use axum::routing::get;
+        use base64::Engine as _;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://{addr}");
+
+        let app = Router::new()
+            .route(
+                "/api/v0/users/current",
+                get(|headers: HeaderMap| async move {
+                    assert_eq!(
+                        headers.get("authorization").and_then(|v| v.to_str().ok()),
+                        Some("Bearer ds-user-tok")
+                    );
+                    axum::Json(json!({"code": 0, "data": {"biz_data": {"token": "ds-access-tok"}}}))
+                }),
+            )
+            .route(
+                "/api/v0/chat_session/create",
+                post(|headers: HeaderMap| async move {
+                    assert_eq!(
+                        headers.get("authorization").and_then(|v| v.to_str().ok()),
+                        Some("Bearer ds-access-tok")
+                    );
+                    axum::Json(json!({"code": 0, "data": {"biz_data": {"chat_session": {"id": "sess-1"}}}}))
+                }),
+            )
+            .route(
+                "/api/v0/chat/create_pow_challenge",
+                post(|| async move {
+                    // Use challenge for "s1_999_0" -> wait, we can compute it in test or use any nonce
+                    // Let's compute SHA3-256-round23("s1_999_0")? We'll just use a helper or test with nonce=0
+                    let target = deepseek_web::solve_pow_challenge_for_test("s1", 999, 0);
+                    axum::Json(json!({
+                        "code": 0,
+                        "data": {
+                            "biz_data": {
+                                "challenge": {
+                                    "algorithm": "DeepSeekHashV1",
+                                    "challenge": target,
+                                    "salt": "s1",
+                                    "difficulty": 10,
+                                    "expire_at": 999,
+                                    "signature": "sig-1"
+                                }
+                            }
+                        }
+                    }))
+                }),
+            )
+            .route(
+                "/api/v0/chat/completion",
+                post(|headers: HeaderMap, body: Bytes| async move {
+                    let pow_b64 = headers
+                        .get("x-ds-pow-response")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap();
+                    let pow_json: Value = serde_json::from_slice(
+                        &base64::engine::general_purpose::STANDARD
+                            .decode(pow_b64)
+                            .unwrap(),
+                    )
+                    .unwrap();
+                    assert_eq!(pow_json["answer"], 0);
+                    let req: Value = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(req["chat_session_id"], "sess-1");
+                    assert_eq!(req["prompt"], "hello deepseek");
+                    (
+                        StatusCode::OK,
+                        "data: {\"p\":\"response/fragments\",\"v\":[{\"type\":\"ANSWER\",\"content\":\"Hi DS\"}]}\ndata: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n",
+                    )
+                }),
+            );
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "deepseek-web".into(),
+                model: "deepseek-chat".into(),
+                body: json!({"messages": [{"role": "user", "content": "hello deepseek"}]}),
+                stream: true,
+                api_key: Some(r#"{"value":"ds-user-tok"}"#.into()),
+                base_url: Some(base),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let raw = response.bytes().await.unwrap();
+        let mut decoder = deepseek_web::Decoder::new("deepseek-chat");
+        let mut sse = String::from_utf8(decoder.push(&raw).unwrap()).unwrap();
+        sse.push_str(&String::from_utf8(decoder.finish()).unwrap());
+        assert!(sse.contains("\"content\":\"Hi DS\""));
+        assert!(sse.contains("data: [DONE]"));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn grok_web_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new().route(
+            "/rest/app-chat/conversations/new",
+            post(|headers: HeaderMap, body: Bytes| async move {
+                assert_eq!(
+                    headers.get("cookie").and_then(|v| v.to_str().ok()),
+                    Some("sso=grok-sso; cf_clearance=cf1")
+                );
+                assert!(headers.contains_key("x-statsig-id"));
+                let req: Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(req["modelName"], "grok-4-1-thinking-1129");
+                assert_eq!(req["modelMode"], "MODEL_MODE_FAST");
+                assert_eq!(req["message"], "hello grok");
+                (
+                    StatusCode::OK,
+                    "{\"result\":{\"response\":{\"token\":\"Hi Grok\"}}}\n",
+                )
+            }),
+        );
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "grok-web".into(),
+                model: "grok-4.1-fast".into(),
+                body: json!({"messages": [{"role": "user", "content": "hello grok"}]}),
+                stream: true,
+                api_key: Some("sso=grok-sso; cf_clearance=cf1".into()),
+                base_url: Some(format!("http://{addr}/rest/app-chat/conversations/new")),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let raw = response.bytes().await.unwrap();
+        let mut decoder = grok_web::Decoder::new("grok-4.1-fast", false);
+        let mut sse = String::from_utf8(decoder.push(&raw).unwrap()).unwrap();
+        sse.push_str(&String::from_utf8(decoder.finish()).unwrap());
+        assert!(sse.contains("\"content\":\"Hi Grok\""));
+        assert!(sse.contains("data: [DONE]"));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn perplexity_web_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new().route(
+            "/rest/sse/perplexity_ask",
+            post(|headers: HeaderMap, body: Bytes| async move {
+                assert_eq!(
+                    headers.get("cookie").and_then(|v| v.to_str().ok()),
+                    Some("__Secure-next-auth.session-token=pplx-sess")
+                );
+                let req: Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(req["params"]["mode"], "copilot");
+                assert_eq!(req["params"]["model_preference"], "gpt54_thinking");
+                (
+                    StatusCode::OK,
+                    "data: {\"blocks\":[{\"intended_usage\":\"ask_text_markdown\",\"markdown_block\":{\"chunks\":[\"Hi Pplx\"]}}],\"status\":\"COMPLETED\"}\n\n",
+                )
+            }),
+        );
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "perplexity-web".into(),
+                model: "pplx-gpt".into(),
+                body: json!({
+                    "messages": [{"role": "user", "content": "hello pplx"}],
+                    "thinking": true
+                }),
+                stream: true,
+                api_key: Some("pplx-sess".into()),
+                base_url: Some(format!("http://{addr}/rest/sse/perplexity_ask")),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let raw = response.bytes().await.unwrap();
+        let mut decoder = perplexity_web::Decoder::new("pplx-gpt");
+        let mut sse = String::from_utf8(decoder.push(&raw).unwrap()).unwrap();
+        sse.push_str(&String::from_utf8(decoder.finish()).unwrap());
+        assert!(sse.contains("\"content\":\"Hi Pplx\""));
+        assert!(sse.contains("data: [DONE]"));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn uc_web_mock_media_request() {
+        use axum::routing::get;
+        use base64::Engine as _;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://{addr}");
+        let result_url = format!("{base}/out.png");
+        let result_url_clone = result_url.clone();
+
+        // Build a minimal JWT with {"sid":"sess_1"} and {"uid":"user_1"}
+        let client_jwt = format!(
+            "hdr.{}.sig",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"sid":"sess_1"}"#)
+        );
+        let session_jwt = format!(
+            "hdr.{}.sig",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"uid":"user_1"}"#)
+        );
+        let session_jwt_clone = session_jwt.clone();
+
+        let app = Router::new()
+            .route(
+                "/v1/client/sessions/sess_1/tokens",
+                post(move || {
+                    let j = session_jwt_clone.clone();
+                    async move { axum::Json(json!({"jwt": j})) }
+                }),
+            )
+            .route(
+                "/v2/image-gen",
+                post(move |headers: HeaderMap, body: Bytes| {
+                    let r = result_url_clone.clone();
+                    let j = session_jwt.clone();
+                    async move {
+                        assert_eq!(
+                            headers.get("authorization").and_then(|v| v.to_str().ok()),
+                            Some(format!("Bearer {j}").as_str())
+                        );
+                        let req: Value = serde_json::from_slice(&body).unwrap();
+                        assert_eq!(req["model_version"], "seedream-v4.5");
+                        assert_eq!(req["aspect_ratio"], "16:9");
+                        axum::Json(json!({"url": r}))
+                    }
+                }),
+            )
+            .route(
+                "/out.png",
+                get(|| async move { ([(axum::http::header::CONTENT_TYPE, "image/png")], b"PNGDATA".to_vec()) }),
+            );
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let out = uc_web::generate_media(
+            &reqwest::Client::new(),
+            Some(&base),
+            Some(&base),
+            &format!("__client={client_jwt}"),
+            "image",
+            "a sunset",
+            "",
+            Some("16:9"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out["mime"], "image/png");
+        assert_eq!(
+            out["b64"],
+            base64::engine::general_purpose::STANDARD.encode(b"PNGDATA")
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn veoaifree_web_mock_image_request() {
+        use axum::routing::get;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://{addr}");
+        let app = Router::new()
+            .route(
+                "/",
+                get(|| async move { r#"<script>var cfg={"nonce":"cafe1234"};</script>"# }),
+            )
+            .route(
+                "/wp-admin/admin-ajax.php",
+                post(|body: Bytes| async move {
+                    let s = String::from_utf8(body.to_vec()).unwrap();
+                    assert!(s.contains("nonce=cafe1234"));
+                    assert!(s.contains("actionType=banan-image-generator"));
+                    assert!(s.contains("IMAGE_ASPECT_RATIO_PORTRAIT"));
+                    "https://cdn.example.com/img1.png"
+                }),
+            );
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let out = veoaifree_web::generate_image(
+            &reqwest::Client::new(),
+            Some(&base),
+            "mountain",
+            Some("9:16"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["url"], "https://cdn.example.com/img1.png");
         task.abort();
     }
 }
