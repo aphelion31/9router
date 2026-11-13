@@ -1,7 +1,50 @@
-# ninerouter
+# 9router (Rust)
 
-Rust port of 9router: an OpenAI, Claude, Gemini and Responses compatible router with
-per-key usage tracking, combo fallback, and OAuth account management.
+> **Note:** this is a Rust rewrite of [9Router](https://github.com/giienew/9router-pro), the local AI routing
+> gateway. 9Router's Next.js + Node server is replaced by one small Rust binary (axum + rusqlite) that serves the
+> same OpenAI-compatible `/v1` API, the management `/api` and the dashboard. It keeps 9Router's SQLite schema,
+> bcrypt dashboard passwords, provider registry and API shapes.
+> 9Router is © decolua and contributors, MIT licensed. This rewrite is not affiliated with the upstream project.
+>
+> **Status: work in progress (~67% parity).** Progress is tracked per file in `docs/PARITY-API.md`,
+> `docs/PARITY-EXECUTORS.md`, `docs/PARITY-SERVICES.md`, and the REA gap report `docs/GAP-REA.md`.
+> Don't run it against a production `~/.9router` yet (see *Data safety*).
+
+## Why
+
+9Router runs as a Next.js server on Node with a large `node_modules` tree. The Rust build is one static binary
+with SQLite built in, no Node, npm or Next.js at runtime.
+
+## Benchmark
+
+Measured on 2026-11-13: Apple Silicon Mac, release build, empty data directory, load from
+[oha](https://github.com/hatoo/oha), 10 s, 32 concurrent connections.
+
+| Metric | 9router (Rust) |
+| --- | --- |
+| Binary size | 14.6 MB |
+| Startup to first response | 0.65 s |
+| Memory at idle (RSS) | 4.2 MB |
+| Memory after load (RSS) | 9.8 MB |
+| `GET /api/health` | 59,105 req/s, p50 0.17 ms, p99 6.2 ms |
+| `GET /v1/models` (auth rejected path) | 25,151 req/s, p50 0.64 ms, p99 11.8 ms |
+
+Every health request answered 200. No side-by-side numbers for the Node server yet: measure both on your
+machine before comparing.
+
+## Layout
+
+```
+src/api/         /v1 and /api routes (route groups in src/api/routes/)
+src/handlers/    chat core, SSE streaming
+src/translator/  OpenAI-pivot format translation (Claude, Gemini, Responses, Kiro, Cursor, ...)
+src/executors/   one upstream executor per provider protocol
+src/routing/     combo and account fallback, cooldowns, 429 classification
+src/services/    token saver (rtk), model catalogs, rate limits, usage helpers
+src/oauth/       OAuth flows and token refresh
+src/dashboard/   dependency-free dashboard (HTML/JS/CSS embedded in the binary)
+docs/            parity checklists, git process
+```
 
 ## Run
 
