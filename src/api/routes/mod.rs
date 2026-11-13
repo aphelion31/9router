@@ -8,6 +8,7 @@ use axum::{
 use serde_json::json;
 
 use crate::server::AppState;
+mod mgmt_keys;
 mod mgmt_misc;
 mod mgmt_models;
 mod mgmt_providers;
@@ -38,6 +39,7 @@ mod tools_tunnel;
 pub fn management() -> Router<AppState> {
     Router::new()
         .merge(mgmt_system::routes())
+        .merge(mgmt_keys::routes())
         .merge(mgmt_providers::routes())
         .merge(mgmt_models::routes())
         .merge(mgmt_misc::routes())

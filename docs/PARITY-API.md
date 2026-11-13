@@ -56,8 +56,8 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `
 | /api/headroom/stop | POST | 501 |
 | /api/health | GET | done |
 | /api/init | GET | done |
-| /api/keys/[id] | DELETE, GET, PUT | partial (quota and limits unported) |
-| /api/keys | GET, PATCH, POST | partial (quota, limits and bulk import unported) |
+| /api/keys/[id] | DELETE, GET, PUT | done |
+| /api/keys | GET, PATCH, POST | done |
 | /api/locale | POST | done |
 | /api/mcp/[plugin]/message | POST | 501 |
 | /api/mcp/[plugin]/sse | GET | 501 |

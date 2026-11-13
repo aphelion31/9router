@@ -65,11 +65,6 @@ fn make_router_with_db(
         jwt_secret,
     };
     let management = Router::new()
-        .route("/api/keys", get(keys).post(create_key).patch(bulk_keys))
-        .route(
-            "/api/keys/{id}",
-            get(key).put(update_key).delete(delete_key),
-        )
         .route("/api/combos", get(combos))
         .route("/api/usage", get(usage))
         .merge(crate::api::routes::management())
