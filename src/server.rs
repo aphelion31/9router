@@ -118,7 +118,47 @@ fn make_router_with_db(
         .merge(management)
         .merge(v1)
         .with_state(state);
+    // Router::layer runs after route matching, so rewrite in an outer service instead.
+    let router = Router::new().fallback_service(tower::ServiceExt::map_request(router, rewrite_uri));
     (router, db)
+}
+
+/// Mirrors upstream `next.config.mjs` rewrites plus the native `/api/v1*` paths Next.js serves.
+fn rewrite_path(path: &str) -> Option<String> {
+    let tail = |p: &str| path.strip_prefix(p).filter(|t| t.is_empty() || t.starts_with('/'));
+    if let Some(t) = tail("/api/v1beta") {
+        return Some(format!("/v1beta{t}"));
+    }
+    if let Some(t) = tail("/api/v1") {
+        return Some(format!("/v1{t}"));
+    }
+    if let Some(t) = tail("/v1/v1") {
+        return Some(format!("/v1{t}"));
+    }
+    if tail("/codex").is_some() || path == "/responses" {
+        return Some("/v1/responses".into());
+    }
+    if path == "/systemone" {
+        return Some("/v1/systemone".into());
+    }
+    None
+}
+
+fn rewrite_uri(mut req: axum::extract::Request) -> axum::extract::Request {
+    if let Some(path) = rewrite_path(req.uri().path()) {
+        let pq = match req.uri().query() {
+            Some(q) => format!("{path}?{q}"),
+            None => path,
+        };
+        let mut parts = req.uri().clone().into_parts();
+        if let Ok(pq) = pq.parse() {
+            parts.path_and_query = Some(pq);
+            if let Ok(uri) = axum::http::Uri::from_parts(parts) {
+                *req.uri_mut() = uri;
+            }
+        }
+    }
+    req
 }
 
 fn unauthorized() -> Response {
@@ -896,6 +936,22 @@ mod tests {
             let body = to_bytes(auth.into_body(), 200_000).await.unwrap();
             let html = std::str::from_utf8(&body).unwrap();
             assert!(html.contains("/dashboard/app.js"), "missing app.js on {p}");
+        }
+    }
+    #[tokio::test]
+    async fn next_rewrite_aliases_reach_v1_routes() {
+        assert_eq!(rewrite_path("/api/v1/models").as_deref(), Some("/v1/models"));
+        assert_eq!(rewrite_path("/api/v1beta/models/x").as_deref(), Some("/v1beta/models/x"));
+        assert_eq!(rewrite_path("/v1/v1/chat/completions").as_deref(), Some("/v1/chat/completions"));
+        assert_eq!(rewrite_path("/codex/responses").as_deref(), Some("/v1/responses"));
+        assert_eq!(rewrite_path("/api/v1x"), None);
+        assert_eq!(rewrite_path("/v1/models"), None);
+        let db = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&db).unwrap();
+        let app = make_router(db, None);
+        for path in ["/api/v1/models", "/v1/v1/models", "/v1/models"] {
+            let res = app.clone().oneshot(Request::get(path).body(Body::empty()).unwrap()).await.unwrap();
+            assert_eq!(res.status(), 401, "{path} should hit the authed /v1/models route");
         }
     }
     #[tokio::test]
