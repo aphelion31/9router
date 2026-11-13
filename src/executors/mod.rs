@@ -4,11 +4,21 @@ use serde_json::Value;
 mod azure;
 pub(crate) mod bedrock;
 mod chatgpt_web;
+mod devin_cli;
 mod gemini_web;
 mod github;
 mod iflow;
+mod kimchi;
+mod mimo_free;
+mod minimax_code;
 mod muse_web;
+mod opencode;
+mod opencode_go;
+mod opencode_zen;
 mod vertex;
+mod xiaomi_mimo;
+mod xiaomi_tokenplan;
+mod zed;
 
 #[derive(Debug, Clone)]
 pub struct ExecutorRequest {
@@ -28,6 +38,9 @@ pub async fn execute(
     client: &reqwest::Client,
     mut request: ExecutorRequest,
 ) -> anyhow::Result<reqwest::Response> {
+    if request.provider == "devin-cli" {
+        return Err(devin_cli::unsupported());
+    }
     let provider = crate::providers::lookup(&request.provider)
         .with_context(|| format!("unknown provider: {}", request.provider))?;
     match provider.id.as_str() {
@@ -73,7 +86,31 @@ pub async fn execute(
         })
         .or(provider.base_url.as_deref())
         .with_context(|| format!("provider {} has no endpoint", provider.id))?;
-    let mut url = if provider.id == "azure" {
+    if provider.id == "mimo-free" {
+        return mimo_free::execute(client, endpoint, &mut request.body, request.stream).await;
+    }
+    if provider.id == "zed" {
+        return zed::execute(
+            client,
+            endpoint,
+            &request.model,
+            &request.body,
+            request
+                .access_token
+                .as_deref()
+                .or(request.api_key.as_deref()),
+        )
+        .await;
+    }
+    let responses = matches!(provider.id.as_str(), "opencode-go" | "opencode-zen")
+        && opencode_go::is_responses(&provider.id, &request.model);
+    let mut url = if responses {
+        opencode_go::url(endpoint)?
+    } else if provider.id == "opencode" {
+        opencode::url(endpoint, &request.model)?
+    } else if provider.id == "xiaomi-tokenplan" {
+        xiaomi_tokenplan::url(endpoint, request.model.ends_with("-claude"))?
+    } else if provider.id == "azure" {
         azure::url(endpoint, &request.model)?
     } else if matches!(provider.id.as_str(), "vertex" | "vertex-partner") {
         vertex::url(
@@ -90,10 +127,17 @@ pub async fn execute(
     };
     let github_claude =
         provider.id == "github" && request.model.to_ascii_lowercase().contains("claude");
-    if github_claude {
-        url.set_path("/v1/messages");
+    let tokenplan_claude = provider.id == "xiaomi-tokenplan" && request.model.ends_with("-claude");
+    if github_claude || tokenplan_claude {
+        if github_claude {
+            url.set_path("/v1/messages");
+        }
+        let model = request
+            .model
+            .strip_suffix("-claude")
+            .unwrap_or(&request.model);
         request.body = crate::translator::claude::openai_to_claude_request(
-            &request.model,
+            model,
             &request.body,
             request.stream,
             None,
@@ -130,6 +174,21 @@ pub async fn execute(
         body.entry("instructions")
             .or_insert_with(|| "You are a helpful assistant.".into());
     }
+    if provider.id == "kimchi" {
+        kimchi::prepare(&request.model, &mut request.body);
+    }
+    if provider.id == "xiaomi-mimo" {
+        xiaomi_mimo::prepare(&request.model, &mut request.body, false);
+    }
+    if provider.id == "opencode" {
+        opencode::prepare(&mut request.body, &request.model);
+    }
+    if responses {
+        opencode_go::prepare(&mut request.body, &request.model);
+    }
+    if provider.id == "opencode-zen" {
+        opencode_zen::prepare(&mut request.body, responses);
+    }
     if provider.id == "github" && !github_claude {
         github::prepare(&request.model, &mut request.body)?;
     }
@@ -147,6 +206,34 @@ pub async fn execute(
             .header("x-vscode-user-agent-library-version", "electron-fetch")
             .header("x-initiator", "user")
             .header("anthropic-version", "2023-06-01");
+    }
+    if provider.id == "opencode" {
+        let session = opencode::session();
+        builder = builder
+            .header("user-agent", "opencode/latest/2.2.5/cli")
+            .header("x-opencode-client", "cli")
+            .header("x-opencode-project", "global")
+            .header("x-opencode-session", session)
+            .header("x-opencode-session-id", session)
+            .header("x-session-affinity", session)
+            .header("x-session-id", session)
+            .bearer_auth("public");
+    }
+    if provider.id == "opencode-go" {
+        builder = builder.header("x-opencode-session", opencode::session());
+    }
+    if provider.id == "opencode-zen" {
+        builder = builder
+            .header("x-opencode-session", opencode::session())
+            .header("user-agent", "opencode/latest/2.2.5/cli")
+            .header("x-opencode-client", "desktop")
+            .header("x-opencode-project", "global");
+        if request.model.ends_with("-free") {
+            builder = builder.bearer_auth("public");
+        }
+    }
+    if tokenplan_claude {
+        builder = builder.header("anthropic-version", "2023-06-01");
     }
     if provider.id == "iflow" {
         for (name, value) in iflow::prepare(
@@ -195,17 +282,43 @@ pub async fn execute(
         if let Some(key) = request.api_key.as_deref() {
             builder = builder.bearer_auth(key);
         }
-    } else if let Some(token) = request
-        .api_key
-        .as_deref()
-        .or(request.access_token.as_deref())
+    } else if provider.id != "opencode"
+        && !(provider.id == "opencode-zen" && request.model.ends_with("-free"))
+        && let Some(token) = request
+            .api_key
+            .as_deref()
+            .or(request.access_token.as_deref())
     {
         builder = builder.bearer_auth(token);
     }
-    Ok(builder
+    let response = builder
         .body(serde_json::to_vec(&request.body)?)
         .send()
-        .await?)
+        .await?;
+    if provider.id == "minimax-code" && matches!(response.status().as_u16(), 402 | 403) {
+        let status = response.status();
+        let headers = response.headers().clone();
+        let bytes = response.bytes().await?;
+        let text = String::from_utf8_lossy(&bytes);
+        let quota = minimax_code::is_quota(status.as_u16(), &text);
+        let body = if quota {
+            serde_json::json!({"type":"error", "error":{"type":"rate_limit_error", "message":format!("usage limit reached: {text}")}}).to_string().into_bytes()
+        } else {
+            bytes.to_vec()
+        };
+        let mut rebuilt =
+            axum::http::Response::builder().status(if quota { 429 } else { status.as_u16() });
+        for (name, value) in &headers {
+            if name != reqwest::header::CONTENT_LENGTH && name != reqwest::header::CONTENT_ENCODING
+            {
+                rebuilt = rebuilt.header(name, value);
+            }
+        }
+        return Ok(reqwest::Response::from(
+            rebuilt.body(reqwest::Body::from(body))?,
+        ));
+    }
+    Ok(response)
 }
 
 #[cfg(test)]
@@ -219,6 +332,226 @@ mod tests {
         routing::post,
     };
     use serde_json::json;
+
+    #[tokio::test]
+    async fn minimax_code_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().fallback(post(|| async {
+                    (StatusCode::FORBIDDEN, "insufficient credit")
+                })),
+            )
+            .await
+            .unwrap()
+        });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "minimax-code".into(),
+                model: "test".into(),
+                body: json!({"messages":[]}),
+                stream: true,
+                api_key: None,
+                access_token: Some("test".into()),
+                base_url: Some(url),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(
+            String::from_utf8_lossy(&response.bytes().await.unwrap())
+                .contains("insufficient credit")
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn xiaomi_mimo_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/v1/chat/completions",
+            listener.local_addr().unwrap()
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(mock)))
+                .await
+                .unwrap()
+        });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "xiaomi-mimo".into(),
+                model: "mimo-v2.6-pro".into(),
+                body: json!({"messages":[], "reasoning_effort":"xhigh"}),
+                stream: true,
+                api_key: Some("test".into()),
+                access_token: None,
+                base_url: Some(url),
+            },
+        )
+        .await
+        .unwrap();
+        let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(result["authorization"], "Bearer test");
+        assert_eq!(result["body"]["reasoning_effort"], "xhigh");
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn opencode_zen_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/v1/chat/completions",
+            listener.local_addr().unwrap()
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(mock)))
+                .await
+                .unwrap()
+        });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "opencode-zen".into(),
+                model: "test-free".into(),
+                body: json!({"messages":[]}),
+                stream: true,
+                api_key: Some("test".into()),
+                access_token: None,
+                base_url: Some(url),
+            },
+        )
+        .await
+        .unwrap();
+        let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(result["authorization"], "Bearer public");
+        assert_eq!(result["body"]["tools"].as_array().unwrap().len(), 4);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn opencode_go_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/v1/chat/completions",
+            listener.local_addr().unwrap()
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(mock)))
+                .await
+                .unwrap()
+        });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "opencode-go".into(),
+                model: "muse-spark-test".into(),
+                body: json!({"input":[{"type":"reasoning"}],"max_tokens":100}),
+                stream: true,
+                api_key: Some("test".into()),
+                access_token: None,
+                base_url: Some(url),
+            },
+        )
+        .await
+        .unwrap();
+        let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(result["uri"], "/v1/responses");
+        assert_eq!(result["body"]["store"], false);
+        assert_eq!(result["body"]["max_output_tokens"], 100);
+        assert_eq!(result["body"]["input"], json!([]));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn opencode_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(mock)))
+                .await
+                .unwrap()
+        });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "opencode".into(),
+                model: "test".into(),
+                body: json!({"messages":[], "reasoning_effort":"auto"}),
+                stream: true,
+                api_key: None,
+                access_token: None,
+                base_url: Some(url),
+            },
+        )
+        .await
+        .unwrap();
+        let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(result["uri"], "/inference/openai/v1/chat/completions");
+        assert_eq!(result["authorization"], "Bearer public");
+        assert_eq!(result["body"]["stream"], true);
+        assert!(result["body"]["reasoning_effort"].is_null());
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn xiaomi_tokenplan_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/v1/chat/completions",
+            listener.local_addr().unwrap()
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(mock)))
+                .await
+                .unwrap()
+        });
+        for (model, path) in [
+            ("mimo-v2.5-pro", "/v1/chat/completions"),
+            ("mimo-v2.5-pro-claude", "/anthropic/v1/messages"),
+        ] {
+            let response = execute(
+                &reqwest::Client::new(),
+                ExecutorRequest {
+                    provider: "xiaomi-tokenplan".into(),
+                    model: model.into(),
+                    body: json!({"messages":[{"role":"user", "content":"hi"}]}),
+                    stream: false,
+                    api_key: Some("test".into()),
+                    access_token: None,
+                    base_url: Some(url.clone()),
+                },
+            )
+            .await
+            .unwrap();
+            let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+            assert_eq!(result["uri"], path);
+            assert_eq!(result["authorization"], "Bearer test");
+        }
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn kimchi_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(mock)))
+                .await
+                .unwrap()
+        });
+        let response = execute(&reqwest::Client::new(), ExecutorRequest { provider: "kimchi".into(), model: "claude-test".into(), body: json!({"system":"policy", "messages":[{"role":"assistant", "reasoning_content":"private reasoning", "content":[{"type":"text", "text":"hi", "signature":"x"}]}], "thinking":{}, "reasoning_effort":"high"}), stream: false, api_key: Some("test".into()), access_token: None, base_url: Some(url) }).await.unwrap();
+        let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(result["body"]["messages"][0]["content"], "policy");
+        assert!(result["body"]["thinking"].is_null());
+        assert!(result["body"]["reasoning_effort"].is_null());
+        assert!(result["body"]["messages"][1]["content"][0]["signature"].is_null());
+        task.abort();
+    }
 
     async fn mock(
         OriginalUri(uri): OriginalUri,

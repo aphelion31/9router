@@ -17,12 +17,18 @@ mod tests {
     fn combo_fallback_order_kept_and_graced_member_skipped() {
         let grace = Cooldowns::default();
         let members: Vec<String> = ["a/m1", "b/m2", "c/m3"].map(String::from).to_vec();
-        assert_eq!(plan(&grace, "combo", &members), vec!["a/m1", "b/m2", "c/m3"]);
+        assert_eq!(
+            plan(&grace, "combo", &members),
+            vec!["a/m1", "b/m2", "c/m3"]
+        );
 
         grace.set("combo\0b/m2", Duration::from_secs(300));
         assert_eq!(plan(&grace, "combo", &members), vec!["a/m1", "c/m3"]);
         // Grace is per combo: another combo still sees the member.
-        assert_eq!(plan(&grace, "other", &members), vec!["a/m1", "b/m2", "c/m3"]);
+        assert_eq!(
+            plan(&grace, "other", &members),
+            vec!["a/m1", "b/m2", "c/m3"]
+        );
     }
 
     #[test]
@@ -52,7 +58,9 @@ mod tests {
         let quota = r#"{"error":{"message":"FreeUsageLimitError","resets_in_seconds":60}}"#;
         assert_eq!(
             classify("opencode", 429, quota, NOW),
-            Verdict::Quota { reset_ms: NOW + 60_000 }
+            Verdict::Quota {
+                reset_ms: NOW + 60_000
+            }
         );
         let overloaded_with_reset = r#"{"error":{"message":"overloaded","resets_in_seconds":5}}"#;
         assert!(matches!(
@@ -64,16 +72,40 @@ mod tests {
     #[test]
     fn opencode_overload_429_retries_other_429_backs_off() {
         let overloaded = r#"{"error":{"message":"Model is Overloaded, try later"}}"#;
-        assert_eq!(classify("opencode", 429, overloaded, NOW), Verdict::Overload);
+        assert_eq!(
+            classify("opencode", 429, overloaded, NOW),
+            Verdict::Overload
+        );
+        assert_eq!(
+            super::classify::classify_with_retry_after(
+                "opencode",
+                429,
+                overloaded,
+                Some(Duration::from_secs(10)),
+                NOW
+            ),
+            Verdict::Quota {
+                reset_ms: NOW + 10_000
+            }
+        );
         assert_eq!(classify("openai", 429, overloaded, NOW), Verdict::Backoff);
-        assert_eq!(classify("opencode", 429, "rate limited", NOW), Verdict::Backoff);
+        assert_eq!(
+            classify("opencode", 429, "rate limited", NOW),
+            Verdict::Backoff
+        );
     }
 
     #[test]
     fn retry_after_header_and_resets_in_seconds_set_cooldown() {
         use super::classify::classify_with_retry_after;
         assert_eq!(
-            classify_with_retry_after("openai", 429, "rate limit", Some(Duration::from_secs(42)), NOW),
+            classify_with_retry_after(
+                "openai",
+                429,
+                "rate limit",
+                Some(Duration::from_secs(42)),
+                NOW
+            ),
             Verdict::Fixed(Duration::from_secs(42))
         );
         let body = r#"{"error":{"message":"rate limit","resets_in_seconds":17}}"#;
@@ -90,8 +122,14 @@ mod tests {
 
     #[test]
     fn status_classes() {
-        assert_eq!(classify("openai", 401, "", NOW), Verdict::Fixed(LONG_COOLDOWN));
-        assert_eq!(classify("openai", 503, "", NOW), Verdict::Fixed(TRANSIENT_COOLDOWN));
+        assert_eq!(
+            classify("openai", 401, "", NOW),
+            Verdict::Fixed(LONG_COOLDOWN)
+        );
+        assert_eq!(
+            classify("openai", 503, "", NOW),
+            Verdict::Fixed(TRANSIENT_COOLDOWN)
+        );
         assert_eq!(classify("openai", 400, "bad", NOW), Verdict::RequestScoped);
         assert_eq!(classify("openai", 422, "bad", NOW), Verdict::RequestScoped);
     }
