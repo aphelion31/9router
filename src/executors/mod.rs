@@ -338,6 +338,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn orcarouter_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/v1/chat/completions",
+            listener.local_addr().unwrap()
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(mock)))
+                .await
+                .unwrap()
+        });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "orcarouter".into(),
+                model: "model".into(),
+                body: json!({"messages": []}),
+                stream: true,
+                api_key: Some("secret".into()),
+                access_token: None,
+                base_url: Some(url),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(result["authorization"], "Bearer secret");
+        assert_eq!(result["uri"], "/v1/chat/completions");
+        task.abort();
+    }
+
+    #[tokio::test]
     async fn github_claude_mock_request() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/chat/completions", listener.local_addr().unwrap());
