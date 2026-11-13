@@ -1,5 +1,4 @@
-use anyhow::{Context, bail};
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use anyhow::Context;
 use serde_json::{Value, json};
 
 pub(crate) fn zed_provider_for_model(model: &str) -> &'static str {

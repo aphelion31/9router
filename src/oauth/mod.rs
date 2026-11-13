@@ -199,7 +199,7 @@ pub struct Tokens {
     pub id_token: Option<String>,
 }
 
-async fn post(config: &Config, url: &str, mut fields: Vec<(&str, &str)>) -> Result<Value> {
+async fn post(config: &Config, url: &str, fields: Vec<(&str, &str)>) -> Result<Value> {
     let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build()?;
     post_with_client(config, url, fields, &client).await
 }
