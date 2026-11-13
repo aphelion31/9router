@@ -43,7 +43,7 @@ Status is deliberately conservative: partial means the upstream executor has beh
 | trae.js | partial | Two-step SOLO session creation, events SSE stream, and plan_item-to-OpenAI decoder implemented. |
 | uc-web.js | pending | |
 | veoaifree-web.js | pending | |
-| vertex.js | partial | API key, service account and ADC supported. Token caching, project discovery and connection settings missing. |
+| vertex.js | partial | API key, service account, ADC and project/location settings supported. Token caching and project discovery missing. |
 | windsurf.js | ported | `src/executors/windsurf.rs` (gRPC-web protobuf request/response framing, model aliases, SSE/non-stream decoders) |
 | xiaomi-mimo.js | partial | Cloud API passthrough; account-cookie route and desktop authentication unavailable. |
 | xiaomi-tokenplan.js | partial | Per-connection region selection wired; Claude transport selection and inherited default transport parity remain. |

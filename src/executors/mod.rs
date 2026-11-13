@@ -164,6 +164,7 @@ pub async fn execute(
             request.stream,
             request.api_key.as_deref(),
             request.access_token.as_deref(),
+            request.provider_specific_data.as_ref(),
         )?
     } else {
         reqwest::Url::parse(endpoint).context("invalid upstream URL")?
