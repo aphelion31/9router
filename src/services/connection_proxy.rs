@@ -74,3 +74,39 @@ mod tests {
         assert_eq!(config["connectionProxyUrl"], "http://proxy");
     }
 }
+
+/// Round-robin rotation state per provider. Process-local, resets on restart (matches JS).
+#[derive(Default)]
+pub struct ProxyRotation {
+    index: std::collections::HashMap<String, usize>,
+}
+
+impl ProxyRotation {
+    /// Pick the next pool id. One pool or unknown strategy returns the first entry.
+    pub fn pick(&mut self, pool_ids: &[String], strategy: &str, provider: &str) -> Option<String> {
+        if pool_ids.is_empty() {
+            return None;
+        }
+        if pool_ids.len() == 1 || strategy != "round-robin" {
+            return Some(pool_ids[0].clone());
+        }
+        let slot = self.index.entry(provider.to_owned()).or_insert(usize::MAX);
+        *slot = slot.wrapping_add(1) % pool_ids.len();
+        Some(pool_ids[*slot].clone())
+    }
+}
+
+#[cfg(test)]
+mod rotation_tests {
+    use super::*;
+    #[test]
+    fn round_robin_cycles_per_provider() {
+        let mut rot = ProxyRotation::default();
+        let ids: Vec<String> = ["a", "b", "c"].map(String::from).to_vec();
+        let picks: Vec<_> = (0..4).map(|_| rot.pick(&ids, "round-robin", "p").unwrap()).collect();
+        assert_eq!(picks, ["a", "b", "c", "a"]);
+        assert_eq!(rot.pick(&ids, "round-robin", "q").unwrap(), "a");
+        assert_eq!(rot.pick(&ids, "none", "p").unwrap(), "a");
+        assert_eq!(rot.pick(&[], "round-robin", "p"), None);
+    }
+}

@@ -83,7 +83,7 @@ Status: **in progress**. Partial entries cover only the functions named, not ful
 | --- | --- |
 | `src/lib/latencyStats.js` | Ported: aggregation and database query |
 | `src/lib/notify.js` | Ported: config, message, signing, Telegram URL and webhook headers (`services::notify`); HTTP delivery pending |
-| `src/lib/network/connectionProxy.js` | Partial: configuration resolution, no rotation |
+| `src/lib/network/connectionProxy.js` | Ported: config resolution, round-robin rotation (`services::connection_proxy::ProxyRotation`); random strategy and auto-test proxy pending |
 | `src/lib/keyRateLimiter.js` | Ported: windows, slots, and wired into `/v1` auth (`server::api_auth`) |
 | `src/lib/providerHealthSummary.js` | Not ported |
 | `src/lib/modelCatalog/*` | Not ported |
