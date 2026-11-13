@@ -24,6 +24,17 @@ mod oauth_imports;
 mod obs_events;
 mod obs_usage;
 
+mod tools_cli_tools;
+mod tools_headroom;
+mod tools_mcp;
+mod tools_media_providers;
+mod tools_prompt_injection;
+mod tools_proxy_pools;
+mod tools_pxpipe;
+mod tools_token_saver;
+mod tools_translator;
+mod tools_tunnel;
+
 pub fn management() -> Router<AppState> {
     Router::new()
         .merge(mgmt_system::routes())
@@ -34,6 +45,16 @@ pub fn management() -> Router<AppState> {
         .merge(obs_usage::router())
         .merge(oauth_core::router())
         .merge(oauth_imports::router())
+        .merge(tools_token_saver::router())
+        .merge(tools_prompt_injection::router())
+        .merge(tools_media_providers::router())
+        .merge(tools_headroom::router())
+        .merge(tools_pxpipe::router())
+        .merge(tools_translator::router())
+        .merge(tools_proxy_pools::router())
+        .merge(tools_tunnel::router())
+        .merge(tools_cli_tools::router())
+        .merge(tools_mcp::router())
 }
 
 pub fn public() -> Router<AppState> {

@@ -418,7 +418,7 @@ mod tests {
                 stream: true,
                 api_key: None,
                 access_token: Some("test".into()),
-                base_url: Some(url),
+                base_url: Some(url), ..Default::default()
             },
         )
         .await
@@ -452,7 +452,7 @@ mod tests {
                 stream: true,
                 api_key: Some("test".into()),
                 access_token: None,
-                base_url: Some(url),
+                base_url: Some(url), ..Default::default()
             },
         )
         .await
@@ -484,7 +484,7 @@ mod tests {
                 stream: true,
                 api_key: Some("test".into()),
                 access_token: None,
-                base_url: Some(url),
+                base_url: Some(url), ..Default::default()
             },
         )
         .await
@@ -516,7 +516,7 @@ mod tests {
                 stream: true,
                 api_key: Some("test".into()),
                 access_token: None,
-                base_url: Some(url),
+                base_url: Some(url), ..Default::default()
             },
         )
         .await
@@ -547,7 +547,7 @@ mod tests {
                 stream: true,
                 api_key: None,
                 access_token: None,
-                base_url: Some(url),
+                base_url: Some(url), ..Default::default()
             },
         )
         .await
@@ -585,7 +585,7 @@ mod tests {
                     stream: false,
                     api_key: Some("test".into()),
                     access_token: None,
-                    base_url: Some(url.clone()),
+                    base_url: Some(url.clone()), ..Default::default()
                 },
             )
             .await
@@ -606,7 +606,7 @@ mod tests {
                 .await
                 .unwrap()
         });
-        let response = execute(&reqwest::Client::new(), ExecutorRequest { provider: "kimchi".into(), model: "claude-test".into(), body: json!({"system":"policy", "messages":[{"role":"assistant", "reasoning_content":"private reasoning", "content":[{"type":"text", "text":"hi", "signature":"x"}]}], "thinking":{}, "reasoning_effort":"high"}), stream: false, api_key: Some("test".into()), access_token: None, base_url: Some(url) }).await.unwrap();
+        let response = execute(&reqwest::Client::new(), ExecutorRequest { provider: "kimchi".into(), model: "claude-test".into(), body: json!({"system":"policy", "messages":[{"role":"assistant", "reasoning_content":"private reasoning", "content":[{"type":"text", "text":"hi", "signature":"x"}]}], "thinking":{}, "reasoning_effort":"high"}), stream: false, api_key: Some("test".into()), access_token: None, base_url: Some(url), ..Default::default() }).await.unwrap();
         let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
         assert_eq!(result["body"]["messages"][0]["content"], "policy");
         assert!(result["body"]["thinking"].is_null());
