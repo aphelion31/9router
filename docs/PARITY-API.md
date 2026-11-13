@@ -62,11 +62,11 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` depends on an
 | /api/mcp/[plugin]/message | POST | todo |
 | /api/mcp/[plugin]/sse | GET | todo |
 | /api/mcp/gateway | GET, POST | todo |
-| /api/media-providers/tts/deepgram/voices | GET | todo |
-| /api/media-providers/tts/elevenlabs/voices | GET | todo |
-| /api/media-providers/tts/inworld/voices | GET | todo |
-| /api/media-providers/tts/minimax/voices | GET | todo |
-| /api/media-providers/tts/voices | GET | todo |
+| /api/media-providers/tts/deepgram/voices | GET | done |
+| /api/media-providers/tts/elevenlabs/voices | GET | done |
+| /api/media-providers/tts/inworld/voices | GET | done |
+| /api/media-providers/tts/minimax/voices | GET | done |
+| /api/media-providers/tts/voices | GET | done |
 | /api/models/alias | DELETE, GET, PUT | todo |
 | /api/models/availability | GET, POST | todo |
 | /api/models/catalog-sync | GET, POST | todo |
