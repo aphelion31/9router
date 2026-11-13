@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Install: git config core.hooksPath .githooks
+# Blocks direct pushes to develop and master; work arrives by pull request.
+set -euo pipefail
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  case "$remote_ref" in
+    refs/heads/develop|refs/heads/master)
+      echo "✖ Direct push to '${remote_ref#refs/heads/}' is not allowed. Open a PR from a NRR-NNN/* branch." >&2
+      exit 1
+      ;;
+    refs/heads/*)
+      scripts/check-branch.sh "${remote_ref#refs/heads/}"
+      ;;
+  esac
+done

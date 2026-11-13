@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Install: git config core.hooksPath .githooks
+set -euo pipefail
+scripts/check-branch.sh
+branch=$(git rev-parse --abbrev-ref HEAD)
+if [[ "$branch" == "develop" || "$branch" == "master" ]] && [[ -z "${GIT_MERGE_HEAD:-}" ]] && [[ ! -f "$(git rev-parse --git-dir)/MERGE_HEAD" ]]; then
+  echo "✖ Do not commit on '$branch'. Cut a branch: scripts/new-branch.sh <type>-<description>" >&2
+  exit 1
+fi
