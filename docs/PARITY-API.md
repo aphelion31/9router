@@ -2,7 +2,7 @@
 
 Source: 9router-pro/src/app/api/**/route.js (196 files). Rust target: src/api/routes/*.rs via `router() -> Router<AppState>`.
 
-Status: `todo` not ported, `done` ported + oneshot test, `stub501` depends on another lane's service.
+Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `{"error":"not available"}` until its service is ported.
 
 | JS route | Methods | Rust status |
 |---|---|---|
@@ -174,31 +174,31 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` depends on an
 | /api/usage/request-details | GET | todo |
 | /api/usage/stats | GET | todo |
 | /api/usage/stream | GET | todo |
-| /api/v1/api/chat | POST | todo |
-| /api/v1/audio/speech | POST | todo |
-| /api/v1/audio/transcriptions | POST | todo |
-| /api/v1/audio/voices | GET | todo |
-| /api/v1/chat/completions | POST | todo |
-| /api/v1/embeddings | POST | todo |
-| /api/v1/images/generations | POST | todo |
-| /api/v1/messages/count_tokens | POST | todo |
-| /api/v1/messages | POST | todo |
-| /api/v1/models/[...model] | GET | todo |
-| /api/v1/models/info | GET | todo |
-| /api/v1/models | GET | todo |
-| /api/v1/responses/compact | POST | todo |
-| /api/v1/responses | POST | todo |
-| /api/v1 | (verify manually) | todo |
-| /api/v1/search | POST | todo |
-| /api/v1/systemone | POST | todo |
-| /api/v1/usage | GET | todo |
-| /api/v1/videos/[id] | GET | todo |
-| /api/v1/videos/edits | POST | todo |
-| /api/v1/videos/extensions | POST | todo |
-| /api/v1/videos/generations | POST | todo |
-| /api/v1/web/fetch | POST | todo |
-| /api/v1beta/models/[...path] | POST | todo |
-| /api/v1beta/models | GET | todo |
+| /api/v1/api/chat | POST | stub501 |
+| /api/v1/audio/speech | POST | stub501 |
+| /api/v1/audio/transcriptions | POST | stub501 |
+| /api/v1/audio/voices | GET | stub501 |
+| /api/v1/chat/completions | POST | done |
+| /api/v1/embeddings | POST | stub501 |
+| /api/v1/images/generations | POST | stub501 |
+| /api/v1/messages/count_tokens | POST | done |
+| /api/v1/messages | POST | done |
+| /api/v1/models/[...model] | GET | done |
+| /api/v1/models/info | GET | done |
+| /api/v1/models | GET | done |
+| /api/v1/responses/compact | POST | stub501 |
+| /api/v1/responses | POST | done |
+| /api/v1 | (verify manually) | done |
+| /api/v1/search | POST | stub501 |
+| /api/v1/systemone | POST | stub501 |
+| /api/v1/usage | GET | done |
+| /api/v1/videos/[id] | GET | stub501 |
+| /api/v1/videos/edits | POST | stub501 |
+| /api/v1/videos/extensions | POST | stub501 |
+| /api/v1/videos/generations | POST | stub501 |
+| /api/v1/web/fetch | POST | stub501 |
+| /api/v1beta/models/[...path] | POST | done |
+| /api/v1beta/models | GET | done |
 | /api/version | GET | todo |
 | /api/version/shutdown | POST | todo |
 | /api/version/update | POST | todo |
