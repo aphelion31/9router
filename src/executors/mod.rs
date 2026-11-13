@@ -4,6 +4,7 @@ use serde_json::Value;
 mod azure;
 pub(crate) mod bedrock;
 mod chatgpt_web;
+mod devin_cli;
 mod gemini_web;
 mod github;
 mod iflow;
@@ -36,6 +37,9 @@ pub async fn execute(
     client: &reqwest::Client,
     mut request: ExecutorRequest,
 ) -> anyhow::Result<reqwest::Response> {
+    if request.provider == "devin-cli" {
+        return Err(devin_cli::unsupported());
+    }
     let provider = crate::providers::lookup(&request.provider)
         .with_context(|| format!("unknown provider: {}", request.provider))?;
     match provider.id.as_str() {

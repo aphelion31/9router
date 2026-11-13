@@ -19,7 +19,7 @@ Status is deliberately conservative: partial means the upstream executor has beh
 | deepseek-web-done-terminator.js | pending | |
 | deepseek-web.js | pending | |
 | default.js | partial | Generic transport exists, provider quirks missing. |
-| devin-cli.js | pending | |
+| devin-cli.js | partial | Explicitly refuses execution: upstream auto-approves host shell and filesystem access; ACP sandbox and permissions required. |
 | gemini-cli.js | pending | |
 | gemini-web.js | unsupported | Browser automation required. |
 | github.js | partial | Chat and Claude paths exist. Responses fallback and full response parity missing. |
