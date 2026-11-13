@@ -1,6 +1,7 @@
 pub mod antigravity_ide_version;
 pub mod browser;
 pub mod empty_failover;
+pub mod gemini_cookies;
 pub mod grok_cli_models;
 pub mod kimchi_models;
 pub mod latency_stats;
