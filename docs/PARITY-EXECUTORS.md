@@ -14,7 +14,7 @@ Status is deliberately conservative: partial means the upstream executor has beh
 | codebuddy-cn.js | partial | Forced streaming, agent system-prompt neutralization, and reasoning_summary implemented; code 6004 reset parsing pending in error layer. |
 | codebuddy-intl.js | partial | Forced streaming, reasoning_summary, and CodeBuddy message normalization implemented; code 6004 reset parsing pending in error layer. |
 | codex.js | partial | Basic request shaping exists. |
-| commandcode.js | pending | |
+| commandcode.js | partial | CLI identity headers, forced streaming, and NDJSON-to-SSE decoder implemented; upstream retry loop pending. |
 | cursor.js | pending | |
 | deepseek-web-done-terminator.js | pending | |
 | deepseek-web.js | pending | |

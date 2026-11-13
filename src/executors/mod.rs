@@ -6,6 +6,7 @@ pub(crate) mod bedrock;
 mod chatgpt_web;
 mod codebuddy_cn;
 mod codebuddy_intl;
+pub(crate) mod commandcode;
 mod gemini_cli;
 mod gemini_web;
 mod github;
@@ -161,6 +162,11 @@ pub async fn execute(
             request.stream,
             request.provider_specific_data.as_ref(),
         ) {
+            builder = builder.header(name, value);
+        }
+    }
+    if provider.id == "commandcode" {
+        for (name, value) in commandcode::prepare(&mut request.body)? {
             builder = builder.header(name, value);
         }
     }
@@ -727,6 +733,53 @@ mod tests {
         assert_eq!(
             result["body"]["messages"][0]["content"],
             "You are a helpful AI assistant that helps with software engineering tasks."
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn commandcode_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/alpha/generate", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(mock)))
+                .await
+                .unwrap()
+        });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "commandcode".into(),
+                model: "deepseek/deepseek-v4-pro".into(),
+                body: json!({"threadId": "thread-abc", "messages": []}),
+                stream: false,
+                api_key: Some("user_secret".into()),
+                base_url: Some(url),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(result["authorization"], "Bearer user_secret");
+        assert_eq!(result["body"]["stream"], true);
+        assert_eq!(result["headers"]["user-agent"], "cli");
+        assert_eq!(result["headers"]["x-command-code-version"], "1.88.0");
+        assert_eq!(result["headers"]["x-session-id"], "thread-abc");
+        assert_eq!(result["headers"]["x-cli-environment"], "production");
+        assert_eq!(result["headers"]["x-cli-surface"], "cli");
+        assert_eq!(result["headers"]["x-taste-learning"], "false");
+
+        let mut decoder = commandcode::Decoder::new("deepseek/deepseek-v4-pro");
+        let sse = decoder
+            .push(b"{\"type\":\"text-delta\",\"delta\":\"hi\"}\n")
+            .unwrap();
+        let text = String::from_utf8(sse).unwrap();
+        assert!(text.starts_with("data: "));
+        assert!(text.contains("\"content\":\"hi\""));
+        assert_eq!(
+            String::from_utf8(decoder.finish()).unwrap(),
+            "data: [DONE]\n\n"
         );
         task.abort();
     }
