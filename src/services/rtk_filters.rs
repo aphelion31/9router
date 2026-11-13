@@ -345,6 +345,345 @@ pub fn dedup_log(input: &str) -> String {
     out.join("\n")
 }
 
+pub fn build_output(input: &str) -> String {
+    let lines: Vec<&str> = input.split('\n').collect();
+    if lines.is_empty() {
+        return input.to_owned();
+    }
+    let mut errors: Vec<&str> = Vec::new();
+    let mut warnings: Vec<&str> = Vec::new();
+    let mut deprecations: Vec<&str> = Vec::new();
+    let mut summary: Vec<&str> = Vec::new();
+    let mut compiling_count = 0usize;
+    let mut downloading_count = 0usize;
+    let mut in_cargo_error = false;
+
+    for line in &lines {
+        let trimmed = line.trim();
+        if in_cargo_error {
+            if trimmed.is_empty() {
+                in_cargo_error = false;
+                continue;
+            }
+            let ts = line.trim_start();
+            if ts.starts_with("-->")
+                || ts.starts_with('|')
+                || ts.starts_with('=')
+                || ts
+                    .split_once('|')
+                    .is_some_and(|(num, _)| !num.is_empty() && num.trim().chars().all(|c| c.is_ascii_digit()))
+            {
+                errors.push(line);
+                continue;
+            }
+            in_cargo_error = false;
+        }
+        if trimmed.is_empty() {
+            continue;
+        }
+        let lower = trimmed.to_ascii_lowercase();
+        if lower.starts_with("npm err!") || lower.starts_with("npm error") || lower.starts_with("yarn error") {
+            errors.push(line);
+            continue;
+        }
+        if lower.starts_with("npm warn deprecated") {
+            deprecations.push(line);
+            continue;
+        }
+        if lower.starts_with("npm warn") || lower.starts_with("yarn warn") {
+            warnings.push(line);
+            continue;
+        }
+        if lower.starts_with("error[") || lower.starts_with("error:") || trimmed.starts_with("error -->") {
+            if lower.starts_with("error:") && !lower.starts_with("error[") {
+                errors.push(line);
+                in_cargo_error = true;
+            } else {
+                errors.push(line);
+                in_cargo_error = true;
+            }
+            continue;
+        }
+        if lower.starts_with("warning[") || lower.starts_with("warning:") || trimmed.starts_with("warning -->") {
+            warnings.push(line);
+            in_cargo_error = true;
+            continue;
+        }
+        if lower.starts_with("[error]") || lower.starts_with("build failed") {
+            errors.push(line);
+            continue;
+        }
+        if lower.starts_with("[warning]") {
+            warnings.push(line);
+            continue;
+        }
+        if lower.starts_with("compiling ") {
+            compiling_count += 1;
+            continue;
+        }
+        if lower.starts_with("downloading ") || lower.starts_with("fetching ") {
+            downloading_count += 1;
+            continue;
+        }
+        if ["added ", "removed ", "changed ", "audited ", "installed "]
+            .iter()
+            .any(|p| lower.starts_with(p))
+            && lower.contains("package")
+            || lower.starts_with("finished ")
+            || lower.starts_with("build success")
+            || lower.starts_with("successfully installed")
+            || lower.starts_with("successfully built")
+            || lower.starts_with("to address ")
+            || lower.starts_with("run `npm audit")
+            || lower.starts_with("run `npm fund")
+            || lower.contains("packages are looking for funding")
+            || lower
+                .split_whitespace()
+                .next()
+                .is_some_and(|w| !w.is_empty() && w.chars().all(|c| c.is_ascii_digit()))
+                && ["vulnerabilities", "package", "warning", "error"]
+                    .iter()
+                    .any(|kw| lower.contains(kw))
+        {
+            summary.push(line);
+        }
+    }
+
+    let mut out = String::new();
+    for d in deprecations.iter().take(3) {
+        out.push_str(d);
+        out.push('\n');
+    }
+    if deprecations.len() > 3 {
+        out.push_str(&format!("... +{} more deprecated packages\n", deprecations.len() - 3));
+    }
+    if compiling_count > 0 {
+        out.push_str(&format!("Compiled {compiling_count} packages\n"));
+    }
+    if downloading_count > 0 {
+        out.push_str(&format!("Downloaded {downloading_count} packages\n"));
+    }
+    for e in errors {
+        out.push_str(e);
+        out.push('\n');
+    }
+    for w in warnings.iter().take(5) {
+        out.push_str(w);
+        out.push('\n');
+    }
+    if warnings.len() > 5 {
+        out.push_str(&format!("... +{} more warnings\n", warnings.len() - 5));
+    }
+    if !summary.is_empty() {
+        out.push_str(&summary.join("\n"));
+        out.push('\n');
+    }
+    let trimmed_out = out.trim_end_matches('\n');
+    if trimmed_out.is_empty() {
+        input.to_owned()
+    } else {
+        trimmed_out.to_owned()
+    }
+}
+
+fn is_hex_sha(s: &str) -> bool {
+    (7..=40).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+pub fn git_log(input: &str, max_lines: usize) -> String {
+    if input.is_empty() {
+        return String::new();
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut skipped = 0usize;
+    let mut in_commit = false;
+    let mut subject_seen = false;
+
+    let mut push_line = |l: String| {
+        if out.len() < max_lines {
+            out.push(l);
+        } else {
+            skipped += 1;
+        }
+    };
+
+    for raw in input.split('\n') {
+        let line = raw.trim_end();
+        let trimmed = line.trim();
+        let no_graph = trimmed.trim_start_matches(['*', '|', '/', '\\', ' ']);
+        if let Some(rest) = no_graph.strip_prefix("commit ")
+            && is_hex_sha(rest.split_whitespace().next().unwrap_or(""))
+        {
+            in_commit = true;
+            subject_seen = false;
+            push_line(line.to_owned());
+            continue;
+        }
+        if in_commit {
+            let lower = no_graph.to_ascii_lowercase();
+            if lower.starts_with("author:") || lower.starts_with("date:") {
+                push_line(trimmed.to_owned());
+                continue;
+            }
+            if trimmed.is_empty() {
+                continue;
+            }
+            if !subject_seen && line.trim_start_matches(['*', '|', '/', '\\', ' ']).len() < line.len()
+                && line.contains("    ")
+            {
+                push_line(format!("  Subject: {trimmed}"));
+                subject_seen = true;
+                continue;
+            }
+            if trimmed
+                .split_whitespace()
+                .next()
+                .is_some_and(|w| !w.is_empty() && w.chars().all(|c| c.is_ascii_digit()))
+                && (trimmed.contains("file changed") || trimmed.contains("files changed"))
+            {
+                push_line(format!("  {trimmed}"));
+                continue;
+            }
+            if trimmed.starts_with("diff --git ") {
+                push_line("  ... diff body omitted".to_owned());
+                continue;
+            }
+            continue;
+        }
+
+        if let Some((sha, rest)) = no_graph.split_once(char::is_whitespace)
+            && is_hex_sha(sha)
+            && !rest.trim().is_empty()
+        {
+            push_line(no_graph.to_owned());
+            continue;
+        }
+        if !trimmed.is_empty()
+            && trimmed.chars().all(|c| matches!(c, '*' | '|' | '/' | '\\' | ' '))
+            && trimmed.chars().any(|c| matches!(c, '*' | '|' | '/' | '\\'))
+        {
+            continue;
+        }
+        push_line(trimmed.to_owned());
+    }
+
+    if skipped > 0 {
+        out.push(format!("... ({skipped} more lines)"));
+    }
+    let result = out.join("\n");
+    if result.is_empty() || result.len() > input.len() {
+        input.to_owned()
+    } else {
+        result
+    }
+}
+
+const LS_NOISE_DIRS: &[&str] = &[
+    "node_modules", ".git", "target", "__pycache__", ".next", "dist", "build", ".cache",
+    ".turbo", ".vercel", ".pytest_cache", ".mypy_cache", ".tox", ".venv", "venv", "env",
+    "coverage", ".nyc_output", ".DS_Store", "Thumbs.db", ".idea", ".vscode", ".vs",
+    "*.egg-info", ".eggs",
+];
+const MONTHS: &[&str] = &[
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+fn human_size(bytes: u64) -> String {
+    if bytes >= 1_048_576 {
+        format!("{:.1}M", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1024 {
+        format!("{:.1}K", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes}B")
+    }
+}
+
+fn parse_ls_line(line: &str) -> Option<(char, u64, &str)> {
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    if tokens.len() < 8 {
+        return None;
+    }
+    let file_type = tokens[0].chars().next()?;
+    let month_idx = tokens.iter().position(|t| MONTHS.contains(t))?;
+    if month_idx < 4 || month_idx + 2 >= tokens.len() {
+        return None;
+    }
+    let day = tokens[month_idx + 1];
+    if !day.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let time_or_year = tokens[month_idx + 2];
+    let valid_ty = (time_or_year.len() == 4 && time_or_year.chars().all(|c| c.is_ascii_digit()))
+        || (time_or_year.len() == 5 && time_or_year.as_bytes()[2] == b':');
+    if !valid_ty {
+        return None;
+    }
+    let size = tokens[..month_idx]
+        .iter()
+        .rev()
+        .find_map(|t| t.parse::<u64>().ok())
+        .unwrap_or(0);
+    let ty_pos = line.find(time_or_year)?;
+    let name = line[ty_pos + time_or_year.len()..].trim_start();
+    if name.is_empty() {
+        return None;
+    }
+    Some((file_type, size, name))
+}
+
+pub fn ls(input: &str) -> String {
+    let mut dirs: Vec<&str> = Vec::new();
+    let mut files: Vec<(&str, String)> = Vec::new();
+    let mut by_ext: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+
+    for line in input.split('\n') {
+        if line.starts_with("total ") || line.is_empty() {
+            continue;
+        }
+        let Some((ftype, size, name)) = parse_ls_line(line) else {
+            continue;
+        };
+        if name == "." || name == ".." || LS_NOISE_DIRS.contains(&name) {
+            continue;
+        }
+        if ftype == 'd' {
+            dirs.push(name);
+        } else if ftype == '-' || ftype == 'l' {
+            let ext = name
+                .rfind('.')
+                .filter(|&i| i > 0)
+                .map_or("no ext", |i| &name[i..]);
+            *by_ext.entry(ext).or_default() += 1;
+            files.push((name, human_size(size)));
+        }
+    }
+
+    if dirs.is_empty() && files.is_empty() {
+        return input.to_owned();
+    }
+
+    let mut out = String::new();
+    for d in &dirs {
+        out.push_str(d);
+        out.push_str("/\n");
+    }
+    for (name, size) in &files {
+        out.push_str(&format!("{name}  {size}\n"));
+    }
+    out.push_str(&format!("\nSummary: {} files, {} dirs", files.len(), dirs.len()));
+    if !by_ext.is_empty() {
+        let mut ext: Vec<(&str, usize)> = by_ext.into_iter().collect();
+        ext.sort_by(|a, b| b.1.cmp(&a.1));
+        let parts: Vec<String> = ext.iter().take(5).map(|(e, c)| format!("{c} {e}")).collect();
+        out.push_str(&format!(" ({}", parts.join(", ")));
+        if ext.len() > 5 {
+            out.push_str(&format!(", +{} more", ext.len() - 5));
+        }
+        out.push(')');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

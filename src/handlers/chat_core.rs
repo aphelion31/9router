@@ -45,6 +45,17 @@ pub fn usage_from_body(body: &Value) -> Option<(u64, u64)> {
     Some((input.unwrap_or(0), output.unwrap_or(0)))
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct TokenSaverConfig {
+    pub token_saver_enabled: bool,
+    pub rtk_enabled: bool,
+    pub caveman_enabled: bool,
+    pub caveman_level: Option<String>,
+    pub brief_level: Option<String>,
+    pub ponytail_enabled: bool,
+    pub ponytail_level: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ChatCoreOptions {
     pub body: Value,
@@ -59,6 +70,7 @@ pub struct ChatCoreOptions {
     pub provider_session_id: Option<String>,
     /// Upper bound for upstream response headers. Exceeding it returns status 504.
     pub first_response_timeout: Option<std::time::Duration>,
+    pub token_saver: Option<TokenSaverConfig>,
 }
 
 pub enum ChatCoreResult {
@@ -849,6 +861,16 @@ pub async fn handle_chat_core(
         }
     }
 
+    let ts_cfg = options.token_saver.clone().unwrap_or_default();
+    let rtk_active = ts_cfg.token_saver_enabled && ts_cfg.rtk_enabled;
+
+    // Cursor translator rewrites tool_result shapes, so RTK runs pre-translate for cursor.
+    let pre_translate_rtk = if options.provider == "cursor" {
+        crate::services::rtk_index::compress_messages(&mut options.body, rtk_active)
+    } else {
+        None
+    };
+
     let creds_val = options.credentials.to_translator_value();
     let upstream_model = strip_thinking_suffix(&options.model).to_string();
     let mut translated_body = translate_request(
@@ -864,6 +886,34 @@ pub async fn handle_chat_core(
         obj.insert("model".to_string(), json!(upstream_model));
     }
     strip_continuity_fields(&mut translated_body);
+
+    let rtk_stats = pre_translate_rtk.or_else(|| {
+        crate::services::rtk_index::compress_messages(&mut translated_body, rtk_active)
+    });
+    if let Some(stats) = &rtk_stats
+        && let Some(line) = crate::services::rtk_index::format_rtk_log(stats)
+    {
+        tracing::debug!("{line}");
+    }
+
+    let effective_caveman = ts_cfg.brief_level.as_deref().or_else(|| {
+        if ts_cfg.caveman_enabled {
+            ts_cfg.caveman_level.as_deref()
+        } else {
+            None
+        }
+    });
+    if ts_cfg.token_saver_enabled
+        && let Some(level) = effective_caveman
+    {
+        crate::services::rtk_caveman::inject_caveman(&mut translated_body, &target_format, level);
+    }
+    if ts_cfg.token_saver_enabled
+        && ts_cfg.ponytail_enabled
+        && let Some(level) = ts_cfg.ponytail_level.as_deref()
+    {
+        crate::services::rtk_caveman::inject_ponytail(&mut translated_body, &target_format, level);
+    }
 
     let exec_req = ExecutorRequest {
         provider: options.provider.clone(),
