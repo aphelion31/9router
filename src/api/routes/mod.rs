@@ -9,6 +9,7 @@ mod tools_media_providers;
 mod tools_prompt_injection;
 mod tools_pxpipe;
 mod tools_token_saver;
+mod tools_translator;
 
 pub fn management() -> Router<AppState> {
     Router::new()
@@ -17,6 +18,7 @@ pub fn management() -> Router<AppState> {
         .merge(tools_media_providers::router())
         .merge(tools_headroom::router())
         .merge(tools_pxpipe::router())
+        .merge(tools_translator::router())
 }
 
 pub fn v1() -> Router<AppState> {

@@ -150,12 +150,12 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` depends on an
 | /api/token-saver/brief | DELETE, GET, PUT | done |
 | /api/token-saver/stats | GET | done |
 | /api/token-saver/test | POST | done |
-| /api/translator/console-logs | DELETE, GET | todo |
-| /api/translator/console-logs/stream | GET | todo |
-| /api/translator/load | GET | todo |
-| /api/translator/save | POST | todo |
-| /api/translator/send | POST | todo |
-| /api/translator/translate | POST | todo |
+| /api/translator/console-logs | DELETE, GET | done |
+| /api/translator/console-logs/stream | GET | done |
+| /api/translator/load | GET | done |
+| /api/translator/save | POST | done |
+| /api/translator/send | POST | done |
+| /api/translator/translate | POST | done |
 | /api/tunnel/disable | POST | todo |
 | /api/tunnel/enable | POST | todo |
 | /api/tunnel/status | GET | todo |
