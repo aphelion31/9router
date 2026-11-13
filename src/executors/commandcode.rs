@@ -72,33 +72,38 @@ impl Decoder {
         while let Some(pos) = self.buffer.find('\n') {
             let line = self.buffer[..pos].trim().to_string();
             self.buffer.drain(..=pos);
-            self.emit_line(&line, &mut out);
+            self.emit_line(&line, &mut out)?;
         }
         Ok(out)
     }
 
-    pub(crate) fn finish(&mut self) -> Vec<u8> {
+    pub(crate) fn finish(&mut self) -> anyhow::Result<Vec<u8>> {
         let mut out = Vec::new();
         let remaining = self.buffer.trim().to_string();
         self.buffer.clear();
         if !remaining.is_empty() {
-            self.emit_line(&remaining, &mut out);
+            self.emit_line(&remaining, &mut out)?;
         }
         out.extend_from_slice(b"data: [DONE]\n\n");
-        out
+        Ok(out)
     }
 
-    fn emit_line(&mut self, line: &str, out: &mut Vec<u8>) {
+    fn emit_line(&mut self, line: &str, out: &mut Vec<u8>) -> anyhow::Result<()> {
         if line.is_empty() {
-            return;
+            return Ok(());
         }
         let json_str = line.strip_prefix("data:").map(str::trim).unwrap_or(line);
         if json_str.is_empty() || json_str == "[DONE]" {
-            return;
+            return Ok(());
         }
         let Ok(val) = serde_json::from_str::<Value>(json_str) else {
-            return;
+            return Ok(());
         };
+        if val.get("type").and_then(Value::as_str) == Some("error") {
+            // Mirrors commandcode.js: an upstream error event fails the request instead of streaming empty output.
+            let (status, message, kind) = parse_command_code_error(&val);
+            anyhow::bail!("CommandCode error {status} ({kind}): {message}");
+        }
         for chunk in commandcode_to_openai_response(Some(&val), &mut self.state) {
             if let Ok(s) = serde_json::to_string(&chunk) {
                 out.extend_from_slice(b"data: ");
@@ -106,13 +111,11 @@ impl Decoder {
                 out.extend_from_slice(b"\n\n");
             }
         }
+        Ok(())
     }
 }
 
-pub(crate) fn is_retryable_status(status: u16) -> bool {
-    matches!(status, 502 | 503 | 504)
-}
-
+/// Maps an upstream error event to (status, message, error type), matching commandcode.js `parseCommandCodeError`.
 pub(crate) fn parse_command_code_error(event: &Value) -> (u16, String, &'static str) {
     let err_val = event
         .get("error")
@@ -180,10 +183,6 @@ mod tests {
 
     #[test]
     fn commandcode_error_and_retry_helpers_work() {
-        assert!(is_retryable_status(502));
-        assert!(is_retryable_status(503));
-        assert!(!is_retryable_status(400));
-
         let (code, msg, kind) =
             parse_command_code_error(&json!({"error": {"message": "Rate limit exceeded"}}));
         assert_eq!(code, 429);

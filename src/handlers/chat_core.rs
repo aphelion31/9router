@@ -977,13 +977,46 @@ pub async fn handle_chat_core(
     if !(200..300).contains(&provider_resp.status) {
         let status = provider_resp.status;
         let headers = provider_resp.headers;
-        let retry_after = headers
+        let header_retry = headers
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case("retry-after"))
             .and_then(|(_, v)| v.trim().parse::<u64>().ok());
         let bytes = read_body_bytes(provider_resp.body).await.unwrap_or_default();
-        let message = serde_json::from_slice::<Value>(&bytes)
-            .ok()
+        let body_json = serde_json::from_slice::<Value>(&bytes).ok();
+        let retry_after = header_retry.or_else(|| {
+            if status != 429 {
+                return None;
+            }
+            match options.provider.as_str() {
+                // Gemini CLI carries the wait in google.rpc.RetryInfo inside the body.
+                "gemini-cli" => body_json
+                    .as_ref()
+                    .and_then(crate::executors::gemini_cli::parse_retry_info_ms)
+                    .map(|ms| ms.div_ceil(1000)),
+                // CodeBuddy 6004 frequency limit: reset instant in body text or structured fields.
+                "codebuddy-cn" | "codebuddy-intl" => body_json.as_ref().and_then(|b| {
+                    crate::executors::codebuddy_cn::parse_code_6004_reset_ms(b, crate::routing::classify::now_ms())
+                        .map(|ms| ms.div_ceil(1000))
+                }),
+                // Orcarouter also sends x-ratelimit-reset(-after) and HTTP-date Retry-After.
+                "orcarouter" => {
+                    let mut map = reqwest::header::HeaderMap::new();
+                    for (k, v) in &headers {
+                        if let (Ok(name), Ok(val)) = (
+                            reqwest::header::HeaderName::from_bytes(k.as_bytes()),
+                            reqwest::header::HeaderValue::from_str(v),
+                        ) {
+                            map.append(name, val);
+                        }
+                    }
+                    crate::executors::orcarouter::parse_retry_after_ms(&map, crate::routing::classify::now_ms())
+                        .map(|ms| ms.div_ceil(1000))
+                }
+                _ => None,
+            }
+        });
+        let message = body_json
+            .as_ref()
             .and_then(|v| {
                 v.get("error")
                     .and_then(|e| e.get("message").or(Some(e)))
@@ -1013,6 +1046,16 @@ pub async fn handle_chat_core(
     if !stream {
         let raw_json = match provider_resp.body {
             ExecutorBody::Json(v) => v,
+            ExecutorBody::Bytes(b) if options.provider == "cursor" => {
+                // ConnectRPC frames: collect the decoded stream into one chat.completion (cursor.js non-stream path).
+                let decoded = crate::executors::cursor::decode_non_stream(&b, &options.model);
+                serde_json::from_slice::<Value>(&decoded).unwrap_or(Value::Null)
+            }
+            ExecutorBody::Stream(rx) if options.provider == "cursor" => {
+                let b = read_body_bytes(ExecutorBody::Stream(rx)).await.unwrap_or_default();
+                let decoded = crate::executors::cursor::decode_non_stream(&b, &options.model);
+                serde_json::from_slice::<Value>(&decoded).unwrap_or(Value::Null)
+            }
             ExecutorBody::Bytes(b) => {
                 if let Ok(v) = serde_json::from_slice::<Value>(&b) {
                     v

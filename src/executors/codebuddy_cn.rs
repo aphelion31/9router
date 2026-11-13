@@ -133,13 +133,23 @@ pub(super) fn prepare(body: &mut Value) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(crate) fn parse_code_6004_reset_ms(body: &Value) -> Option<u64> {
+pub(crate) fn parse_code_6004_reset_ms(body: &Value, now_ms: u64) -> Option<u64> {
+    let msg = body
+        .pointer("/error/message")
+        .or_else(|| body.get("msg"))
+        .or_else(|| body.get("message"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let code = body
         .pointer("/error/code")
         .or_else(|| body.get("code"))
         .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()));
-    if code != Some(6004) {
+    if code != Some(6004) && !msg.contains("frequency limit") && !msg.contains("超出频率限制") && !msg.contains("限额") {
         return None;
+    }
+    // Upstream text such as "2026-11-14 12:00:00 UTC+8" carries the reset instant (commandcode-style parity with codebuddy-cn.js).
+    if let Some(reset) = reset_from_message(msg) {
+        return Some(reset.saturating_sub(now_ms)).filter(|d| *d > 0);
     }
     if let Some(ms) = body
         .pointer("/error/retryAfterMs")
@@ -158,6 +168,63 @@ pub(crate) fn parse_code_6004_reset_ms(body: &Value) -> Option<u64> {
     Some(60_000)
 }
 
+/// Parses `YYYY-MM-DD HH:MM:SS [UTC[+]H[:MM]]` (default +08:00) into unix ms, as codebuddy-cn.js does.
+fn reset_from_message(msg: &str) -> Option<u64> {
+    let re = regex_lite_match(msg)?;
+    let (date, time, tz) = re;
+    let tz = tz.map_or_else(
+        || "+08:00".to_string(),
+        |t| {
+            if t.contains(':') {
+                if t.starts_with('+') { t.to_string() } else { format!("+{t}") }
+            } else {
+                format!("+{:0>2}:00", t)
+            }
+        },
+    );
+    let dt = chrono_free_parse(&date, &time, &tz)?;
+    Some(dt)
+}
+
+fn regex_lite_match(msg: &str) -> Option<(String, String, Option<String>)> {
+    let lower = msg.trim();
+    let idx = lower.find(|c: char| c.is_ascii_digit())?;
+    let rest = &lower[idx..];
+    let mut parts = rest.split_whitespace();
+    let date = parts.next()?;
+    let time = parts.next()?;
+    if date.len() != 10 || time.len() < 8 {
+        return None;
+    }
+    let tz = parts
+        .find_map(|p| p.strip_prefix("UTC").or_else(|| p.strip_prefix("utc")))
+        .map(|s| s.trim_start_matches('+').to_string());
+    Some((date.to_string(), time[..8].to_string(), tz))
+}
+
+fn chrono_free_parse(date: &str, time: &str, tz: &str) -> Option<u64> {
+    let y: i64 = date.get(0..4)?.parse().ok()?;
+    let mo: i64 = date.get(5..7)?.parse().ok()?;
+    let d: i64 = date.get(8..10)?.parse().ok()?;
+    let h: i64 = time.get(0..2)?.parse().ok()?;
+    let mi: i64 = time.get(3..5)?.parse().ok()?;
+    let s: i64 = time.get(6..8)?.parse().ok()?;
+    let sign = if tz.starts_with('-') { -1 } else { 1 };
+    let tzb = tz.trim_start_matches(['+', '-']);
+    let (th, tm) = tzb.split_once(':')?;
+    let off = sign * (th.parse::<i64>().ok()? * 3600 + tm.parse::<i64>().ok()? * 60);
+    // Days from civil (Howard Hinnant), no chrono dependency.
+    let yy = if mo <= 2 { y - 1 } else { y };
+    let era = yy.div_euclid(400);
+    let yoe = yy - era * 400;
+    let mp = (mo + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    let secs = days * 86_400 + h * 3600 + mi * 60 + s - off;
+    u64::try_from(secs).ok().map(|s| s * 1000)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,9 +232,12 @@ mod tests {
     #[test]
     fn codebuddy_cn_6004_reset_parsing_works() {
         assert_eq!(
-            parse_code_6004_reset_ms(&json!({"error": {"code": 6004, "retryAfter": 45}})),
+            parse_code_6004_reset_ms(&json!({"error": {"code": 6004, "retryAfter": 45}}), 0),
             Some(45_000)
         );
-        assert_eq!(parse_code_6004_reset_ms(&json!({"error": {"code": 500}})), None);
+        assert_eq!(parse_code_6004_reset_ms(&json!({"error": {"code": 500}}), 0), None);
+        // Text reset instant: 2026-11-14 12:00:00 at UTC+8 is 2026-11-14 04:00:00 UTC.
+        let msg = json!({"error": {"code": 6004, "message": "frequency limit 2026-11-14 12:00:00 UTC+8"}});
+        assert_eq!(parse_code_6004_reset_ms(&msg, 0), Some(1_794_628_800_000));
     }
 }

@@ -3,19 +3,18 @@ use anyhow::{Context, bail};
 use serde_json::Value;
 mod antigravity;
 mod azure;
-mod browser_executable_check;
-mod deepseek_web_done_terminator;
+pub(crate) mod deepseek_web_done_terminator;
 pub(crate) mod bedrock;
 mod chatgpt_web;
 mod chatgpt_web_tools;
 mod devin_cli;
-mod codebuddy_cn;
+pub(crate) mod codebuddy_cn;
 mod codebuddy_intl;
 mod codex;
 pub(crate) mod commandcode;
 pub(crate) mod cursor;
 pub(crate) mod deepseek_web;
-mod gemini_cli;
+pub(crate) mod gemini_cli;
 mod gemini_web;
 mod github;
 pub(crate) mod grok_web;
@@ -29,7 +28,7 @@ mod muse_web;
 mod opencode;
 mod opencode_go;
 mod opencode_zen;
-mod orcarouter;
+pub(crate) mod orcarouter;
 pub(crate) mod perplexity_web;
 pub(crate) mod qoder;
 mod vertex;
@@ -481,6 +480,37 @@ pub async fn execute(
         }
         attempts += 1;
         tokio::time::sleep(delay).await;
+    };
+    let response = if provider.id == "github"
+        && !github_claude
+        && github::supports_responses_endpoint(&request.model)
+        && response.status().as_u16() == 400
+    {
+        // Copilot escalation (github.js): model only served on /responses, retry there once.
+        let status = response.status();
+        let headers = response.headers().clone();
+        let bytes = response.bytes().await?;
+        let text = String::from_utf8_lossy(&bytes);
+        if text.contains("not accessible via the /chat/completions endpoint")
+            || text.contains("The requested model is not supported")
+        {
+            let mut fallback = outgoing
+                .try_clone()
+                .context("upstream request cannot be retried")?;
+            *fallback.url_mut() = github::responses_url(outgoing.url().as_str())?;
+            *fallback.body_mut() = Some(reqwest::Body::from(serde_json::to_vec(
+                &github::prepare_responses_fallback(&request.model, &request.body),
+            )?));
+            client.execute(fallback).await?
+        } else {
+            let mut rebuilt = axum::http::Response::builder().status(status.as_u16());
+            for (name, value) in &headers {
+                rebuilt = rebuilt.header(name, value);
+            }
+            reqwest::Response::from(rebuilt.body(reqwest::Body::from(bytes.to_vec()))?)
+        }
+    } else {
+        response
     };
     if provider.id == "minimax-code" && matches!(response.status().as_u16(), 402 | 403) {
         let status = response.status();
@@ -966,6 +996,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn github_responses_escalation_on_copilot_400() {
+        use axum::routing::post as route_post;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new()
+            .route(
+                "/chat/completions",
+                route_post(|| async {
+                    (StatusCode::BAD_REQUEST, "model is not accessible via the /chat/completions endpoint")
+                }),
+            )
+            .route(
+                "/responses",
+                route_post(|body: Bytes| async move {
+                    let v: Value = serde_json::from_slice(&body).unwrap();
+                    (StatusCode::OK, json!({"path":"responses","input":v["input"],"max_output_tokens":v["max_output_tokens"]}).to_string())
+                }),
+            );
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "github".into(),
+                model: "gpt-5-codex".into(),
+                body: json!({"max_tokens": 77, "messages": [{"role": "user", "content": "hi"}]}),
+                stream: false,
+                access_token: Some("secret".into()),
+                base_url: Some(format!("{base}/chat/completions")),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(result["path"], "responses");
+        assert_eq!(result["input"][0]["content"], "hi");
+        assert_eq!(result["max_output_tokens"], 77);
+        task.abort();
+    }
+
+    #[tokio::test]
     async fn ollama_local_mock_request() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/api/chat", listener.local_addr().unwrap());
@@ -1311,9 +1383,14 @@ mod tests {
         assert!(text.starts_with("data: "));
         assert!(text.contains("\"content\":\"hi\""));
         assert_eq!(
-            String::from_utf8(decoder.finish()).unwrap(),
+            String::from_utf8(decoder.finish().unwrap()).unwrap(),
             "data: [DONE]\n\n"
         );
+        let err = commandcode::Decoder::new("m")
+            .push(b"{\"type\":\"error\",\"error\":{\"message\":\"Rate limit exceeded\"}}\n")
+            .unwrap_err();
+        assert!(err.to_string().contains("429"));
+        assert!(err.to_string().contains("rate_limit_error"));
         task.abort();
     }
 
@@ -1930,109 +2007,4 @@ mod tests {
         task.abort();
     }
 
-    #[tokio::test]
-    async fn uc_web_mock_media_request() {
-        use axum::routing::get;
-        use base64::Engine as _;
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let base = format!("http://{addr}");
-        let result_url = format!("{base}/out.png");
-        let result_url_clone = result_url.clone();
-
-        // Build a minimal JWT with {"sid":"sess_1"} and {"uid":"user_1"}
-        let client_jwt = format!(
-            "hdr.{}.sig",
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"sid":"sess_1"}"#)
-        );
-        let session_jwt = format!(
-            "hdr.{}.sig",
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"uid":"user_1"}"#)
-        );
-        let session_jwt_clone = session_jwt.clone();
-
-        let app = Router::new()
-            .route(
-                "/v1/client/sessions/sess_1/tokens",
-                post(move || {
-                    let j = session_jwt_clone.clone();
-                    async move { axum::Json(json!({"jwt": j})) }
-                }),
-            )
-            .route(
-                "/v2/image-gen",
-                post(move |headers: HeaderMap, body: Bytes| {
-                    let r = result_url_clone.clone();
-                    let j = session_jwt.clone();
-                    async move {
-                        assert_eq!(
-                            headers.get("authorization").and_then(|v| v.to_str().ok()),
-                            Some(format!("Bearer {j}").as_str())
-                        );
-                        let req: Value = serde_json::from_slice(&body).unwrap();
-                        assert_eq!(req["model_version"], "seedream-v4.5");
-                        assert_eq!(req["aspect_ratio"], "16:9");
-                        axum::Json(json!({"url": r}))
-                    }
-                }),
-            )
-            .route(
-                "/out.png",
-                get(|| async move { ([(axum::http::header::CONTENT_TYPE, "image/png")], b"PNGDATA".to_vec()) }),
-            );
-        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let out = uc_web::generate_media(
-            &reqwest::Client::new(),
-            Some(&base),
-            Some(&base),
-            &format!("__client={client_jwt}"),
-            "image",
-            "a sunset",
-            "",
-            Some("16:9"),
-        )
-        .await
-        .unwrap();
-        assert_eq!(out["mime"], "image/png");
-        assert_eq!(
-            out["b64"],
-            base64::engine::general_purpose::STANDARD.encode(b"PNGDATA")
-        );
-        task.abort();
-    }
-
-    #[tokio::test]
-    async fn veoaifree_web_mock_image_request() {
-        use axum::routing::get;
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let base = format!("http://{addr}");
-        let app = Router::new()
-            .route(
-                "/",
-                get(|| async move { r#"<script>var cfg={"nonce":"cafe1234"};</script>"# }),
-            )
-            .route(
-                "/wp-admin/admin-ajax.php",
-                post(|body: Bytes| async move {
-                    let s = String::from_utf8(body.to_vec()).unwrap();
-                    assert!(s.contains("nonce=cafe1234"));
-                    assert!(s.contains("actionType=banan-image-generator"));
-                    assert!(s.contains("IMAGE_ASPECT_RATIO_PORTRAIT"));
-                    "https://cdn.example.com/img1.png"
-                }),
-            );
-        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let out = veoaifree_web::generate_image(
-            &reqwest::Client::new(),
-            Some(&base),
-            "mountain",
-            Some("9:16"),
-        )
-        .await
-        .unwrap();
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0]["url"], "https://cdn.example.com/img1.png");
-        task.abort();
-    }
 }
