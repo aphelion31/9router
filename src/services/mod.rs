@@ -4,6 +4,7 @@ pub mod browser;
 pub mod capacity_adapter;
 pub mod claude_signature;
 pub mod client_detector;
+pub mod clinepass_models;
 pub mod connection_proxy;
 pub mod empty_failover;
 pub mod flaky_guard;
