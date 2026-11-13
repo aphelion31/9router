@@ -37,7 +37,7 @@ Status: **in progress**. Partial entries cover only the functions named, not ful
 | JavaScript source | Status |
 | --- | --- |
 | `open-sse/services/clinepassModels.js` | Ported: `services::clinepass_models` (live discovery, free-tier merge, cache, headers) |
-| `open-sse/services/copilotModels.js` | Partial: catalog filtering, discovery and refresh pending |
+| `open-sse/services/copilotModels.js` | Ported: `services::copilot_models` (live catalog, 401 token refresh retry, cache) |
 | `open-sse/services/cursorModels.js` | Partial: protobuf catalog parsing and selection, discovery pending |
 | `open-sse/services/grokCliModels.js` | Partial: model parsing, no live discovery or refresh |
 | `open-sse/services/kimchiModels.js` | Partial: normalization and URL, no discovery or cache |
