@@ -53,35 +53,7 @@ pub fn resolve_model(model: &str) -> (&'static str, &'static str, bool) {
     }
 }
 
-fn extract_cookie_value(raw: &str, name: &str) -> Option<String> {
-    let trimmed = raw.trim().strip_prefix("Cookie:").unwrap_or(raw).trim();
-    if !trimmed.contains('=') && name == "sso" && !trimmed.is_empty() {
-        return Some(trimmed.to_string());
-    }
-    for part in trimmed.split(';') {
-        let part = part.trim();
-        if let Some((k, v)) = part.split_once('=')
-            && k.trim() == name
-            && !v.trim().is_empty()
-        {
-            return Some(v.trim().to_string());
-        }
-    }
-    None
-}
-
-pub fn build_grok_cookie_header(raw: &str) -> String {
-    let Some(sso) = extract_cookie_value(raw, "sso") else {
-        return String::new();
-    };
-    let mut parts = vec![format!("sso={sso}")];
-    for name in ["sso-rw", "cf_clearance", "__cf_bm"] {
-        if let Some(val) = extract_cookie_value(raw, name) {
-            parts.push(format!("{name}={val}"));
-        }
-    }
-    parts.join("; ")
-}
+use crate::services::web_cookie_auth::build_grok_cookie_header;
 
 fn generate_statsig_id() -> String {
     let seed = new_hex_id();

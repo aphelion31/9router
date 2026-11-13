@@ -1,6 +1,5 @@
 pub mod antigravity_ide_version;
 pub mod aws_event_stream;
-pub mod browser;
 pub mod capacity_adapter;
 pub mod claude_signature;
 pub mod client_detector;

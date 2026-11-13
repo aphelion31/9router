@@ -932,6 +932,13 @@ async fn run_connection_test(conn: &Value, model_override: Option<&str>) -> (boo
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .unwrap_or_default();
+    if let Some(identity) = crate::services::web_identity::probe(
+        &client, provider, api_key.as_deref().or(access_token.as_deref()).unwrap_or("")
+    ).await {
+        return (identity.ok, identity.error, match identity.status {
+            "valid" => "ok", "invalid" => "auth", _ => "unknown",
+        });
+    }
     let req = crate::executors::ExecutorRequest {
         provider: provider.to_string(),
         model,
@@ -981,7 +988,8 @@ async fn test_connection(State(s): State<AppState>, Path(id): Path<String>) -> R
         }
     };
     let (valid, error_msg, stage) = run_connection_test(&conn, None).await;
-    if let Ok(db) = s.db.lock()
+    if stage != "unknown"
+        && let Ok(db) = s.db.lock()
         && let Ok(raw) = db.query_row(
             "SELECT data FROM providerConnections WHERE id=?1",
             [&id],

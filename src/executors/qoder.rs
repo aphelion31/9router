@@ -951,7 +951,16 @@ pub async fn execute(
         .model
         .strip_prefix("qoder/")
         .unwrap_or(&request.model);
-    let custom_cfg = psd.and_then(|d| d.get("modelConfig"));
+    let credentials = json!({"accessToken": auth_token, "provider": request.provider, "providerSpecificData": psd});
+    let custom = if request.base_url.is_none() {
+        match crate::services::qoder_models::get_qoder_model_config(&credentials, qoder_key, false).await {
+            Some(config) => Some(config),
+            None => crate::services::qoder_models::get_qoder_model_config(&credentials, qoder_key, true).await,
+        }
+    } else {
+        None
+    };
+    let custom_cfg = custom.as_ref().or_else(|| psd.and_then(|d| d.get("modelConfig")));
     let payload = build_qoder_request_body(qoder_key, &request.body, user_id, custom_cfg);
     let model_source = payload
         .pointer("/model_config/source")

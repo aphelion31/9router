@@ -224,7 +224,22 @@ pub fn translate_request(
     let is_ag_provider = provider == Some(FORMAT_ANTIGRAVITY);
 
     if src == tgt {
-        return body.clone();
+        let mut result = body.clone();
+        if tgt == FORMAT_CLAUDE {
+            if let Some(messages) = result.get_mut("messages").and_then(Value::as_array_mut) {
+                for message in messages {
+                    if message["role"] == "assistant" {
+                        if let Some(blocks) = message.get_mut("content").and_then(Value::as_array_mut) {
+                            blocks.retain(|block| {
+                                !matches!(block["type"].as_str(), Some("thinking" | "redacted_thinking"))
+                                    || block["signature"].as_str().is_some_and(crate::services::claude_signature::is_valid_claude_signature)
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        return result;
     }
 
     let reg = get_registry();

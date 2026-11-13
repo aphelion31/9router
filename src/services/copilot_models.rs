@@ -13,10 +13,6 @@ fn cache() -> &'static Mutex<HashMap<u64, (Instant, Vec<Value>)>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub fn clear_copilot_model_cache() {
-    cache().lock().unwrap_or_else(|e| e.into_inner()).clear();
-}
-
 pub fn expand_copilot_catalog(raw: &[Value]) -> Vec<Value> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();

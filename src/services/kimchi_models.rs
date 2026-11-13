@@ -16,10 +16,6 @@ fn cache() -> &'static Mutex<HashMap<String, Entry>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub fn clear_kimchi_catalog() {
-    cache().lock().unwrap_or_else(|e| e.into_inner()).clear();
-}
-
 pub fn build_kimchi_models_url(endpoint: Option<&str>) -> String {
     let endpoint = endpoint
         .map(str::trim)
