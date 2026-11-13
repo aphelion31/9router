@@ -39,7 +39,7 @@ Status: **in progress**. Partial entries cover only the functions named, not ful
 | `open-sse/services/clinepassModels.js` | Ported: `services::clinepass_models` (live discovery, free-tier merge, cache, headers) |
 | `open-sse/services/copilotModels.js` | Ported: `services::copilot_models` (live catalog, 401 token refresh retry, cache) |
 | `open-sse/services/cursorModels.js` | Partial: protobuf catalog parsing and selection, discovery pending |
-| `open-sse/services/grokCliModels.js` | Partial: model parsing, no live discovery or refresh |
+| `open-sse/services/grokCliModels.js` | Ported: `services::grok_cli_models` (live discovery, 401 refresh, identity headers, cache) |
 | `open-sse/services/kimchiModels.js` | Ported: `services::kimchi_models` (metadata discovery, auth, cache) |
 | `open-sse/services/kiroModels.js` | Ported: `services::kiro_models` (ListAvailableModels discovery, fingerprint headers, 401 refresh, cache) |
 | `open-sse/services/qoderModels.js` | Partial: PAT identification and catalog visibility |
