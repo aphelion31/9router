@@ -112,12 +112,12 @@ fn cache_key(credentials: &Value) -> String {
 async fn exchange_job_token_with_base(
     pat: &str,
     openapi_base: &str,
+    client: &reqwest::Client,
 ) -> Result<(String, u128), String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let url = format!("{}/api/v1/jobToken/exchange", openapi_base.trim_end_matches('/'));
+    let url = format!(
+        "{}/api/v1/jobToken/exchange",
+        openapi_base.trim_end_matches('/')
+    );
     let res = client
         .post(&url)
         .header("Content-Type", "application/json")
@@ -154,13 +154,11 @@ async fn exchange_job_token_with_base(
     Ok((token, expires_at))
 }
 
-async fn fetch_user_id_with_base(job_token: &str, openapi_base: &str) -> String {
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS))
-        .build()
-    else {
-        return String::new();
-    };
+async fn fetch_user_id_with_base(
+    job_token: &str,
+    openapi_base: &str,
+    client: &reqwest::Client,
+) -> String {
     let url = format!("{}/api/v1/userinfo", openapi_base.trim_end_matches('/'));
     let Ok(res) = client
         .get(&url)
@@ -203,6 +201,19 @@ pub async fn resolve_qoder_credentials_with_base(
     region: &str,
     openapi_base: &str,
 ) -> Result<Value, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| e.to_string())?;
+    resolve_qoder_credentials_with_client(credentials, region, openapi_base, &client).await
+}
+
+pub async fn resolve_qoder_credentials_with_client(
+    credentials: &Value,
+    region: &str,
+    openapi_base: &str,
+    client: &reqwest::Client,
+) -> Result<Value, String> {
     let raw = credentials
         .get("apiKey")
         .and_then(|v| v.as_str())
@@ -222,8 +233,9 @@ pub async fn resolve_qoder_credentials_with_base(
     let resolved = if let Some(entry) = cached {
         entry
     } else {
-        let (job_token, expires_at_ms) = exchange_job_token_with_base(raw, openapi_base).await?;
-        let user_id = fetch_user_id_with_base(&job_token, openapi_base).await;
+        let (job_token, expires_at_ms) =
+            exchange_job_token_with_base(raw, openapi_base, client).await?;
+        let user_id = fetch_user_id_with_base(&job_token, openapi_base, client).await;
         let entry = PatJobEntry {
             access_token: job_token,
             user_id,
@@ -287,7 +299,10 @@ async fn fetch_qoder_catalog_raw(
         .unwrap_or("");
     let machine_id = psd.get("machineId").and_then(|v| v.as_str()).unwrap_or("");
 
-    let url = format!("{}/algo/api/v2/model/list", inference_base.trim_end_matches('/'));
+    let url = format!(
+        "{}/algo/api/v2/model/list",
+        inference_base.trim_end_matches('/')
+    );
     let cosy_headers = build_cosy_headers(&[], &url, user_id, auth_token, name, email, machine_id);
 
     let client = reqwest::Client::builder()
@@ -315,7 +330,11 @@ async fn fetch_qoder_catalog_raw(
         let Some(obj) = entry.as_object() else {
             continue;
         };
-        let Some(key) = obj.get("key").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) else {
+        let Some(key) = obj
+            .get("key")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        else {
             continue;
         };
         raw_configs.insert(key.to_string(), entry.clone());
@@ -352,7 +371,9 @@ pub async fn resolve_qoder_models(
 ) -> Option<QoderCatalog> {
     let region = region_override
         .unwrap_or_else(|| qoder_region_of(credentials.get("provider").and_then(|v| v.as_str())));
-    let mut resolved = resolve_qoder_credentials(credentials, Some(region)).await.ok()?;
+    let mut resolved = resolve_qoder_credentials(credentials, Some(region))
+        .await
+        .ok()?;
     if resolved
         .get("provider")
         .and_then(|v| v.as_str())
@@ -398,7 +419,8 @@ pub async fn resolve_qoder_models_with_base(
         }
     }
 
-    let (models, raw_configs) = fetch_qoder_catalog_raw(resolved_credentials, inference_base).await?;
+    let (models, raw_configs) =
+        fetch_qoder_catalog_raw(resolved_credentials, inference_base).await?;
     let entry = QoderCatalog {
         expires_at_ms: now_ms() + CACHE_TTL_MS,
         models,
@@ -422,7 +444,10 @@ pub async fn get_qoder_model_config(
 }
 
 pub fn invalidate_qoder_catalog(credentials: &Value) {
-    CATALOG_CACHE.lock().unwrap().remove(&cache_key(credentials));
+    CATALOG_CACHE
+        .lock()
+        .unwrap()
+        .remove(&cache_key(credentials));
 }
 
 pub fn clear_qoder_catalog() {
@@ -492,7 +517,10 @@ mod tests {
 
     #[tokio::test]
     async fn pat_exchange_and_live_catalog_cache() {
-        use axum::{Router, routing::{get, post}};
+        use axum::{
+            Router,
+            routing::{get, post},
+        };
         clear_qoder_catalog();
         let app = Router::new()
             .route(
@@ -527,7 +555,10 @@ mod tests {
             .unwrap();
         assert_eq!(resolved["accessToken"], "jt-exchanged");
         assert_eq!(resolved["providerSpecificData"]["userId"], "user-42");
-        assert_eq!(qoder_inference_base(&resolved, "intl"), "https://api2.qoder.sh");
+        assert_eq!(
+            qoder_inference_base(&resolved, "intl"),
+            "https://api2.qoder.sh"
+        );
 
         let catalog = resolve_qoder_models_with_base(&resolved, false, &base)
             .await
@@ -537,7 +568,15 @@ mod tests {
         assert!(catalog.raw_configs.contains_key("hidden-model"));
 
         let routable = routable_qoder_models_from_catalog(&catalog);
-        assert!(routable.iter().any(|m| m["id"] == "smodel" && m["hidden"] == false));
-        assert!(routable.iter().any(|m| m["id"] == "hidden-model" && m["hidden"] == true));
+        assert!(
+            routable
+                .iter()
+                .any(|m| m["id"] == "smodel" && m["hidden"] == false)
+        );
+        assert!(
+            routable
+                .iter()
+                .any(|m| m["id"] == "hidden-model" && m["hidden"] == true)
+        );
     }
 }

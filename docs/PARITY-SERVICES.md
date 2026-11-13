@@ -71,7 +71,7 @@ Status: **in progress**. Partial entries cover only the functions named, not ful
 | `open-sse/utils/responsesStreamHelpers.js` | Ported: terminal detection and failure framing |
 | `open-sse/utils/sse.js` | Ported: frame builders |
 | `open-sse/utils/sseConstants.js` | Partial: done sentinel |
-| `open-sse/utils/streamHelpers.js` | Partial: SSE parser only |
+| `open-sse/utils/streamHelpers.js` | Ported: parse (SSE + Ollama NDJSON), valuable-content filter, stable tool-call ids, invalid-id fix, formatSSE with usage cleanup, buildErrorBody and stream error frames |
 | `open-sse/utils/toolDeduper.js` | Ported: tool normalization |
 | `open-sse/utils/upstreamHeaders.js` | Ported: allowed response headers |
 | `open-sse/utils/webCookieAuth.js` | Ported: cookie parsing, Grok header, Playwright cookie entries (`services::web_cookie_auth`) |
