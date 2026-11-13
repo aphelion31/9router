@@ -11,6 +11,7 @@ pub mod latency_stats;
 pub mod minimax_code_lease;
 pub mod model_markers;
 pub mod nous;
+pub mod notify;
 pub mod responses_stream_helpers;
 pub mod rtk_filters;
 pub mod stream_helpers;
