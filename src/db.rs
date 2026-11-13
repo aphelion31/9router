@@ -3,41 +3,13 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::{Path, PathBuf};
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 6;
 
 const PRAGMAS: &str = "
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
 PRAGMA foreign_keys = ON;
 PRAGMA busy_timeout = 5000;
-";
-
-// Subset of TABLES in schema.js. Remaining tables are added in later steps.
-const INITIAL_SQL: &str = "
-CREATE TABLE IF NOT EXISTS _meta (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS settings (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    data TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS kv (
-    scope TEXT NOT NULL,
-    key TEXT NOT NULL,
-    value TEXT NOT NULL,
-    PRIMARY KEY (scope, key)
-);
-CREATE INDEX IF NOT EXISTS idx_kv_scope ON kv(scope);
-CREATE TABLE IF NOT EXISTS combos (
-    id TEXT PRIMARY KEY,
-    name TEXT UNIQUE NOT NULL,
-    kind TEXT,
-    models TEXT NOT NULL,
-    createdAt TEXT NOT NULL,
-    updatedAt TEXT NOT NULL
-);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_combos_name_lower_unique ON combos(LOWER(name));
 ";
 
 /// Data file: `DATA_DIR` env, else `~/.9router`. Path = <dir>/db/data.sqlite.
@@ -60,20 +32,74 @@ pub fn open(path: &Path) -> Result<Connection> {
 }
 
 pub fn migrate(conn: &Connection) -> Result<()> {
-    conn.execute_batch(INITIAL_SQL)?;
-    if schema_version(conn)? < SCHEMA_VERSION {
-        conn.execute(
-            "INSERT INTO _meta(key, value) VALUES('schemaVersion', ?1)
+    let schema: serde_json::Value = serde_json::from_str(include_str!("providers/schema.json"))?;
+    let tables = schema.as_object().context("invalid schema snapshot")?;
+    conn.execute_batch("SAVEPOINT schema_sync")?;
+    let result = (|| -> Result<()> {
+        for (name, def) in tables {
+            let columns = def["columns"]
+                .as_object()
+                .context("invalid schema columns")?;
+            let mut definitions: Vec<String> = columns
+                .iter()
+                .map(|(name, value)| format!("\"{name}\" {}", value.as_str().unwrap()))
+                .collect();
+            if let Some(pk) = def["primaryKey"].as_str() {
+                definitions.push(pk.to_owned());
+            }
+            conn.execute_batch(&format!(
+                "CREATE TABLE IF NOT EXISTS \"{name}\" ({})",
+                definitions.join(", ")
+            ))?;
+            let mut stmt = conn.prepare(&format!("PRAGMA table_info(\"{name}\")"))?;
+            let existing: Vec<String> = stmt
+                .query_map([], |row| row.get(1))?
+                .collect::<rusqlite::Result<_>>()?;
+            for (column, definition) in columns {
+                if !existing.contains(column) {
+                    let definition = definition
+                        .as_str()
+                        .context("invalid column definition")?
+                        .replace("PRIMARY KEY AUTOINCREMENT", "")
+                        .replace("PRIMARY KEY", "")
+                        .replace("UNIQUE", "");
+                    conn.execute_batch(&format!(
+                        "ALTER TABLE \"{name}\" ADD COLUMN \"{column}\" {definition}"
+                    ))?;
+                }
+            }
+            if let Some(indexes) = def["indexes"].as_array() {
+                for index in indexes {
+                    conn.execute_batch(index.as_str().context("invalid index")?)?;
+                }
+            }
+        }
+        if schema_version(conn)? < SCHEMA_VERSION {
+            conn.execute(
+                "INSERT INTO _meta(key, value) VALUES('schemaVersion', ?1)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![SCHEMA_VERSION.to_string()],
-        )?;
+                params![SCHEMA_VERSION.to_string()],
+            )?;
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => conn.execute_batch("RELEASE schema_sync")?,
+        Err(err) => {
+            conn.execute_batch("ROLLBACK TO schema_sync; RELEASE schema_sync")?;
+            return Err(err);
+        }
     }
     Ok(())
 }
 
 pub fn schema_version(conn: &Connection) -> Result<i64> {
     let v: Option<String> = conn
-        .query_row("SELECT value FROM _meta WHERE key = 'schemaVersion'", [], |r| r.get(0))
+        .query_row(
+            "SELECT value FROM _meta WHERE key = 'schemaVersion'",
+            [],
+            |r| r.get(0),
+        )
         .optional()?;
     Ok(v.and_then(|s| s.parse().ok()).unwrap_or(0))
 }
@@ -164,6 +190,37 @@ mod tests {
     }
 
     #[test]
+    fn schema_covers_upstream_and_upgrades_existing_tables() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE apiKeys (id TEXT PRIMARY KEY, key TEXT UNIQUE NOT NULL, name TEXT, machineId TEXT, isActive INTEGER DEFAULT 1, createdAt TEXT NOT NULL); INSERT INTO apiKeys (id, key, createdAt) VALUES ('1', 'secret', 'now');").unwrap();
+        migrate(&c).unwrap();
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("providers/schema.json")).unwrap();
+        for (table, def) in schema.as_object().unwrap() {
+            let mut stmt = c
+                .prepare(&format!("PRAGMA table_info(\"{table}\")"))
+                .unwrap();
+            let names: Vec<String> = stmt
+                .query_map([], |row| row.get(1))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            for column in def["columns"].as_object().unwrap().keys() {
+                assert!(names.contains(column), "missing {table}.{column}");
+            }
+        }
+        assert_eq!(
+            c.query_row(
+                "SELECT accessRestricted FROM apiKeys WHERE id='1'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+    }
+
+    #[test]
     fn kv_roundtrip() {
         let c = mem();
         assert_eq!(kv_get(&c, "s", "k").unwrap(), None);
@@ -193,8 +250,12 @@ mod tests {
     fn combo_name_case_insensitive_unique() {
         let c = mem();
         let mk = |id: &str, name: &str| Combo {
-            id: id.into(), name: name.into(), kind: None, models: vec![],
-            created_at: "t".into(), updated_at: "t".into(),
+            id: id.into(),
+            name: name.into(),
+            kind: None,
+            models: vec![],
+            created_at: "t".into(),
+            updated_at: "t".into(),
         };
         combo_insert(&c, &mk("1", "Fast")).unwrap();
         assert!(combo_insert(&c, &mk("2", "fast")).is_err());
