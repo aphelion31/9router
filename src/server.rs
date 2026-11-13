@@ -46,8 +46,16 @@ pub fn router() -> Router {
 }
 
 fn make_router(db: Connection, jwt_secret: Option<Vec<u8>>) -> Router {
+    make_router_with_db(Arc::new(Mutex::new(db)), jwt_secret).0
+}
+
+/// Builds the router around a shared DB handle. The handle lets tests inspect rows.
+fn make_router_with_db(
+    db: Arc<Mutex<Connection>>,
+    jwt_secret: Option<Vec<u8>>,
+) -> (Router, Arc<Mutex<Connection>>) {
     let state = AppState {
-        db: Arc::new(Mutex::new(db)),
+        db: Arc::clone(&db),
         executor: Arc::new(HttpExecutor(reqwest::Client::new())),
         jwt_secret,
     };
@@ -81,7 +89,7 @@ fn make_router(db: Connection, jwt_secret: Option<Vec<u8>>) -> Router {
             state.clone(),
             dashboard_page_auth,
         ));
-    Router::new()
+    let router = Router::new()
         .route("/", get(|| async { Redirect::to("/dashboard") }))
         .route("/login", get(dashboard::login_page))
         .route("/dashboard/style.css", get(dashboard::style_css))
@@ -95,7 +103,8 @@ fn make_router(db: Connection, jwt_secret: Option<Vec<u8>>) -> Router {
         .merge(dashboard_pages)
         .merge(management)
         .merge(v1)
-        .with_state(state)
+        .with_state(state);
+    (router, db)
 }
 
 fn unauthorized() -> Response {
@@ -656,6 +665,101 @@ mod tests {
             assert_eq!(r.status(), 401);
         }
     }
+    /// Starts a mock OpenAI-compatible upstream. Non-stream and stream responses are chosen by
+    /// the request's `stream` flag. Returns its base URL.
+    async fn mock_upstream() -> String {
+        use axum::{Router as R, body::Bytes, routing::post as p};
+        let app = R::new().route(
+            "/v1/chat/completions",
+            p(|body: Bytes| async move {
+                let req: Value = serde_json::from_slice(&body).unwrap();
+                if req["stream"] == true {
+                    let frames = concat!(
+                        "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-test\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n",
+                        "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-test\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"total_tokens\":10}}\n\n",
+                        "data: [DONE]\n\n"
+                    );
+                    ([("content-type", "text/event-stream")], frames).into_response()
+                } else {
+                    axum::Json(json!({
+                        "id": "c1", "object": "chat.completion", "model": "gpt-test",
+                        "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}
+                    }))
+                    .into_response()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1/chat/completions", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        base
+    }
+
+    /// Router with one API key and one OpenAI connection pointed at `upstream`.
+    fn e2e_router(upstream: &str) -> (Router, Arc<Mutex<Connection>>) {
+        let db = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&db).unwrap();
+        db.execute(
+            "INSERT INTO apiKeys(id,key,name,createdAt) VALUES('k1','sk-test-key','t','now')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO providerConnections(id,provider,authType,name,isActive,priority,data,createdAt,updatedAt)
+             VALUES('c1','openai','apikey','mock',1,1,?1,'now','now')",
+            [json!({"apiKey": "upstream-key", "providerSpecificData": {"baseUrl": upstream}}).to_string()],
+        )
+        .unwrap();
+        make_router_with_db(Arc::new(Mutex::new(db)), Some(b"test-secret".to_vec()))
+    }
+
+    #[tokio::test]
+    async fn chat_completions_stream_and_non_stream_record_usage() {
+        let upstream = mock_upstream().await;
+        let (app, db) = e2e_router(&upstream);
+        let call = |stream: bool| {
+            Request::post("/v1/chat/completions")
+                .header("authorization", "Bearer sk-test-key")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"model":"openai/gpt-test","stream":stream,"messages":[{"role":"user","content":"hi"}]}).to_string(),
+                ))
+                .unwrap()
+        };
+
+        let res = app.clone().oneshot(call(false)).await.unwrap();
+        assert_eq!(res.status(), 200);
+        let v: Value = serde_json::from_slice(&to_bytes(res.into_body(), 100_000).await.unwrap()).unwrap();
+        assert_eq!(v["choices"][0]["message"]["content"], "hi");
+
+        let res = app.clone().oneshot(call(true)).await.unwrap();
+        assert_eq!(res.status(), 200);
+        let text = String::from_utf8(to_bytes(res.into_body(), 100_000).await.unwrap().to_vec()).unwrap();
+        assert!(text.contains("\"content\":\"hi\""), "{text}");
+        assert!(text.contains("[DONE]"), "{text}");
+
+        // Usage is written after each completed call; the stream writes once it is drained.
+        // Allow the spawned usage task to finish.
+        let mut rows = 0i64;
+        for _ in 0..50 {
+            rows = {
+                let conn = db.lock().unwrap();
+                conn.query_row("SELECT COUNT(*) FROM usageHistory WHERE apiKey='k1' AND status='200'", [], |r| r.get(0)).unwrap()
+            };
+            if rows == 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(rows, 2);
+        let conn = db.lock().unwrap();
+        let (p, c): (i64, i64) = conn
+            .query_row("SELECT SUM(promptTokens), SUM(completionTokens) FROM usageHistory", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!((p, c), (14, 6));
+    }
+
     #[tokio::test]
     async fn health_ok() {
         let r = test_router()
