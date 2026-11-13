@@ -156,13 +156,13 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` depends on an
 | /api/translator/save | POST | done |
 | /api/translator/send | POST | done |
 | /api/translator/translate | POST | done |
-| /api/tunnel/disable | POST | todo |
-| /api/tunnel/enable | POST | todo |
-| /api/tunnel/status | GET | todo |
-| /api/tunnel/tailscale-check | GET | todo |
-| /api/tunnel/tailscale-disable | POST | todo |
-| /api/tunnel/tailscale-enable | POST | todo |
-| /api/tunnel/tailscale-install | POST | todo |
+| /api/tunnel/disable | POST | 501 |
+| /api/tunnel/enable | POST | 501 |
+| /api/tunnel/status | GET | done |
+| /api/tunnel/tailscale-check | GET | done |
+| /api/tunnel/tailscale-disable | POST | 501 |
+| /api/tunnel/tailscale-enable | POST | 501 |
+| /api/tunnel/tailscale-install | POST | 501 |
 | /api/usage/[connectionId]/claude-reset | POST | todo |
 | /api/usage/[connectionId]/codex-reset-credits | GET, POST | todo |
 | /api/usage/[connectionId] | GET | todo |
