@@ -3,9 +3,10 @@
 use axum::Router;
 
 use crate::server::AppState;
+mod mgmt_system;
 
 pub fn management() -> Router<AppState> {
-    Router::new()
+    Router::new().merge(mgmt_system::routes())
 }
 
 pub fn v1() -> Router<AppState> {

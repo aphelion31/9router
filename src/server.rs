@@ -67,7 +67,6 @@ fn make_router_with_db(
         )
         .route("/api/providers", get(providers))
         .route("/api/combos", get(combos))
-        .route("/api/settings", get(settings).put(save_settings))
         .route("/api/usage", get(usage))
         .merge(crate::api::routes::management())
         .route_layer(middleware::from_fn_with_state(
@@ -687,6 +686,24 @@ mod tests {
                 .unwrap();
             assert_eq!(r.status(), 401);
         }
+    }
+    #[tokio::test]
+    async fn management_settings_password_is_hashed_and_hidden() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&db).unwrap();
+        let (app, db) = make_router_with_db(Arc::new(Mutex::new(db)), Some(b"test-secret".to_vec()));
+        let request = Request::patch("/api/settings")
+            .header("cookie", format!("auth_token={}", token()))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"newPassword":"securepassword","password":"injected"}"#)).unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 10000).await.unwrap();
+        assert!(serde_json::from_slice::<Value>(&body).unwrap().get("password").is_none());
+        let stored = crate::db::settings_get(&db.lock().unwrap()).unwrap();
+        assert!(bcrypt::verify("securepassword", stored["password"].as_str().unwrap()).unwrap());
+        let response = app.oneshot(Request::post("/api/locale").header("content-type", "application/json").body(Body::from(r#"{"locale":"en"}"#)).unwrap()).await.unwrap();
+        assert_eq!(response.status(), 401);
     }
     /// Starts a mock OpenAI-compatible upstream. Non-stream and stream responses are chosen by
     /// the request's `stream` flag. Returns its base URL.
