@@ -46,5 +46,5 @@ Status is deliberately conservative: partial means the upstream executor has beh
 | vertex.js | partial | API key, service account and ADC supported. Token caching, project discovery and connection settings missing. |
 | windsurf.js | ported | `src/executors/windsurf.rs` (gRPC-web protobuf request/response framing, model aliases, SSE/non-stream decoders) |
 | xiaomi-mimo.js | partial | Cloud API passthrough; account-cookie route and desktop authentication unavailable. |
-| xiaomi-tokenplan.js | partial | OpenAI and Claude model routes; per-connection region selection not available. |
+| xiaomi-tokenplan.js | partial | Per-connection region selection wired; Claude transport selection and inherited default transport parity remain. |
 | zed.js | partial | xAI envelope and buffered NDJSON conversion with supplied LLM token; token exchange, live streaming and other provider translators unavailable. |

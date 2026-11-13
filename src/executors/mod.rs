@@ -97,6 +97,7 @@ pub async fn execute(
     let endpoint = request
         .base_url
         .as_deref()
+        .or_else(|| (provider.id == "xiaomi-tokenplan").then(|| xiaomi_tokenplan::endpoint(request.provider_specific_data.as_ref())))
         .or_else(|| (provider.id == "azure").then(|| request.provider_specific_data.as_ref()
             .and_then(|v| v.get("azureEndpoint")).and_then(Value::as_str).filter(|s| !s.is_empty())).flatten())
         .or_else(|| (provider.id == "azure").then_some(azure_endpoint.as_str()))
