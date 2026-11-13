@@ -285,11 +285,22 @@ async fn create_connection(State(s): State<AppState>, Json(body): Json<Value>) -
     if key.is_empty() && provider != "ollama-local" {
         return err(StatusCode::BAD_REQUEST, "API Key is required");
     }
-    let Some(name) = body["name"]
+    let name = if let Some(n) = body["name"]
         .as_str()
         .or_else(|| body["displayName"].as_str())
         .filter(|s| !s.trim().is_empty())
-    else {
+    {
+        n.to_owned()
+    } else if body["autoAllocateName"] == true {
+        let count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM providerConnections WHERE provider=?1",
+                params![provider],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        format!("Account {}", count + 1)
+    } else {
         return err(StatusCode::BAD_REQUEST, "Name is required");
     };
     if db
@@ -315,18 +326,23 @@ async fn create_connection(State(s): State<AppState>, Json(body): Json<Value>) -
             "Connection proxy URL is required when connection proxy is enabled",
         );
     }
-    // ponytail: proxy pools and auto-name allocation need the upstream services.
-    if body["autoAllocateName"] == true
-        || body["proxyPoolId"]
-            .as_str()
-            .is_some_and(|v| !v.is_empty() && v != "__none__")
-    {
-        return err(StatusCode::NOT_IMPLEMENTED, "Service not implemented");
-    }
     let mut specific = body["providerSpecificData"]
         .as_object()
         .cloned()
         .unwrap_or_default();
+    if let Some(pid) = body["proxyPoolId"]
+        .as_str()
+        .map(str::trim)
+        .filter(|v| !v.is_empty() && *v != "__none__")
+    {
+        let exists = db
+            .query_row("SELECT 1 FROM proxyPools WHERE id=?1", params![pid], |_| Ok(()))
+            .is_ok();
+        if !exists {
+            return err(StatusCode::BAD_REQUEST, "Proxy pool not found");
+        }
+        specific.insert("proxyPoolId".into(), json!(pid));
+    }
     if let Some(n) = existing_node {
         for k in ["prefix", "apiType", "baseUrl"] {
             if let Some(v) = n.get(k) {
@@ -386,18 +402,34 @@ async fn update_connection(
             "Connection proxy URL is required when connection proxy is enabled",
         );
     }
-    if body.get("proxyPoolId").is_some()
-        || [
-            "connectionProxyEnabled",
-            "connectionProxyUrl",
-            "connectionNoProxy",
-        ]
-        .iter()
-        .any(|k| body.get(*k).is_some())
-    {
-        return err(
-            StatusCode::NOT_IMPLEMENTED,
-            "Proxy configuration is not implemented",
+    let mut spec_updates = serde_json::Map::new();
+    if let Some(pid_val) = body.get("proxyPoolId") {
+        let pid = pid_val.as_str().map(str::trim).unwrap_or("");
+        if pid.is_empty() || pid == "__none__" {
+            spec_updates.insert("proxyPoolId".into(), Value::Null);
+        } else {
+            let exists = db
+                .query_row("SELECT 1 FROM proxyPools WHERE id=?1", params![pid], |_| Ok(()))
+                .is_ok();
+            if !exists {
+                return err(StatusCode::BAD_REQUEST, "Proxy pool not found");
+            }
+            spec_updates.insert("proxyPoolId".into(), json!(pid));
+        }
+    }
+    if let Some(en) = body.get("connectionProxyEnabled") {
+        spec_updates.insert("connectionProxyEnabled".into(), json!(en == &json!(true)));
+    }
+    if let Some(u) = body.get("connectionProxyUrl") {
+        spec_updates.insert(
+            "connectionProxyUrl".into(),
+            json!(u.as_str().unwrap_or("").trim()),
+        );
+    }
+    if let Some(np) = body.get("connectionNoProxy") {
+        spec_updates.insert(
+            "connectionNoProxy".into(),
+            json!(np.as_str().unwrap_or("").trim()),
         );
     }
     for key in [
@@ -423,6 +455,20 @@ async fn update_connection(
             .as_object_mut()
             .unwrap()
             .extend(spec.clone());
+    }
+    if !spec_updates.is_empty() {
+        if !v["providerSpecificData"].is_object() {
+            v["providerSpecificData"] = json!({})
+        }
+        if let Some(obj) = v["providerSpecificData"].as_object_mut() {
+            for (k, val) in spec_updates {
+                if val.is_null() {
+                    obj.remove(&k);
+                } else {
+                    obj.insert(k, val);
+                }
+            }
+        }
     }
     let mut data = v.clone();
     if let Some(o) = data.as_object_mut() {

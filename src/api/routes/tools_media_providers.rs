@@ -95,6 +95,71 @@ fn group_by_lang(voices: Vec<Value>, lang_filter: Option<&str>) -> Value {
     json!({ "languages": languages, "byLang": by_lang_map })
 }
 
+fn parse_say_voices(stdout: &str) -> Vec<Value> {
+    let mut out = Vec::new();
+    for line in stdout.lines() {
+        let left = line.split('#').next().unwrap_or("").trim();
+        if left.is_empty() {
+            continue;
+        }
+        let mut parts = left.rsplitn(2, char::is_whitespace);
+        let lang_raw = parts.next().unwrap_or("").trim();
+        let name = parts.next().unwrap_or("").trim();
+        if name.is_empty() || lang_raw.is_empty() {
+            continue;
+        }
+        let lang = lang_raw.replace('_', "-");
+        out.push(json!({
+            "id": name,
+            "name": name,
+            "lang": lang,
+            "gender": "Neutral",
+        }));
+    }
+    out
+}
+
+async fn list_local_device_voices() -> Vec<Value> {
+    if let Ok(out) = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        tokio::process::Command::new("say").arg("-v").arg("?").output(),
+    )
+    .await
+        && let Ok(o) = out
+        && o.status.success()
+    {
+        let parsed = parse_say_voices(&String::from_utf8_lossy(&o.stdout));
+        if !parsed.is_empty() {
+            return parsed;
+        }
+    }
+    if let Ok(out) = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        tokio::process::Command::new("espeak-ng").arg("--voices").output(),
+    )
+    .await
+        && let Ok(o) = out
+        && o.status.success()
+    {
+        let mut parsed = Vec::new();
+        for line in String::from_utf8_lossy(&o.stdout).lines().skip(1) {
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            if cols.len() >= 4 {
+                parsed.push(json!({
+                    "id": cols[3],
+                    "name": cols[3],
+                    "lang": cols[1],
+                    "gender": if cols[2].contains('F') { "Female" } else { "Male" },
+                }));
+            }
+        }
+        if !parsed.is_empty() {
+            return parsed;
+        }
+    }
+    vec![json!({ "id": "default", "name": "System Default", "lang": "en-US", "gender": "Neutral" })]
+}
+
 async fn tts_voices(
     State(s): State<AppState>,
     Query(params): Query<HashMap<String, String>>,
@@ -108,8 +173,8 @@ async fn tts_voices(
 
     match provider {
         "local-device" => {
-            // ponytail: local-device voice listing spawns OS TTS subprocess (say/espeak); not available
-            err(StatusCode::NOT_IMPLEMENTED, "not available")
+            let voices = list_local_device_voices().await;
+            Json(group_by_lang(voices, lang_filter)).into_response()
         }
         "elevenlabs" => {
             let Some(key) = api_key.filter(|k| !k.is_empty()) else {
@@ -563,7 +628,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tts_voices_rejects_unknown_and_501_local_device() {
+    async fn tts_voices_rejects_unknown_and_lists_local_device() {
         let app = test_app();
 
         let r = app
@@ -585,9 +650,15 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(r.status(), 501);
-        let body: Value = serde_json::from_slice(&to_bytes(r.into_body(), 4096).await.unwrap()).unwrap();
-        assert_eq!(body["error"], "not available");
+        assert_eq!(r.status(), 200);
+        let body: Value = serde_json::from_slice(&to_bytes(r.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+        assert!(body["languages"].is_array());
+        assert!(!body["languages"].as_array().unwrap().is_empty());
+
+        let parsed = parse_say_voices("Alex                en_US    # Most people recognize me.\n");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0]["id"], "Alex");
+        assert_eq!(parsed[0]["lang"], "en-US");
     }
 
     #[tokio::test]

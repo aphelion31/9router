@@ -7,8 +7,14 @@ use axum::{
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::server::AppState;
+use crate::services::process_supervisor::{self, FixedCommand, ProcessSupervisor, SupervisorError};
+
+const PXPIPE_PROCESS_ID: &str = "pxpipe";
+const PXPIPE_PACKAGE: &str = "pxpipe-proxy@latest";
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -16,39 +22,190 @@ pub fn router() -> Router<AppState> {
         .route("/api/pxpipe/health", get(health).post(health))
         .route("/api/pxpipe/stats", get(stats))
         .route("/api/pxpipe/logs", get(logs))
-        .route("/api/pxpipe/install", post(not_available))
-        .route("/api/pxpipe/start", post(not_available))
-        .route("/api/pxpipe/stop", post(not_available))
-        .route("/api/pxpipe/restart", post(not_available))
+        .route("/api/pxpipe/install", post(install))
+        .route("/api/pxpipe/start", post(start))
+        .route("/api/pxpipe/stop", post(stop))
+        .route("/api/pxpipe/restart", post(restart))
 }
 
-// ponytail: pxpipe install/start/stop/restart load or npm-install a Node.js package; not available in Rust
-async fn not_available() -> Response {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(json!({ "error": "not available" })),
-    )
-        .into_response()
+fn pxpipe_dir() -> PathBuf {
+    process_supervisor::data_dir().join("pxpipe")
 }
 
-async fn status(State(s): State<AppState>) -> Response {
+fn library_entry() -> PathBuf {
+    pxpipe_dir()
+        .join("node_modules")
+        .join("pxpipe-proxy")
+        .join("dist")
+        .join("core")
+        .join("library.js")
+}
+
+fn is_installed() -> bool {
+    pxpipe_dir()
+        .join("node_modules")
+        .join("pxpipe-proxy")
+        .join("package.json")
+        .exists()
+        && library_entry().exists()
+}
+
+async fn build_status_json(s: &AppState) -> Value {
+    let rec = process_supervisor::global()
+        .status(&s.db, PXPIPE_PROCESS_ID)
+        .await;
     let db = s.db.lock().unwrap();
     let settings = crate::db::settings_get(&db).unwrap_or(Value::Null);
-    Json(json!({
-        "installed": false,
-        "loaded": false,
-        "running": false,
+    let installed = is_installed();
+    let running = rec.status == "running";
+    json!({
+        "installed": installed,
+        "loaded": running,
+        "running": running,
+        "pid": rec.pid,
         "enabled": settings["pxpipeEnabled"].as_bool().unwrap_or(false),
         "autoInstall": settings["pxpipeAutoInstall"].as_bool().unwrap_or(false),
         "minChars": settings["pxpipeMinChars"],
         "timeoutMs": settings["pxpipeTimeoutMs"],
-    }))
-    .into_response()
+    })
+}
+
+async fn run_npm_install() -> Result<Value, Response> {
+    let dir = pxpipe_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let pkg_json = dir.join("package.json");
+    if !pkg_json.exists() {
+        let _ = std::fs::write(
+            &pkg_json,
+            r#"{"name":"9router-pxpipe-host","private":true}"#,
+        );
+    }
+    let cmd = FixedCommand::new(
+        "npm",
+        vec![
+            "install".to_owned(),
+            PXPIPE_PACKAGE.to_owned(),
+            "--no-audit".to_owned(),
+            "--no-fund".to_owned(),
+            "--omit=dev".to_owned(),
+        ],
+    );
+    let log_path = dir.join("install.log");
+    match ProcessSupervisor::run_once(cmd, Some(&dir), Some(&log_path), Duration::from_secs(300))
+        .await
+    {
+        Ok(out) if out.status.success() => Ok(json!({
+            "installed": is_installed(),
+            "path": dir.join("node_modules").join("pxpipe-proxy"),
+        })),
+        Ok(out) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": format!("npm install exited with code={:?}", out.status.code()),
+                "code": "INSTALL_FAILED",
+            })),
+        )
+            .into_response()),
+        Err(SupervisorError::NotInstalled(msg)) => Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": msg, "code": "NPM_NOT_FOUND" })),
+        )
+            .into_response()),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string(), "code": "pxpipe_failed" })),
+        )
+            .into_response()),
+    }
+}
+
+async fn install(State(s): State<AppState>) -> Response {
+    match run_npm_install().await {
+        Ok(info) => {
+            let _ = process_supervisor::global()
+                .stop(&s.db, PXPIPE_PROCESS_ID, Duration::from_secs(1))
+                .await;
+            Json(json!({
+                "installed": info["installed"],
+                "path": info["path"],
+                "health": { "healthy": is_installed(), "checks": [] },
+            }))
+            .into_response()
+        }
+        Err(resp) => resp,
+    }
+}
+
+async fn start(State(s): State<AppState>) -> Response {
+    if !is_installed() {
+        let auto_install = {
+            let db = s.db.lock().unwrap();
+            crate::db::settings_get(&db)
+                .ok()
+                .and_then(|v| v["pxpipeAutoInstall"].as_bool())
+                .unwrap_or(false)
+        };
+        if !auto_install {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({ "error": "PXPIPE is not installed", "code": "NOT_INSTALLED" })),
+            )
+                .into_response();
+        }
+        if let Err(resp) = run_npm_install().await {
+            return resp;
+        }
+    }
+
+    let entry = library_entry().to_string_lossy().into_owned();
+    let cmd = FixedCommand::new("node", vec![entry]);
+    let log_path = pxpipe_dir().join("pxpipe.log");
+    match process_supervisor::global()
+        .spawn(&s.db, PXPIPE_PROCESS_ID, cmd, Some(&log_path))
+        .await
+    {
+        Ok(_) => Json(build_status_json(&s).await).into_response(),
+        Err(SupervisorError::NotInstalled(msg)) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": msg, "code": "NODE_NOT_FOUND" })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string(), "code": "pxpipe_failed" })),
+        )
+            .into_response(),
+    }
+}
+
+async fn stop(State(s): State<AppState>) -> Response {
+    let was_running = process_supervisor::global()
+        .stop(&s.db, PXPIPE_PROCESS_ID, Duration::from_secs(2))
+        .await
+        .ok()
+        .flatten()
+        .is_some();
+    let mut st = build_status_json(&s).await;
+    if let Some(obj) = st.as_object_mut() {
+        obj.insert("stopped".into(), Value::Bool(was_running));
+    }
+    Json(st).into_response()
+}
+
+async fn restart(State(s): State<AppState>) -> Response {
+    let _ = process_supervisor::global()
+        .stop(&s.db, PXPIPE_PROCESS_ID, Duration::from_secs(2))
+        .await;
+    start(State(s)).await
+}
+
+async fn status(State(s): State<AppState>) -> Response {
+    Json(build_status_json(&s).await).into_response()
 }
 
 async fn health() -> Response {
     Json(json!({
-        "healthy": false,
+        "healthy": is_installed(),
         "checks": [],
     }))
     .into_response()
@@ -91,6 +248,7 @@ async fn logs(
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(100)
         .min(500);
+    let install_log = std::fs::read_to_string(pxpipe_dir().join("install.log")).unwrap_or_default();
     let db = s.db.lock().unwrap();
     let events: Vec<Value> = crate::db::kv_get(&db, "pxpipe", "events")
         .ok()
@@ -103,7 +261,7 @@ async fn logs(
         .take(limit)
         .collect();
     Json(json!({
-        "installLog": "",
+        "installLog": install_log,
         "events": events,
     }))
     .into_response()
@@ -131,24 +289,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pxpipe_lifecycle_routes_return_501() {
+    async fn pxpipe_lifecycle_routes_work_without_501() {
         let app = test_app();
-        for path in [
-            "/api/pxpipe/install",
-            "/api/pxpipe/start",
-            "/api/pxpipe/stop",
-            "/api/pxpipe/restart",
-        ] {
-            let r = app
-                .clone()
-                .oneshot(Request::post(path).body(Body::empty()).unwrap())
-                .await
-                .unwrap();
-            assert_eq!(r.status(), 501, "expected 501 for {path}");
+
+        // start without install and autoInstall=false returns 409 NOT_INSTALLED
+        let r = app
+            .clone()
+            .oneshot(Request::post("/api/pxpipe/start").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_ne!(r.status(), 501);
+        if !is_installed() {
+            assert_eq!(r.status(), 409);
             let body: Value =
                 serde_json::from_slice(&to_bytes(r.into_body(), 4096).await.unwrap()).unwrap();
-            assert_eq!(body["error"], "not available");
+            assert_eq!(body["code"], "NOT_INSTALLED");
         }
+
+        // stop when not running returns 200 stopped: false
+        let r = app
+            .clone()
+            .oneshot(Request::post("/api/pxpipe/stop").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let body: Value =
+            serde_json::from_slice(&to_bytes(r.into_body(), 4096).await.unwrap()).unwrap();
+        assert_eq!(body["stopped"], false);
+
+        // restart when not installed returns 409 (not 501)
+        let r = app
+            .oneshot(Request::post("/api/pxpipe/restart").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_ne!(r.status(), 501);
     }
 
     #[tokio::test]
@@ -162,7 +336,6 @@ mod tests {
         assert_eq!(r.status(), 200);
         let body: Value =
             serde_json::from_slice(&to_bytes(r.into_body(), 4096).await.unwrap()).unwrap();
-        assert_eq!(body["installed"], false);
         assert_eq!(body["enabled"], false);
 
         for (method, path) in [
