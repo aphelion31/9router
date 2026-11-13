@@ -2,6 +2,7 @@
 use anyhow::{Context, bail};
 use serde_json::Value;
 mod azure;
+mod bedrock;
 mod chatgpt_web;
 mod gemini_web;
 mod github;
@@ -34,6 +35,23 @@ pub async fn execute(
         "gemini-web" => return Err(gemini_web::unsupported()),
         "muse-web" => return Err(muse_web::unsupported()),
         _ => {}
+    }
+    if provider.id == "bedrock" {
+        let (url, headers, body) = bedrock::prepare(
+            request.base_url.as_deref(),
+            &request.model,
+            &mut request.body,
+            request.stream,
+        )?;
+        // AWS credentials must never be forwarded to a redirect target.
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
+        let mut builder = client.post(url).body(body);
+        for (name, value) in headers {
+            builder = builder.header(name, value);
+        }
+        return Ok(builder.send().await?);
     }
     let mut vertex_project = None;
     if matches!(provider.id.as_str(), "vertex" | "vertex-partner") {
@@ -260,6 +278,47 @@ mod tests {
                 _ => assert_eq!(result["authorization"], "Bearer secret"),
             }
         }
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn bedrock_mock_request() {
+        if std::env::var_os("AWS_ACCESS_KEY_ID").is_none()
+            || std::env::var_os("AWS_SECRET_ACCESS_KEY").is_none()
+        {
+            return;
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(mock)))
+                .await
+                .unwrap()
+        });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "bedrock".into(),
+                model: "anthropic.claude-v2".into(),
+                body: json!({"model":"anthropic.claude-v2", "stream":false, "messages": []}),
+                stream: false,
+                api_key: None,
+                access_token: None,
+                base_url: Some(url),
+            },
+        )
+        .await
+        .unwrap();
+        let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(result["uri"], "/model/anthropic.claude-v2/invoke");
+        assert!(
+            result["authorization"]
+                .as_str()
+                .unwrap()
+                .starts_with("AWS4-HMAC-SHA256 ")
+        );
+        assert_eq!(result["body"]["anthropic_version"], "bedrock-2023-05-31");
+        assert!(result["body"].get("model").is_none());
         task.abort();
     }
 
