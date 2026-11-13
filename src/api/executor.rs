@@ -13,6 +13,11 @@ impl Executor for HttpExecutor {
             let vertex = matches!(req.provider.as_str(), "vertex" | "vertex-partner");
             let bedrock_stream = (req.provider == "bedrock" || bedrock_xai) && req.stream;
             let commandcode_stream = req.provider == "commandcode" && req.stream;
+            let qoder_stream = matches!(req.provider.as_str(), "qoder" | "qoder-cn") && req.stream;
+            let cursor_stream = req.provider == "cursor" && req.stream;
+            let deepseek_stream = req.provider == "deepseek-web" && req.stream;
+            let grok_stream = req.provider == "grok-web" && req.stream;
+            let perplexity_stream = req.provider == "perplexity-web" && req.stream;
             let trae_provider = req.provider == "trae";
             let windsurf_provider = req.provider == "windsurf";
             let response_format = (req.provider == "github"
@@ -65,6 +70,11 @@ impl Executor for HttpExecutor {
                 .collect();
             let bedrock_stream = bedrock_stream && (200..300).contains(&status);
             let commandcode_stream = commandcode_stream && (200..300).contains(&status);
+            let qoder_stream = qoder_stream && (200..300).contains(&status);
+            let cursor_stream = cursor_stream && (200..300).contains(&status);
+            let deepseek_stream = deepseek_stream && (200..300).contains(&status);
+            let grok_stream = grok_stream && (200..300).contains(&status);
+            let perplexity_stream = perplexity_stream && (200..300).contains(&status);
             let trae_ok = trae_provider && (200..300).contains(&status);
             let windsurf_ok = windsurf_provider && (200..300).contains(&status);
             let body = if req.stream {
@@ -75,6 +85,16 @@ impl Executor for HttpExecutor {
                         .then(|| crate::executors::bedrock::Decoder::new(bedrock_xai));
                     let mut cc_decoder = commandcode_stream
                         .then(|| crate::executors::commandcode::Decoder::new(&model));
+                    let mut qoder_decoder = qoder_stream
+                        .then(|| crate::executors::qoder::Decoder::new(&model));
+                    let mut cursor_decoder = cursor_stream
+                        .then(|| crate::executors::cursor::Decoder::new(&model));
+                    let mut deepseek_decoder = deepseek_stream
+                        .then(|| crate::executors::deepseek_web::Decoder::new(&model));
+                    let mut grok_decoder = grok_stream
+                        .then(|| crate::executors::grok_web::Decoder::new(&model, false));
+                    let mut perplexity_decoder = perplexity_stream
+                        .then(|| crate::executors::perplexity_web::Decoder::new(&model));
                     let mut trae_decoder = trae_ok
                         .then(|| crate::executors::trae::Decoder::new(&model));
                     let mut ws_decoder = windsurf_ok
@@ -83,6 +103,46 @@ impl Executor for HttpExecutor {
                         match response.chunk().await {
                             Ok(Some(bytes)) => {
                                 let bytes = if let Some(decoder) = decoder.as_mut() {
+                                    match decoder.push(&bytes) {
+                                        Ok(bytes) => bytes,
+                                        Err(error) => {
+                                            let _ = tx.send(Err(error.to_string())).await;
+                                            break;
+                                        }
+                                    }
+                                } else if let Some(decoder) = grok_decoder.as_mut() {
+                                    match decoder.push(&bytes) {
+                                        Ok(bytes) => bytes,
+                                        Err(error) => {
+                                            let _ = tx.send(Err(error.to_string())).await;
+                                            break;
+                                        }
+                                    }
+                                } else if let Some(decoder) = perplexity_decoder.as_mut() {
+                                    match decoder.push(&bytes) {
+                                        Ok(bytes) => bytes,
+                                        Err(error) => {
+                                            let _ = tx.send(Err(error.to_string())).await;
+                                            break;
+                                        }
+                                    }
+                                } else if let Some(decoder) = deepseek_decoder.as_mut() {
+                                    match decoder.push(&bytes) {
+                                        Ok(bytes) => bytes,
+                                        Err(error) => {
+                                            let _ = tx.send(Err(error.to_string())).await;
+                                            break;
+                                        }
+                                    }
+                                } else if let Some(decoder) = cursor_decoder.as_mut() {
+                                    match decoder.push(&bytes) {
+                                        Ok(bytes) => bytes,
+                                        Err(error) => {
+                                            let _ = tx.send(Err(error.to_string())).await;
+                                            break;
+                                        }
+                                    }
+                                } else if let Some(decoder) = qoder_decoder.as_mut() {
                                     match decoder.push(&bytes) {
                                         Ok(bytes) => bytes,
                                         Err(error) => {
@@ -128,10 +188,40 @@ impl Executor for HttpExecutor {
                                     } else if bedrock_xai {
                                         let _ = tx.send(Ok(b"data: [DONE]\n\n".to_vec())).await;
                                     }
-                                } else if let Some(decoder) = cc_decoder.as_mut() {
+                                } else if let Some(decoder) = grok_decoder.as_mut() {
                                     let tail = decoder.finish();
                                     if !tail.is_empty() {
                                         let _ = tx.send(Ok(tail)).await;
+                                    }
+                                } else if let Some(decoder) = perplexity_decoder.as_mut() {
+                                    let tail = decoder.finish();
+                                    if !tail.is_empty() {
+                                        let _ = tx.send(Ok(tail)).await;
+                                    }
+                                } else if let Some(decoder) = deepseek_decoder.as_mut() {
+                                    let tail = decoder.finish();
+                                    if !tail.is_empty() {
+                                        let _ = tx.send(Ok(tail)).await;
+                                    }
+                                } else if let Some(decoder) = cursor_decoder.as_mut() {
+                                    let tail = decoder.finish();
+                                    if !tail.is_empty() {
+                                        let _ = tx.send(Ok(tail)).await;
+                                    }
+                                } else if let Some(decoder) = qoder_decoder.as_mut() {
+                                    let tail = decoder.finish();
+                                    if !tail.is_empty() {
+                                        let _ = tx.send(Ok(tail)).await;
+                                    }
+                                } else if let Some(decoder) = cc_decoder.as_mut() {
+                                    match decoder.finish() {
+                                        Ok(tail) if !tail.is_empty() => {
+                                            let _ = tx.send(Ok(tail)).await;
+                                        }
+                                        Ok(_) => {}
+                                        Err(error) => {
+                                            let _ = tx.send(Err(error.to_string())).await;
+                                        }
                                     }
                                 } else if let Some(decoder) = trae_decoder.as_mut() {
                                     let tail = decoder.finish();

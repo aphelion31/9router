@@ -52,28 +52,6 @@ fn load_aws_profile_credentials(profile: &str) -> Option<(String, String, Option
     load_aws_profile_credentials_from_str(&text, profile)
 }
 
-pub(crate) fn parse_bedrock_error(status: u16, body: &str) -> (u16, String) {
-    let parsed: Option<Value> = serde_json::from_str(body).ok();
-    let msg = parsed
-        .as_ref()
-        .and_then(|v| {
-            v.get("message")
-                .or_else(|| v.get("Message"))
-                .and_then(Value::as_str)
-        })
-        .unwrap_or(body);
-    let mapped_status = if msg.contains("ThrottlingException") || status == 429 {
-        429
-    } else if msg.contains("AccessDenied") || msg.contains("UnrecognizedClient") {
-        401
-    } else if msg.contains("ValidationException") {
-        400
-    } else {
-        status
-    };
-    (mapped_status, msg.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,10 +94,6 @@ mod tests {
         assert_eq!(k, "AKIA2");
         assert_eq!(s, "SEC2");
         assert_eq!(t.as_deref(), Some("TOK2"));
-        assert_eq!(
-            parse_bedrock_error(400, r#"{"message":"ThrottlingException: rate"}"#).0,
-            429
-        );
     }
 }
 

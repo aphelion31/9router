@@ -2,6 +2,7 @@ use anyhow::{Context, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use std::time::{SystemTime, UNIX_EPOCH};
+use crate::executors::deepseek_web_done_terminator::{DrainWindow, FinishOnce};
 
 const DEEPSEEK_WEB_BASE: &str = "https://chat.deepseek.com";
 const MAX_POW_DIFFICULTY: u64 = 250_000;
@@ -258,7 +259,8 @@ pub(crate) struct Decoder {
     current_path: String,
     thinking_model: bool,
     search_model: bool,
-    finished: bool,
+    finished: FinishOnce,
+    drain: DrainWindow,
 }
 
 impl Decoder {
@@ -278,7 +280,8 @@ impl Decoder {
             current_path: String::new(),
             thinking_model: lower.contains("think") || lower.contains("r1") || lower.contains("reason"),
             search_model: lower.contains("search") || lower.contains("fold"),
-            finished: false,
+            finished: FinishOnce::default(),
+            drain: DrainWindow::default(),
         }
     }
 
@@ -290,7 +293,16 @@ impl Decoder {
             self.buf.drain(..=nl);
             self.process_line(&line, &mut out);
         }
+        self.close_if_drained(&mut out);
         Ok(out)
+    }
+
+    /// Closes the stream once the post-FINISHED drain window elapses (750ms, see done-terminator).
+    fn close_if_drained(&mut self, out: &mut Vec<u8>) {
+        if self.drain.is_pending() && self.drain.is_due(std::time::Instant::now()) {
+            self.drain.clear();
+            self.finish_stream(out);
+        }
     }
 
     pub fn finish(&mut self) -> Vec<u8> {
@@ -299,7 +311,7 @@ impl Decoder {
             let rem = std::mem::take(&mut self.buf);
             self.process_line(rem.trim(), &mut out);
         }
-        if !self.finished {
+        if !self.finished.has_finished() {
             self.finish_stream(&mut out);
         }
         out
@@ -350,17 +362,16 @@ impl Decoder {
     }
 
     fn finish_stream(&mut self, out: &mut Vec<u8>) {
-        if self.finished {
+        if !self.finished.try_finish() {
             return;
         }
-        self.finished = true;
         self.ensure_role(out);
         self.emit_chunk(json!({}), Some("stop"), out);
         out.extend_from_slice(b"data: [DONE]\n\n");
     }
 
     fn process_line(&mut self, line: &str, out: &mut Vec<u8>) {
-        if self.finished || !line.starts_with("data:") {
+        if self.finished.has_finished() || !line.starts_with("data:") {
             return;
         }
         let payload = line[5..].trim();
@@ -402,7 +413,11 @@ impl Decoder {
             self.send_by_path(s, out);
         }
         if p == "response/status" && v.and_then(Value::as_str) == Some("FINISHED") {
-            self.finish_stream(out);
+            // Drain window: late search_results may still arrive (deepseek-web-done-terminator.js).
+            self.drain.schedule(std::time::Instant::now());
+        } else if self.drain.is_pending() && !p.is_empty() {
+            // Late payload after FINISHED extends the window.
+            self.drain.schedule(std::time::Instant::now());
         }
     }
 
@@ -595,5 +610,20 @@ mod tests {
         assert!(out.contains("\"reasoning_content\":\"hmm\""));
         assert!(out.contains("\"content\":\"42\""));
         assert!(out.contains("data: [DONE]"));
+    }
+
+    #[test]
+    fn finished_defers_stop_until_drain_window_elapses() {
+        let mut dec = Decoder::new("deepseek-r1");
+        let finished = b"data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n";
+        let out = String::from_utf8(dec.push(finished).unwrap()).unwrap();
+        // Within the 750ms drain window: no stop frame, no [DONE] yet.
+        assert!(!out.contains("data: [DONE]"));
+        assert!(!out.contains("\"finish_reason\":\"stop\""));
+        // Force the window past its deadline, then the next push closes the stream.
+        dec.drain.schedule(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        let closed = String::from_utf8(dec.push(b"").unwrap()).unwrap();
+        assert!(closed.contains("\"finish_reason\":\"stop\""));
+        assert!(closed.contains("data: [DONE]"));
     }
 }

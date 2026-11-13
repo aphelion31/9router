@@ -15,35 +15,6 @@ pub(crate) fn zed_provider_for_model(model: &str) -> &'static str {
     }
 }
 
-pub(crate) async fn exchange_llm_token(
-    client: &reqwest::Client,
-    cloud_base: Option<&str>,
-    user_id: &str,
-    access_token: &str,
-) -> anyhow::Result<String> {
-    let base = cloud_base
-        .unwrap_or("https://cloud.zed.dev")
-        .trim_end_matches('/');
-    let basic = STANDARD.encode(format!("{user_id}:{access_token}"));
-    let res = client
-        .post(format!("{base}/client/llm_tokens"))
-        .header("Authorization", format!("Basic {basic}"))
-        .header("Content-Type", "application/json")
-        .body("{}")
-        .send()
-        .await?;
-    if !res.status().is_success() {
-        bail!("Zed LLM token exchange HTTP {}", res.status());
-    }
-    let body: Value = serde_json::from_slice(&res.bytes().await?)?;
-    body.get("jwt_token")
-        .or_else(|| body.get("token"))
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .context("Zed LLM token exchange missing jwt_token")
-}
-
 pub(super) async fn execute(
     client: &reqwest::Client,
     endpoint: &str,
@@ -128,26 +99,5 @@ mod tests {
         assert_eq!(zed_provider_for_model("gemini-2.5-pro"), "google");
         assert_eq!(zed_provider_for_model("grok-3"), "x_ai");
         assert_eq!(zed_provider_for_model("gpt-4.1"), "openai");
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        let app = Router::new().route(
-            "/client/llm_tokens",
-            post(|headers: axum::http::HeaderMap| async move {
-                assert!(
-                    headers["authorization"]
-                        .to_str()
-                        .unwrap()
-                        .starts_with("Basic ")
-                );
-                axum::Json(json!({"jwt_token": "zed_jwt_123"}))
-            }),
-        );
-        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let tok = exchange_llm_token(&reqwest::Client::new(), Some(&base), "u1", "tok1")
-            .await
-            .unwrap();
-        assert_eq!(tok, "zed_jwt_123");
-        task.abort();
     }
 }

@@ -44,10 +44,6 @@ pub(super) fn prepare(body: &mut Value) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(crate) fn parse_code_6004_reset_ms(body: &Value) -> Option<u64> {
-    super::codebuddy_cn::parse_code_6004_reset_ms(body)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,7 +51,7 @@ mod tests {
     #[test]
     fn codebuddy_intl_6004_reset_parsing_works() {
         assert_eq!(
-            parse_code_6004_reset_ms(&json!({"code": 6004, "retryAfterMs": 12000})),
+            super::super::codebuddy_cn::parse_code_6004_reset_ms(&json!({"code": 6004, "retryAfterMs": 12000}), 0),
             Some(12_000)
         );
     }
