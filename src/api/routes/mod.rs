@@ -18,8 +18,8 @@ mod mgmt_system;
 
 mod v1_catalog;
 mod v1_count_tokens;
+mod v1_media;
 mod v1_models;
-mod v1_stubs;
 mod v1_usage;
 
 mod oauth_core;
@@ -74,7 +74,7 @@ pub fn v1() -> Router<AppState> {
     Router::new()
         .merge(v1_count_tokens::router())
         .merge(v1_usage::router())
-        .merge(v1_stubs::router())
+        .merge(v1_media::router())
         .merge(v1_catalog::router())
         .merge(v1_models::router())
 }

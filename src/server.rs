@@ -578,7 +578,7 @@ pub(crate) fn uuid_like() -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
-async fn completion(
+pub(crate) async fn completion(
     State(s): State<AppState>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
