@@ -3,6 +3,7 @@ pub mod aws_event_stream;
 pub mod browser;
 pub mod claude_signature;
 pub mod client_detector;
+pub mod connection_proxy;
 pub mod empty_failover;
 pub mod flaky_guard;
 pub mod gemini_cookies;
