@@ -18,6 +18,7 @@ mod opencode_zen;
 mod vertex;
 mod xiaomi_mimo;
 mod xiaomi_tokenplan;
+mod zed;
 
 #[derive(Debug, Clone)]
 pub struct ExecutorRequest {
@@ -87,6 +88,19 @@ pub async fn execute(
         .with_context(|| format!("provider {} has no endpoint", provider.id))?;
     if provider.id == "mimo-free" {
         return mimo_free::execute(client, endpoint, &mut request.body, request.stream).await;
+    }
+    if provider.id == "zed" {
+        return zed::execute(
+            client,
+            endpoint,
+            &request.model,
+            &request.body,
+            request
+                .access_token
+                .as_deref()
+                .or(request.api_key.as_deref()),
+        )
+        .await;
     }
     let responses = matches!(provider.id.as_str(), "opencode-go" | "opencode-zen")
         && opencode_go::is_responses(&provider.id, &request.model);

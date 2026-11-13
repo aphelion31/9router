@@ -47,4 +47,4 @@ Status is deliberately conservative: partial means the upstream executor has beh
 | windsurf.js | pending | |
 | xiaomi-mimo.js | partial | Cloud API passthrough; account-cookie route and desktop authentication unavailable. |
 | xiaomi-tokenplan.js | partial | OpenAI and Claude model routes; per-connection region selection not available. |
-| zed.js | pending | |
+| zed.js | partial | xAI envelope and buffered NDJSON conversion with supplied LLM token; token exchange, live streaming and other provider translators unavailable. |
