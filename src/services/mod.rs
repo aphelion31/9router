@@ -1,5 +1,6 @@
 pub mod antigravity_ide_version;
 pub mod browser;
+pub mod claude_signature;
 pub mod client_detector;
 pub mod empty_failover;
 pub mod gemini_cookies;
