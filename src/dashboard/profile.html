@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Settings — 9Router</title>
+  <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body data-page="profile">
+  <div class="layout">
+    <aside class="sidebar"></aside>
+    <main class="main">
+      <div id="error-banner" class="banner banner-error hidden" role="alert" aria-live="polite"></div>
+      <header class="page-header">
+        <div>
+          <h1 class="page-title">Settings &amp; Profile</h1>
+          <p class="page-subtitle">Routing defaults, outbound proxy, and security audit log</p>
+        </div>
+        <button id="pf-refresh" type="button" class="btn">Refresh</button>
+      </header>
+
+      <section class="card" aria-labelledby="pf-general-heading">
+        <h2 id="pf-general-heading" class="card-title">Routing &amp; Proxy</h2>
+        <div class="field" style="max-width:460px">
+          <label for="pf-proxy">Outbound HTTP/SOCKS Proxy URL</label>
+          <div class="row">
+            <input id="pf-proxy" type="url" placeholder="http://127.0.0.1:7890" style="flex:1">
+            <button id="pf-proxy-test" type="button" class="btn">Test Proxy</button>
+          </div>
+        </div>
+        <div class="toggle-row mb-12">
+          <label for="pf-require-login">Require Login for Dashboard</label>
+          <input id="pf-require-login" type="checkbox">
+        </div>
+        <div class="toggle-row mb-12">
+          <label for="pf-round-robin">Round-Robin Provider Selection</label>
+          <input id="pf-round-robin" type="checkbox">
+        </div>
+        <div class="field" style="max-width:320px">
+          <label for="pf-new-pass">New Dashboard Password (optional)</label>
+          <input id="pf-new-pass" type="password" placeholder="Leave blank to keep current" autocomplete="new-password">
+        </div>
+        <button id="pf-save" type="button" class="btn btn-primary">Save Settings</button>
+      </section>
+
+      <section class="card" aria-labelledby="pf-sec-heading">
+        <h2 id="pf-sec-heading" class="card-title">Security Log</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Time</th><th>Event</th><th>IP / Actor</th></tr></thead>
+            <tbody id="pf-sec-tbody"><tr><td colspan="3" class="mono">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="/dashboard/app.js"></script>
+  <script>
+    window.__NR.pages["profile"] = async function () {
+      var nr = window.__NR;
+      var proxyEl = document.getElementById("pf-proxy");
+      var reqLoginEl = document.getElementById("pf-require-login");
+      var rrEl = document.getElementById("pf-round-robin");
+      var passEl = document.getElementById("pf-new-pass");
+
+      async function load() {
+        try {
+          var s = await nr.apiFetch("/api/settings");
+          proxyEl.value = s.outboundProxy || s.proxyUrl || "";
+          reqLoginEl.checked = s.requireLogin !== false;
+          rrEl.checked = !!s.roundRobin;
+        } catch (err) {
+          nr.showBanner("Failed to load settings: " + err.message, "error");
+        }
+
+        var tbody = document.getElementById("pf-sec-tbody");
+        try {
+          var log = await nr.apiFetch("/api/security-log");
+          var rows = Array.isArray(log.entries) ? log.entries : (Array.isArray(log.logs) ? log.logs : []);
+          if (rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="3">No security events recorded.</td></tr>';
+          } else {
+            tbody.innerHTML = "";
+            rows.slice(0, 30).forEach(function (r) {
+              var tr = document.createElement("tr");
+              tr.innerHTML =
+                '<td class="mono">' + nr.fmtDate(r.timestamp || r.createdAt) + "</td>" +
+                "<td>" + nr.escapeHtml(r.event || r.action || "-") + "</td>" +
+                '<td class="mono">' + nr.escapeHtml(r.ip || r.actor || "-") + "</td>";
+              tbody.appendChild(tr);
+            });
+          }
+        } catch (e) {
+          tbody.innerHTML = '<tr><td colspan="3">Security log unavailable.</td></tr>';
+        }
+      }
+
+      document.getElementById("pf-proxy-test").addEventListener("click", async function () {
+        try {
+          var res = await nr.apiFetch("/api/settings/proxy-test", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ proxyUrl: proxyEl.value.trim() })
+          });
+          nr.showBanner(res.ok ? "Proxy reachable." : ("Proxy test failed: " + (res.error || "unknown")), res.ok ? "success" : "error");
+        } catch (err) {
+          nr.showBanner("Proxy test failed: " + err.message, "error");
+        }
+      });
+
+      document.getElementById("pf-save").addEventListener("click", async function () {
+        var payload = {
+          outboundProxy: proxyEl.value.trim(),
+          requireLogin: !!reqLoginEl.checked,
+          roundRobin: !!rrEl.checked
+        };
+        if (passEl.value.trim()) payload.newPassword = passEl.value.trim();
+        try {
+          await nr.apiFetch("/api/settings", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          passEl.value = "";
+          nr.showBanner("Settings saved.", "success");
+        } catch (err) {
+          nr.showBanner("Save failed: " + err.message, "error");
+        }
+      });
+
+      document.getElementById("pf-refresh").addEventListener("click", load);
+      await load();
+    };
+  </script>
+</body>
+</html>

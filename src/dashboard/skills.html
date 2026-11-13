@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Skills — 9Router</title>
+  <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body data-page="skills">
+  <div class="layout">
+    <aside class="sidebar"></aside>
+    <main class="main">
+      <div id="error-banner" class="banner banner-error hidden" role="alert" aria-live="polite"></div>
+      <header class="page-header">
+        <div>
+          <h1 class="page-title">Agent Skills</h1>
+          <p class="page-subtitle">Copy raw skill URLs to teach any AI coding agent how to use 9Router</p>
+        </div>
+        <a class="btn" href="https://github.com/decolua/9router" target="_blank" rel="noreferrer">GitHub Repo</a>
+      </header>
+
+      <section class="card">
+        <h2 class="card-title">Quick Start Prompt</h2>
+        <div class="row">
+          <code id="sk-entry-code" class="mono" style="flex:1;word-break:break-all">Read this skill and use it: https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills/9router/SKILL.md</code>
+          <button id="sk-copy-entry" type="button" class="btn btn-primary">Copy Prompt</button>
+        </div>
+      </section>
+
+      <section id="sk-list" class="grid" style="grid-template-columns:1fr"></section>
+    </main>
+  </div>
+  <script src="/dashboard/app.js"></script>
+  <script>
+    window.__NR.pages["skills"] = function () {
+      var nr = window.__NR;
+      var RAW_BASE = "https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills";
+      var BLOB_BASE = "https://github.com/decolua/9router/blob/master/skills";
+      var SKILLS = [
+        { id: "9router", name: "9Router (Entry)", desc: "Setup + index of all capabilities. Start here.", endpoint: null, entry: true },
+        { id: "9router-chat", name: "Chat", desc: "Chat / code-gen via OpenAI or Anthropic format with streaming.", endpoint: "/v1/chat/completions" },
+        { id: "9router-image", name: "Image Generation", desc: "Text-to-image via DALL-E, Imagen, FLUX, MiniMax, SDWebUI.", endpoint: "/v1/images/generations" },
+        { id: "9router-video", name: "Video Generation", desc: "Text-to-video / image-to-video (async submit, poll, download).", endpoint: "/v1/videos/generations" },
+        { id: "9router-tts", name: "Text-to-Speech", desc: "OpenAI / ElevenLabs / Edge / Google / Deepgram voices.", endpoint: "/v1/audio/speech" },
+        { id: "9router-stt", name: "Speech-to-Text", desc: "Transcribe audio via OpenAI Whisper, Groq, Gemini, Deepgram.", endpoint: "/v1/audio/transcriptions" },
+        { id: "9router-embeddings", name: "Embeddings", desc: "Vectors for RAG / semantic search via OpenAI, Gemini, Mistral.", endpoint: "/v1/embeddings" },
+        { id: "9router-web-search", name: "Web Search", desc: "Web and X search via Tavily / Exa / Brave / Serper / SearXNG.", endpoint: "/v1/search" },
+        { id: "9router-web-fetch", name: "Web Fetch", desc: "URL to markdown / text / HTML via Firecrawl, Jina, Tavily, Exa.", endpoint: "/v1/web/fetch" }
+      ];
+
+      document.getElementById("sk-copy-entry").addEventListener("click", function () {
+        nr.copyText(document.getElementById("sk-entry-code").textContent);
+      });
+
+      var container = document.getElementById("sk-list");
+      SKILLS.forEach(function (sk) {
+        var raw = RAW_BASE + "/" + sk.id + "/SKILL.md";
+        var blob = BLOB_BASE + "/" + sk.id + "/SKILL.md";
+        var card = document.createElement("div");
+        card.className = "card";
+        card.innerHTML =
+          '<div class="row-between mb-12">' +
+            '<div>' +
+              '<div class="row"><strong>' + nr.escapeHtml(sk.name) + "</strong>" +
+              (sk.entry ? ' <span class="badge badge-info">START HERE</span>' : "") +
+              (sk.endpoint ? ' <span class="badge badge-off mono">' + nr.escapeHtml(sk.endpoint) + "</span>" : "") +
+              "</div>" +
+              '<div class="muted text-sm mt-12">' + nr.escapeHtml(sk.desc) + "</div>" +
+              '<div class="mt-12"><a class="mono text-sm" href="' + nr.escapeHtml(blob) + '" target="_blank" rel="noreferrer">' + nr.escapeHtml(raw) + "</a></div>" +
+            "</div>" +
+            '<button type="button" class="btn btn-sm copy-btn">Copy Link</button>' +
+          "</div>";
+        card.querySelector(".copy-btn").addEventListener("click", function () { nr.copyText(raw); });
+        container.appendChild(card);
+      });
+    };
+  </script>
+</body>
+</html>

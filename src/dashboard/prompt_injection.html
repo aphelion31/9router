@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Prompt Injection — 9Router</title>
+  <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body data-page="prompt-injection">
+  <div class="layout">
+    <aside class="sidebar"></aside>
+    <main class="main">
+      <div id="error-banner" class="banner banner-error hidden" role="alert" aria-live="polite"></div>
+      <header class="page-header">
+        <div>
+          <h1 class="page-title">Prompt Injection Rules</h1>
+          <p class="page-subtitle">Automatically prepend or append system/user instructions per model or key</p>
+        </div>
+        <button id="pi-refresh" type="button" class="btn">Refresh</button>
+      </header>
+
+      <section class="card" aria-labelledby="pi-add-heading">
+        <h2 id="pi-add-heading" class="card-title">Add Rule</h2>
+        <form id="pi-form">
+          <div class="row mb-12">
+            <div class="field" style="flex:1;min-width:180px;margin-bottom:0">
+              <label for="pi-name">Rule Name</label>
+              <input id="pi-name" type="text" placeholder="e.g. Concise Mode" required>
+            </div>
+            <div class="field" style="min-width:180px;margin-bottom:0">
+              <label for="pi-target">Target</label>
+              <select id="pi-target">
+                <option value="system_prepend">System Prepend</option>
+                <option value="system_append">System Append</option>
+                <option value="user_prepend">User Prepend</option>
+              </select>
+            </div>
+            <div class="field" style="flex:1;min-width:180px;margin-bottom:0">
+              <label for="pi-model">Model Pattern (optional)</label>
+              <input id="pi-model" type="text" placeholder="* or gpt-4o">
+            </div>
+          </div>
+          <div class="field">
+            <label for="pi-content">Injected Content</label>
+            <textarea id="pi-content" rows="3" placeholder="Instruction text..." required></textarea>
+          </div>
+          <button type="submit" class="btn btn-primary">Create Rule</button>
+        </form>
+      </section>
+
+      <section class="card" aria-labelledby="pi-list-heading">
+        <h2 id="pi-list-heading" class="card-title">Configured Rules</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Name</th><th>Target</th><th>Model</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="pi-tbody"><tr><td colspan="5" class="mono">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="/dashboard/app.js"></script>
+  <script>
+    window.__NR.pages["prompt-injection"] = async function () {
+      var nr = window.__NR;
+      var tbody = document.getElementById("pi-tbody");
+
+      async function load() {
+        tbody.innerHTML = '<tr><td colspan="5" class="mono">Loading...</td></tr>';
+        try {
+          var data = await nr.apiFetch("/api/prompt-injection");
+          var list = Array.isArray(data.rules) ? data.rules : (Array.isArray(data.items) ? data.items : (Array.isArray(data) ? data : []));
+          if (list.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5">No prompt injection rules configured.</td></tr>';
+            return;
+          }
+          tbody.innerHTML = "";
+          list.forEach(function (r) {
+            var tr = document.createElement("tr");
+            var enabled = r.enabled !== false && r.isActive !== false;
+            tr.innerHTML =
+              "<td>" + nr.escapeHtml(r.name || "-") + "</td>" +
+              '<td class="mono">' + nr.escapeHtml(r.target || r.position || "system_prepend") + "</td>" +
+              '<td class="mono">' + nr.escapeHtml(r.model || r.modelPattern || "*") + "</td>" +
+              '<td><span class="badge ' + (enabled ? "badge-ok" : "badge-off") + '">' + (enabled ? "Enabled" : "Disabled") + "</span></td>" +
+              '<td class="row">' +
+                '<button type="button" class="btn btn-sm toggle-btn">' + (enabled ? "Disable" : "Enable") + "</button>" +
+                '<button type="button" class="btn btn-sm btn-danger del-btn">Delete</button>' +
+              "</td>";
+            tr.querySelector(".toggle-btn").addEventListener("click", async function () {
+              await nr.apiFetch("/api/prompt-injection/" + encodeURIComponent(r.id), {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ enabled: !enabled })
+              });
+              load();
+            });
+            tr.querySelector(".del-btn").addEventListener("click", async function () {
+              await nr.apiFetch("/api/prompt-injection/" + encodeURIComponent(r.id), { method: "DELETE" });
+              load();
+            });
+            tbody.appendChild(tr);
+          });
+        } catch (err) {
+          tbody.innerHTML = '<tr><td colspan="5">Prompt injection API unavailable.</td></tr>';
+          nr.showBanner("Failed to load rules: " + err.message, "error");
+        }
+      }
+
+      document.getElementById("pi-form").addEventListener("submit", async function (e) {
+        e.preventDefault();
+        try {
+          await nr.apiFetch("/api/prompt-injection", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: document.getElementById("pi-name").value.trim(),
+              target: document.getElementById("pi-target").value,
+              model: document.getElementById("pi-model").value.trim() || "*",
+              content: document.getElementById("pi-content").value,
+              enabled: true
+            })
+          });
+          document.getElementById("pi-form").reset();
+          nr.showBanner("Rule created.", "success");
+          load();
+        } catch (err) {
+          nr.showBanner("Failed to create rule: " + err.message, "error");
+        }
+      });
+
+      document.getElementById("pi-refresh").addEventListener("click", load);
+      await load();
+    };
+  </script>
+</body>
+</html>

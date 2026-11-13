@@ -16,6 +16,10 @@ const PROVIDER_DETAIL_HTML: &str = include_str!("provider_detail.html");
 const COMBOS_HTML: &str = include_str!("combos.html");
 const USAGE_HTML: &str = include_str!("usage.html");
 const QUOTA_HTML: &str = include_str!("quota.html");
+const TOKEN_SAVER_HTML: &str = include_str!("token_saver.html");
+const PROMPT_INJECTION_HTML: &str = include_str!("prompt_injection.html");
+const PROFILE_HTML: &str = include_str!("profile.html");
+const SKILLS_HTML: &str = include_str!("skills.html");
 const STYLE_CSS: &str = include_str!("style.css");
 const APP_JS: &str = include_str!("app.js");
 
@@ -53,6 +57,22 @@ pub async fn usage_page() -> Html<&'static str> {
 
 pub async fn quota_page() -> Html<&'static str> {
     Html(QUOTA_HTML)
+}
+
+pub async fn token_saver_page() -> Html<&'static str> {
+    Html(TOKEN_SAVER_HTML)
+}
+
+pub async fn prompt_injection_page() -> Html<&'static str> {
+    Html(PROMPT_INJECTION_HTML)
+}
+
+pub async fn profile_page() -> Html<&'static str> {
+    Html(PROFILE_HTML)
+}
+
+pub async fn skills_page() -> Html<&'static str> {
+    Html(SKILLS_HTML)
 }
 
 pub async fn style_css() -> Response {

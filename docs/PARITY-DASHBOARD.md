@@ -13,10 +13,10 @@ Status of dashboard pages ported from `9router-pro/src/app/(dashboard)/dashboard
 | 6 | Provider Detail | `/dashboard/providers/{id}` | Done | `provider_detail.html` |
 | 7 | Usage | `/dashboard/usage` | Done | `usage.html` |
 | 8 | Provider Quota | `/dashboard/quota` | Done | `quota.html` |
-| 9 | Token Saver | `/dashboard/token-saver` | Pending | Group 2 |
-| 10 | Prompt Injection | `/dashboard/prompt-injection` | Pending | Group 2 |
-| 11 | Profile & Settings | `/dashboard/profile` | Pending | Group 2 |
-| 12 | Skills | `/dashboard/skills` | Pending | Group 2 |
+| 9 | Token Saver | `/dashboard/token-saver` | Done | `token_saver.html` |
+| 10 | Prompt Injection | `/dashboard/prompt-injection` | Done | `prompt_injection.html` |
+| 11 | Profile & Settings | `/dashboard/profile` | Done | `profile.html` |
+| 12 | Skills | `/dashboard/skills` | Done | `skills.html` |
 | 13 | PxPipe | `/dashboard/pxpipe` | Pending | Group 3 |
 | 14 | Proxy Pools | `/dashboard/proxy-pools` | Pending | Group 3 |
 | 15 | MITM | `/dashboard/mitm` | Pending | Group 3 |

@@ -89,6 +89,10 @@ fn make_router_with_db(
         .route("/dashboard/combos", get(dashboard::combos_page))
         .route("/dashboard/usage", get(dashboard::usage_page))
         .route("/dashboard/quota", get(dashboard::quota_page))
+        .route("/dashboard/token-saver", get(dashboard::token_saver_page))
+        .route("/dashboard/prompt-injection", get(dashboard::prompt_injection_page))
+        .route("/dashboard/profile", get(dashboard::profile_page))
+        .route("/dashboard/skills", get(dashboard::skills_page))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             dashboard_page_auth,
