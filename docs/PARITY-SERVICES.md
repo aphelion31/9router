@@ -51,7 +51,7 @@ Status: **in progress**. Partial entries cover only the functions named, not ful
 | `open-sse/services/minimaxCodeLease.js` | Ported: framing, lease endpoint resolution and unix broker client (`services::minimax_code_lease`); Windows named pipe transport pending |
 | `open-sse/services/minimaxCodeUsage.js` | Ported: membership parsing and account request signing (`services::minimax_code_usage`); HTTP fetch and plan windows still pending |
 | `open-sse/services/nous.js` | Ported: catalog normalization, validation and credential probe request (`services::nous`) |
-| `open-sse/services/systemoneRouter.js` | Partial: routing helpers and sticky state |
+| `open-sse/services/systemoneRouter.js` | Ported: prompt extraction, route answer parsing, ordering and sticky store (`services::systemone_router`) |
 | `open-sse/services/webIdentity.js` | Partial: cookie parsing, no probes |
 | `open-sse/services/tokenRefresh.js` and `tokenRefresh/*` | Not ported |
 | `open-sse/services/browserPool.js` | Partial: enable flag, browser operations unsupported |
