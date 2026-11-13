@@ -10,7 +10,7 @@ Status is deliberately conservative: partial means the upstream executor has beh
 | bedrock.js | partial | Environment SigV4, Claude/xAI event stream supported. AWS profile/SSO and full error parity missing. |
 | browserExecutableCheck.js | ported | `src/executors/browser_executable_check.rs` (missing browser/display classification, Chrome executable resolution) |
 | chatgpt-web.js | unsupported | Browser automation required. |
-| chatgptWebTools.js | pending | Browser helper. |
+| chatgptWebTools.js | ported | `src/executors/chatgpt_web_tools.rs` (tool prompt injection, nonce-bound `<tool>` parsing, SSE replay) |
 | codebuddy-cn.js | partial | Forced streaming, agent system-prompt neutralization, and reasoning_summary implemented; code 6004 reset parsing pending in error layer. |
 | codebuddy-intl.js | partial | Forced streaming, reasoning_summary, and CodeBuddy message normalization implemented; code 6004 reset parsing pending in error layer. |
 | codex.js | partial | Basic request shaping exists. |

@@ -7,6 +7,7 @@ mod browser_executable_check;
 mod deepseek_web_done_terminator;
 pub(crate) mod bedrock;
 mod chatgpt_web;
+mod chatgpt_web_tools;
 mod devin_cli;
 mod codebuddy_cn;
 mod codebuddy_intl;
