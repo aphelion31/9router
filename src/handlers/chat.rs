@@ -10,6 +10,12 @@ use crate::handlers::chat_core::{
 };
 use crate::handlers::{BoxFuture, Credentials, Executor, RefreshedCredentials};
 use crate::providers;
+use crate::routing::classify::{
+    MAX_RATE_LIMIT_COOLDOWN, OVERLOAD_MAX_ATTEMPTS, TRANSIENT_COOLDOWN, Verdict, classify, now_ms,
+    overload_delay,
+};
+use crate::routing::{self, cooldown::Cooldowns};
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct ModelTarget {
@@ -142,7 +148,7 @@ pub async fn handle_chat(
         obj.insert("model".to_string(), json!(model_str));
     }
 
-    let targets = if let Some(t) = parse_model_target(&model_str) {
+    let mut targets = if let Some(t) = parse_model_target(&model_str) {
         vec![t]
     } else if let Some(combo_models) = hooks.get_combo_models(&model_str).await {
         combo_models
@@ -166,11 +172,21 @@ pub async fn handle_chat(
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
 
+    let cooldowns: &Cooldowns = routing::cooldown::global();
+    if targets.len() > 1 {
+        let names: Vec<String> = targets.iter().map(|t| format!("{}/{}", t.provider, t.model)).collect();
+        let keep = routing::combo::plan(cooldowns, &model_str, &names);
+        if !keep.is_empty() {
+            targets.retain(|t| keep.contains(&format!("{}/{}", t.provider, t.model)));
+        }
+    }
+
     let mut last_status = 503;
     let mut last_error = "All accounts unavailable".to_string();
 
     for target in targets {
         let mut excluded = HashSet::new();
+        let mut overload_attempts = 0u32;
         loop {
             let Some(creds) = hooks
                 .get_credentials(&target.provider, &target.model, &excluded)
@@ -183,6 +199,10 @@ pub async fn handle_chat(
                 break;
             };
 
+            if cooldowns.is_cooling(&creds.connection_id) {
+                excluded.insert(creds.connection_id.clone());
+                continue;
+            }
             let conn_id = creds.connection_id.clone();
             let hooks_for_refresh = Arc::clone(&hooks);
             let conn_id_refresh = conn_id.clone();
@@ -218,7 +238,10 @@ pub async fn handle_chat(
             };
 
             match handle_chat_core(options, executor, &core_hooks).await {
-                ChatCoreResult::Success(resp) => return resp,
+                ChatCoreResult::Success(resp) => {
+                    cooldowns.clear(&conn_id);
+                    return resp;
+                }
                 ChatCoreResult::Error {
                     status,
                     message,
@@ -226,12 +249,33 @@ pub async fn handle_chat(
                 } => {
                     last_status = status;
                     last_error = message.clone();
-                    let should_fallback = hooks.on_account_error(&conn_id, status, &message).await;
-                    if should_fallback {
-                        excluded.insert(conn_id);
+                    let verdict = classify(&target.provider, status, &message, now_ms());
+                    if verdict == Verdict::RequestScoped {
+                        return error_response(status, &message);
+                    }
+                    if verdict == Verdict::Overload && overload_attempts < OVERLOAD_MAX_ATTEMPTS {
+                        overload_attempts += 1;
+                        tokio::time::sleep(overload_delay(overload_attempts)).await;
                         continue;
                     }
-                    return error_response(status, &message);
+                    if !hooks.on_account_error(&conn_id, status, &message).await {
+                        return error_response(status, &message);
+                    }
+                    match verdict {
+                        Verdict::Fixed(d) => cooldowns.set(&conn_id, d),
+                        Verdict::Quota { reset_ms } => cooldowns.set(
+                            &conn_id,
+                            Duration::from_millis(reset_ms.saturating_sub(now_ms()))
+                                .min(MAX_RATE_LIMIT_COOLDOWN),
+                        ),
+                        Verdict::Backoff => {
+                            cooldowns.backoff(&conn_id);
+                        }
+                        Verdict::Overload => cooldowns.set(&conn_id, TRANSIENT_COOLDOWN),
+                        Verdict::RequestScoped => {}
+                    }
+                    excluded.insert(conn_id);
+                    continue;
                 }
             }
         }
