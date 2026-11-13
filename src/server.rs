@@ -825,6 +825,74 @@ mod tests {
         let html = std::str::from_utf8(&body).unwrap();
         assert!(html.contains("Endpoint &amp; API Keys"));
     }
+
+    #[tokio::test]
+    async fn all_dashboard_pages_require_auth_and_return_200_when_logged_in() {
+        let paths = [
+            "/dashboard",
+            "/dashboard/endpoint",
+            "/dashboard/providers",
+            "/dashboard/providers/new",
+            "/dashboard/providers/openai",
+            "/dashboard/combos",
+            "/dashboard/usage",
+            "/dashboard/quota",
+            "/dashboard/token-saver",
+            "/dashboard/prompt-injection",
+            "/dashboard/profile",
+            "/dashboard/skills",
+            "/dashboard/pxpipe",
+            "/dashboard/proxy-pools",
+            "/dashboard/mitm",
+            "/dashboard/automation",
+            "/dashboard/cli-tools",
+            "/dashboard/cli-tools/claude",
+            "/dashboard/basic-chat",
+            "/dashboard/console-log",
+            "/dashboard/translator",
+            "/dashboard/media-providers/web",
+            "/dashboard/media-providers/image",
+            "/dashboard/media-providers/image/dall-e",
+            "/dashboard/media-providers/combo/default",
+        ];
+        let app = test_router();
+        let tok = token();
+        for p in paths {
+            let unauth = app
+                .clone()
+                .oneshot(Request::get(p).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert!(
+                unauth.status().is_redirection(),
+                "expected redirect for unauthenticated {p}, got {}",
+                unauth.status()
+            );
+            assert_eq!(unauth.headers().get("location").unwrap(), "/login");
+
+            let auth = app
+                .clone()
+                .oneshot(
+                    Request::get(p)
+                        .header("cookie", format!("auth_token={tok}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(auth.status(), 200, "expected 200 for {p}");
+            let ct = auth
+                .headers()
+                .get("content-type")
+                .unwrap()
+                .to_str()
+                .unwrap();
+            assert!(ct.contains("text/html"), "expected html for {p}");
+            let body = to_bytes(auth.into_body(), 200_000).await.unwrap();
+            let html = std::str::from_utf8(&body).unwrap();
+            assert!(html.contains("/dashboard/app.js"), "missing app.js on {p}");
+        }
+    }
     #[tokio::test]
     async fn login_sets_auth_cookie_and_allows_dashboard() {
         let db = Connection::open_in_memory().unwrap();
