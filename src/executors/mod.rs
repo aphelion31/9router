@@ -3,6 +3,8 @@ use anyhow::{Context, bail};
 use serde_json::Value;
 mod antigravity;
 mod azure;
+mod browser_executable_check;
+mod deepseek_web_done_terminator;
 pub(crate) mod bedrock;
 mod chatgpt_web;
 mod devin_cli;
