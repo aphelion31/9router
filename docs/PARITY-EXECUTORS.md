@@ -31,7 +31,7 @@ Status is deliberately conservative: partial means the upstream executor has beh
 | kimchi.js | partial | Request normalization ported; dynamic model metadata and shared reasoning injection not yet available. |
 | kiro.js | pending | |
 | mimo-free.js | pending | |
-| minimax-code.js | pending | |
+| minimax-code.js | partial | Quota response normalization; desktop lease and OAuth token refresh unavailable. |
 | muse-web.js | unsupported | Browser automation required. |
 | ollama-local.js | partial | Default URL works, host override differs. |
 | opencode-go.js | partial | Responses path and basic normalization; per-conversation sessions and full input/tool sanitization remain. |

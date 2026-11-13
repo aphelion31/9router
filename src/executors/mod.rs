@@ -8,6 +8,7 @@ mod gemini_web;
 mod github;
 mod iflow;
 mod kimchi;
+mod minimax_code;
 mod muse_web;
 mod opencode;
 mod opencode_go;
@@ -268,10 +269,34 @@ pub async fn execute(
     {
         builder = builder.bearer_auth(token);
     }
-    Ok(builder
+    let response = builder
         .body(serde_json::to_vec(&request.body)?)
         .send()
-        .await?)
+        .await?;
+    if provider.id == "minimax-code" && matches!(response.status().as_u16(), 402 | 403) {
+        let status = response.status();
+        let headers = response.headers().clone();
+        let bytes = response.bytes().await?;
+        let text = String::from_utf8_lossy(&bytes);
+        let quota = minimax_code::is_quota(status.as_u16(), &text);
+        let body = if quota {
+            serde_json::json!({"type":"error", "error":{"type":"rate_limit_error", "message":format!("usage limit reached: {text}")}}).to_string().into_bytes()
+        } else {
+            bytes.to_vec()
+        };
+        let mut rebuilt =
+            axum::http::Response::builder().status(if quota { 429 } else { status.as_u16() });
+        for (name, value) in &headers {
+            if name != reqwest::header::CONTENT_LENGTH && name != reqwest::header::CONTENT_ENCODING
+            {
+                rebuilt = rebuilt.header(name, value);
+            }
+        }
+        return Ok(reqwest::Response::from(
+            rebuilt.body(reqwest::Body::from(body))?,
+        ));
+    }
+    Ok(response)
 }
 
 #[cfg(test)]
@@ -285,6 +310,42 @@ mod tests {
         routing::post,
     };
     use serde_json::json;
+
+    #[tokio::test]
+    async fn minimax_code_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().fallback(post(|| async {
+                    (StatusCode::FORBIDDEN, "insufficient credit")
+                })),
+            )
+            .await
+            .unwrap()
+        });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "minimax-code".into(),
+                model: "test".into(),
+                body: json!({"messages":[]}),
+                stream: true,
+                api_key: None,
+                access_token: Some("test".into()),
+                base_url: Some(url),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(
+            String::from_utf8_lossy(&response.bytes().await.unwrap())
+                .contains("insufficient credit")
+        );
+        task.abort();
+    }
 
     #[tokio::test]
     async fn xiaomi_mimo_mock_request() {
