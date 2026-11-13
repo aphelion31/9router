@@ -1,12 +1,18 @@
 //! Streaming upstream transport. Request and response translation are handled separately.
 use anyhow::{Context, bail};
 use serde_json::Value;
+mod antigravity;
 mod azure;
 pub(crate) mod bedrock;
 mod chatgpt_web;
 mod devin_cli;
+mod codebuddy_cn;
+mod codebuddy_intl;
+pub(crate) mod commandcode;
+mod gemini_cli;
 mod gemini_web;
 mod github;
+mod grok_cli;
 mod iflow;
 mod kimchi;
 mod mimo_free;
@@ -19,8 +25,10 @@ mod vertex;
 mod xiaomi_mimo;
 mod xiaomi_tokenplan;
 mod zed;
+pub(crate) mod trae;
+pub(crate) mod windsurf;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ExecutorRequest {
     pub provider: String,
     pub model: String,
@@ -30,6 +38,7 @@ pub struct ExecutorRequest {
     pub access_token: Option<String>,
     /// Overrides the registry endpoint. For Gemini this is the models endpoint.
     pub base_url: Option<String>,
+    pub provider_specific_data: Option<Value>,
 }
 
 /// Sends a translated request and leaves the upstream body unbuffered.
@@ -40,6 +49,12 @@ pub async fn execute(
 ) -> anyhow::Result<reqwest::Response> {
     if request.provider == "devin-cli" {
         return Err(devin_cli::unsupported());
+    }
+    if request.provider == "trae" {
+        return trae::execute(client, &request).await;
+    }
+    if request.provider == "windsurf" {
+        return windsurf::execute(client, &request).await;
     }
     let provider = crate::providers::lookup(&request.provider)
         .with_context(|| format!("unknown provider: {}", request.provider))?;
@@ -84,6 +99,7 @@ pub async fn execute(
         .or_else(|| {
             matches!(provider.id.as_str(), "vertex" | "vertex-partner").then_some(vertex_endpoint)
         })
+        .or_else(|| (provider.id == "antigravity").then_some(antigravity::default_endpoint()))
         .or(provider.base_url.as_deref())
         .with_context(|| format!("provider {} has no endpoint", provider.id))?;
     if provider.id == "mimo-free" {
@@ -112,6 +128,10 @@ pub async fn execute(
         xiaomi_tokenplan::url(endpoint, request.model.ends_with("-claude"))?
     } else if provider.id == "azure" {
         azure::url(endpoint, &request.model)?
+    } else if provider.id == "antigravity" {
+        antigravity::url(endpoint, &request.model, request.stream)?
+    } else if provider.id == "gemini-cli" {
+        gemini_cli::url(endpoint, request.stream)?
     } else if matches!(provider.id.as_str(), "vertex" | "vertex-partner") {
         vertex::url(
             endpoint,
@@ -235,6 +255,46 @@ pub async fn execute(
     if tokenplan_claude {
         builder = builder.header("anthropic-version", "2023-06-01");
     }
+    if provider.id == "antigravity" {
+        for (name, value) in antigravity::prepare(
+            &request.model,
+            &mut request.body,
+            request.stream,
+            request.provider_specific_data.as_ref(),
+        )? {
+            builder = builder.header(name, value);
+        }
+    }
+    if provider.id == "gemini-cli" {
+        for (name, value) in gemini_cli::prepare(
+            &request.model,
+            &mut request.body,
+            request.stream,
+            request.provider_specific_data.as_ref(),
+        ) {
+            builder = builder.header(name, value);
+        }
+    }
+    if provider.id == "commandcode" {
+        for (name, value) in commandcode::prepare(&mut request.body)? {
+            builder = builder.header(name, value);
+        }
+    }
+    if provider.id == "codebuddy-cn" {
+        codebuddy_cn::prepare(&mut request.body)?;
+    }
+    if provider.id == "codebuddy-intl" {
+        codebuddy_intl::prepare(&mut request.body)?;
+    }
+    if provider.id == "grok-cli" {
+        for (name, value) in grok_cli::prepare(
+            &request.model,
+            &mut request.body,
+            request.provider_specific_data.as_ref(),
+        )? {
+            builder = builder.header(name, value);
+        }
+    }
     if provider.id == "iflow" {
         for (name, value) in iflow::prepare(
             &mut request.body,
@@ -245,7 +305,7 @@ pub async fn execute(
             builder = builder.header(name, value);
         }
     }
-    if request.stream || provider.id == "codex" {
+    if request.stream || matches!(provider.id.as_str(), "codex" | "codebuddy-cn" | "codebuddy-intl") {
         builder = builder.header(reqwest::header::ACCEPT, "text/event-stream");
     }
     if provider.id == "azure" {
@@ -559,7 +619,11 @@ mod tests {
         body: Bytes,
     ) -> (StatusCode, String) {
         let value: Value = serde_json::from_slice(&body).unwrap();
-        (StatusCode::TOO_MANY_REQUESTS, json!({"uri":uri.to_string(), "authorization":headers.get("authorization").and_then(|v|v.to_str().ok()), "key":headers.get("x-api-key").or_else(|| headers.get("x-goog-api-key")).or_else(|| headers.get("api-key")).and_then(|v|v.to_str().ok()), "version":headers.get("anthropic-version").and_then(|v|v.to_str().ok()), "session":headers.get("session-id").and_then(|v|v.to_str().ok()), "timestamp":headers.get("x-iflow-timestamp").and_then(|v|v.to_str().ok()), "signature":headers.get("x-iflow-signature").and_then(|v|v.to_str().ok()), "body":value}).to_string())
+        let all_headers: serde_json::Map<String, Value> = headers
+            .iter()
+            .filter_map(|(k, v)| v.to_str().ok().map(|s| (k.to_string(), Value::String(s.to_string()))))
+            .collect();
+        (StatusCode::TOO_MANY_REQUESTS, json!({"uri":uri.to_string(), "authorization":headers.get("authorization").and_then(|v|v.to_str().ok()), "key":headers.get("x-api-key").or_else(|| headers.get("x-goog-api-key")).or_else(|| headers.get("api-key")).and_then(|v|v.to_str().ok()), "version":headers.get("anthropic-version").and_then(|v|v.to_str().ok()), "session":headers.get("session-id").and_then(|v|v.to_str().ok()), "timestamp":headers.get("x-iflow-timestamp").and_then(|v|v.to_str().ok()), "signature":headers.get("x-iflow-signature").and_then(|v|v.to_str().ok()), "headers": all_headers, "body":value}).to_string())
     }
 
     #[tokio::test]
@@ -575,6 +639,7 @@ mod tests {
                     api_key: None,
                     access_token: None,
                     base_url: None,
+                    ..Default::default()
                 },
             )
             .await
@@ -604,6 +669,7 @@ mod tests {
                     api_key: Some("secret".into()),
                     access_token: None,
                     base_url: Some(format!("{base}/v1")),
+                    ..Default::default()
                 },
             )
             .await
@@ -653,6 +719,7 @@ mod tests {
                 api_key: None,
                 access_token: None,
                 base_url: Some(url),
+                ..Default::default()
             },
         )
         .await
@@ -692,6 +759,7 @@ mod tests {
                 api_key: Some("secret".into()),
                 access_token: None,
                 base_url: Some(url),
+                ..Default::default()
             },
         )
         .await
@@ -722,6 +790,7 @@ mod tests {
                 api_key: None,
                 access_token: Some("secret".into()),
                 base_url: Some(url),
+                ..Default::default()
             },
         )
         .await
@@ -743,7 +812,7 @@ mod tests {
                 .await
                 .unwrap()
         });
-        let response = execute(&reqwest::Client::new(), ExecutorRequest { provider: "github".into(), model: "gpt-5".into(), body: json!({"max_tokens": 123, "reasoning_effort":"none", "messages": [{"role":"user", "content":[{"type":"thinking", "text":"hello"}]}]}), stream: false, api_key: None, access_token: Some("secret".into()), base_url: Some(url) }).await.unwrap();
+        let response = execute(&reqwest::Client::new(), ExecutorRequest { provider: "github".into(), model: "gpt-5".into(), body: json!({"max_tokens": 123, "reasoning_effort":"none", "messages": [{"role":"user", "content":[{"type":"thinking", "text":"hello"}]}]}), stream: false, api_key: None, access_token: Some("secret".into()), base_url: Some(url), ..Default::default() }).await.unwrap();
         let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
         assert_eq!(result["authorization"], "Bearer secret");
         assert_eq!(result["body"]["max_completion_tokens"], 123);
@@ -771,6 +840,7 @@ mod tests {
                 api_key: None,
                 access_token: None,
                 base_url: Some(url),
+                ..Default::default()
             },
         )
         .await
@@ -800,6 +870,7 @@ mod tests {
                 api_key: Some("secret".into()),
                 access_token: None,
                 base_url: Some(url),
+                ..Default::default()
             },
         )
         .await
@@ -834,6 +905,7 @@ mod tests {
                 api_key: Some("secret".into()),
                 access_token: None,
                 base_url: Some(url),
+                ..Default::default()
             },
         )
         .await
@@ -873,6 +945,7 @@ mod tests {
                 api_key: Some("secret".into()),
                 access_token: None,
                 base_url: Some(url),
+                ..Default::default()
             },
         )
         .await
@@ -893,6 +966,470 @@ mod tests {
             .map(|b| format!("{b:02x}"))
             .collect();
         assert_eq!(result["signature"], expected);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn gemini_cli_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1internal", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(mock)))
+                .await
+                .unwrap()
+        });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "gemini-cli".into(),
+                model: "gemini-2.5-pro".into(),
+                body: json!({"contents": []}),
+                stream: true,
+                access_token: Some("secret-tok".into()),
+                base_url: Some(url),
+                provider_specific_data: Some(json!({"projectId": "proj-123"})),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(result["uri"], "/v1internal:streamGenerateContent?alt=sse");
+        assert_eq!(result["authorization"], "Bearer secret-tok");
+        assert_eq!(result["body"]["project"], "proj-123");
+        assert_eq!(result["body"]["model"], "gemini-2.5-pro");
+        assert_eq!(result["body"]["request"], json!({"contents": []}));
+        assert!(
+            result["headers"]["user-agent"]
+                .as_str()
+                .unwrap()
+                .starts_with("GeminiCLI/0.34.0/gemini-2.5-pro ")
+        );
+        assert_eq!(
+            result["headers"]["x-goog-api-client"],
+            "google-genai-sdk/1.41.0 gl-node/v22.19.0"
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn codebuddy_intl_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/v2/chat/completions",
+            listener.local_addr().unwrap()
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(mock)))
+                .await
+                .unwrap()
+        });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "codebuddy-intl".into(),
+                model: "claude-sonnet-4".into(),
+                body: json!({
+                    "reasoning_effort": "high",
+                    "messages": [
+                        {"role": "system", "content": "custom"},
+                        {"role": "developer", "content": "dev"},
+                        {"role": "user", "content": "hello"}
+                    ]
+                }),
+                stream: false,
+                api_key: Some("cb-key".into()),
+                base_url: Some(url),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(result["authorization"], "Bearer cb-key");
+        assert_eq!(result["body"]["stream"], true);
+        assert_eq!(result["body"]["reasoning_summary"], "auto");
+        assert_eq!(
+            result["body"]["messages"],
+            json!([
+                {"role": "system", "content": "You are CodeBuddy Code."},
+                {"role": "user", "content": [{"type": "text", "text": "hello"}]}
+            ])
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn codebuddy_cn_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/v2/chat/completions",
+            listener.local_addr().unwrap()
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(mock)))
+                .await
+                .unwrap()
+        });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "codebuddy-cn".into(),
+                model: "deepseek-chat".into(),
+                body: json!({
+                    "reasoning_effort": "none",
+                    "messages": [
+                        {"role": "system", "content": "You are Claude Code, Anthropic's official CLI."},
+                        {"role": "user", "content": "hi"}
+                    ]
+                }),
+                stream: false,
+                api_key: Some("cb-cn-key".into()),
+                base_url: Some(url),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(result["authorization"], "Bearer cb-cn-key");
+        assert_eq!(result["body"]["stream"], true);
+        assert!(result["body"].get("reasoning_effort").is_none());
+        assert_eq!(
+            result["body"]["messages"][0]["content"],
+            "You are a helpful AI assistant that helps with software engineering tasks."
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn commandcode_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/alpha/generate", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(mock)))
+                .await
+                .unwrap()
+        });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "commandcode".into(),
+                model: "deepseek/deepseek-v4-pro".into(),
+                body: json!({"threadId": "thread-abc", "messages": []}),
+                stream: false,
+                api_key: Some("user_secret".into()),
+                base_url: Some(url),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(result["authorization"], "Bearer user_secret");
+        assert_eq!(result["body"]["stream"], true);
+        assert_eq!(result["headers"]["user-agent"], "cli");
+        assert_eq!(result["headers"]["x-command-code-version"], "1.88.0");
+        assert_eq!(result["headers"]["x-session-id"], "thread-abc");
+        assert_eq!(result["headers"]["x-cli-environment"], "production");
+        assert_eq!(result["headers"]["x-cli-surface"], "cli");
+        assert_eq!(result["headers"]["x-taste-learning"], "false");
+
+        let mut decoder = commandcode::Decoder::new("deepseek/deepseek-v4-pro");
+        let sse = decoder
+            .push(b"{\"type\":\"text-delta\",\"delta\":\"hi\"}\n")
+            .unwrap();
+        let text = String::from_utf8(sse).unwrap();
+        assert!(text.starts_with("data: "));
+        assert!(text.contains("\"content\":\"hi\""));
+        assert_eq!(
+            String::from_utf8(decoder.finish()).unwrap(),
+            "data: [DONE]\n\n"
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn trae_mock_request() {
+        use axum::routing::get;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new()
+            .route(
+                "/chat_sessions",
+                post(|headers: HeaderMap, body: Bytes| async move {
+                    let v: Value = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(
+                        headers.get("authorization").unwrap().to_str().unwrap(),
+                        "Cloud-IDE-JWT jwt-tok"
+                    );
+                    assert_eq!(v["mode"], "code");
+                    assert_eq!(v["initial_message"]["model_name"], "claude-sonnet-4");
+                    json!({"code": 0, "data": {"chat_session_id": "sess-1", "message_id": "msg-1"}}).to_string()
+                }),
+            )
+            .route(
+                "/chat_sessions/sess-1/events",
+                get(|OriginalUri(uri): OriginalUri, headers: HeaderMap| async move {
+                    assert_eq!(
+                        uri.to_string(),
+                        "/chat_sessions/sess-1/events?reply_to_message_id=msg-1"
+                    );
+                    assert_eq!(
+                        headers.get("authorization").unwrap().to_str().unwrap(),
+                        "Cloud-IDE-JWT jwt-tok"
+                    );
+                    "event: plan_item\ndata: {\"id\":\"p1\",\"thought\":\"Hello\"}\n\nevent: plan_item\ndata: {\"id\":\"p1\",\"thought\":\"Hello world\"}\n\nevent: token_usage\ndata: {\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}\n\nevent: done\ndata: {}\n\n"
+                }),
+            );
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "trae".into(),
+                model: "claude-sonnet-4".into(),
+                body: json!({"messages": [{"role": "user", "content": "hi"}]}),
+                stream: true,
+                access_token: Some("jwt-tok".into()),
+                base_url: Some(base),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let raw = response.bytes().await.unwrap();
+        let mut decoder = trae::Decoder::new("claude-sonnet-4");
+        let mut sse = String::from_utf8(decoder.push(&raw).unwrap()).unwrap();
+        sse.push_str(&String::from_utf8(decoder.finish()).unwrap());
+        assert!(sse.contains("\"content\":\"Hello\""));
+        assert!(sse.contains("\"content\":\" world\""));
+        assert!(sse.contains("\"total_tokens\":5"));
+        assert!(sse.contains("data: [DONE]"));
+
+        let non_stream: Value =
+            serde_json::from_slice(&trae::decode_non_stream(&raw, "claude-sonnet-4")).unwrap();
+        assert_eq!(
+            non_stream["choices"][0]["message"]["content"],
+            "Hello world"
+        );
+        assert_eq!(non_stream["usage"]["total_tokens"], 5);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn grok_cli_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://{addr}");
+        let app = Router::new().route("/", post(mock));
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "grok-cli".into(),
+                model: "grok-4.5-high".into(),
+                body: json!({
+                    "messages": [
+                        {"role": "user", "content": "hi"},
+                        {"role": "assistant", "content": "hello"},
+                        {"role": "user", "content": "next"}
+                    ],
+                    "tools": [{
+                        "type": "function",
+                        "function": {"name": "read", "parameters": {"type": "object"}}
+                    }],
+                    "max_tokens": 100
+                }),
+                stream: false,
+                access_token: Some("grok-tok".into()),
+                base_url: Some(base),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let echo: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        let headers = &echo["headers"];
+        let body = &echo["body"];
+        assert!(
+            headers["user-agent"]
+                .as_str()
+                .unwrap()
+                .starts_with("grok-shell/")
+        );
+        assert_eq!(headers["x-grok-client-identifier"], "grok-shell");
+        assert_eq!(headers["x-grok-turn-idx"], "2");
+        assert_eq!(headers["x-grok-model-override"], "grok-4.5");
+        assert_eq!(body["model"], "grok-4.5");
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["store"], false);
+        assert_eq!(body["reasoning"]["effort"], "high");
+        assert!(body.get("max_tokens").is_none());
+        assert_eq!(body["tools"][0]["name"], "read");
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn windsurf_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://{addr}/GetChatMessage");
+        let app = Router::new().route(
+            "/GetChatMessage",
+            post(|headers: HeaderMap, body: Bytes| async move {
+                assert_eq!(
+                    headers.get("content-type").and_then(|v| v.to_str().ok()),
+                    Some("application/grpc-web+proto")
+                );
+                assert_eq!(
+                    headers.get("x-grpc-web").and_then(|v| v.to_str().ok()),
+                    Some("1")
+                );
+                // 5-byte gRPC-web frame header + protobuf payload containing resolved model name
+                assert!(body.len() > 5);
+                assert_eq!(body[0], 0x00);
+                let payload_str = String::from_utf8_lossy(&body[5..]);
+                assert!(payload_str.contains("claude-sonnet-4-6"));
+                assert!(payload_str.contains("ws-key"));
+
+                // Encode two CompletionChunk frames: ContentChunk("Hi ") and DoneChunk(10, 4)
+                fn varint(mut v: u64, out: &mut Vec<u8>) {
+                    while v > 0x7f {
+                        out.push(((v & 0x7f) as u8) | 0x80);
+                        v >>= 7;
+                    }
+                    out.push(v as u8);
+                }
+                let mut content_inner = Vec::new();
+                content_inner.push((1 << 3) | 2);
+                varint(3, &mut content_inner);
+                content_inner.extend_from_slice(b"Hi ");
+                let mut chunk1 = Vec::new();
+                chunk1.push((1 << 3) | 2);
+                varint(content_inner.len() as u64, &mut chunk1);
+                chunk1.extend_from_slice(&content_inner);
+
+                let mut usage = Vec::new();
+                usage.push(1 << 3);
+                varint(10, &mut usage);
+                usage.push(2 << 3);
+                varint(4, &mut usage);
+                let mut done_inner = Vec::new();
+                done_inner.push((1 << 3) | 2);
+                varint(usage.len() as u64, &mut done_inner);
+                done_inner.extend_from_slice(&usage);
+                let mut chunk2 = Vec::new();
+                chunk2.push((3 << 3) | 2);
+                varint(done_inner.len() as u64, &mut chunk2);
+                chunk2.extend_from_slice(&done_inner);
+
+                let mut out = windsurf::grpc_web_frame(&chunk1);
+                out.extend_from_slice(&windsurf::grpc_web_frame(&chunk2));
+                (StatusCode::OK, out)
+            }),
+        );
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "windsurf".into(),
+                model: "claude-sonnet-4.6".into(),
+                body: json!({"messages": [{"role": "user", "content": "hello"}]}),
+                stream: true,
+                access_token: Some("ws-key".into()),
+                base_url: Some(base),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let raw = response.bytes().await.unwrap();
+        let mut decoder = windsurf::Decoder::new("claude-sonnet-4.6");
+        let mut sse = String::from_utf8(decoder.push(&raw).unwrap()).unwrap();
+        sse.push_str(&String::from_utf8(decoder.finish()).unwrap());
+        assert!(sse.contains("\"content\":\"Hi \""));
+        assert!(sse.contains("\"total_tokens\":14"));
+        assert!(sse.contains("data: [DONE]"));
+
+        let non_stream: Value =
+            serde_json::from_slice(&windsurf::decode_non_stream(&raw, "claude-sonnet-4.6"))
+                .unwrap();
+        assert_eq!(non_stream["choices"][0]["message"]["content"], "Hi ");
+        assert_eq!(non_stream["usage"]["total_tokens"], 14);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn antigravity_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://{addr}");
+        let app = Router::new().route("/v1internal:streamGenerateContent", post(mock));
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "antigravity".into(),
+                model: "claude-sonnet-4-6".into(),
+                body: json!({
+                    "thinking": {"type": "enabled"},
+                    "requestType": "agent",
+                    "request": {
+                        "thinkingConfig": {"thinkingBudget": 1024},
+                        "systemInstruction": {"parts": [{"text": "opencode helper\nx-anthropic-billing-header: foo\n"}]},
+                        "contents": [{
+                            "role": "model",
+                            "parts": [
+                                {"thought": true, "text": "hmm"},
+                                {"functionCall": {"name": "read", "args": {}}}
+                            ]
+                        }],
+                        "tools": [{
+                            "functionDeclarations": [{"name": "my/tool!", "parameters": {"type": "object", "additionalProperties": false}}]
+                        }]
+                    }
+                }),
+                stream: true,
+                access_token: Some("ag-tok".into()),
+                base_url: Some(base),
+                provider_specific_data: Some(json!({"projectId": "proj-1"})),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let echo: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(echo["uri"], "/v1internal:streamGenerateContent?alt=sse");
+        assert!(
+            echo["headers"]["user-agent"]
+                .as_str()
+                .unwrap()
+                .starts_with("antigravity/hub/")
+        );
+        let body = &echo["body"];
+        assert_eq!(body["project"], "proj-1");
+        assert_eq!(body["userAgent"], "antigravity");
+        assert!(body.get("requestType").is_none());
+        assert!(body.get("thinking").is_none());
+        assert!(body["request"].get("thinkingConfig").is_none());
+        let sys = body["request"]["systemInstruction"]["parts"][0]["text"]
+            .as_str()
+            .unwrap();
+        assert!(sys.contains("antigravity helper"));
+        assert!(!sys.contains("x-anthropic-billing-header"));
+        let parts = body["request"]["contents"][0]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert!(parts[0]["thoughtSignature"].is_string());
+        assert_eq!(
+            body["request"]["tools"][0]["functionDeclarations"][0]["name"],
+            "my_tool_"
+        );
+        assert_eq!(
+            body["request"]["toolConfig"]["functionCallingConfig"]["mode"],
+            "VALIDATED"
+        );
         task.abort();
     }
 }
