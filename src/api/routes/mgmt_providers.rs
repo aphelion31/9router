@@ -331,7 +331,196 @@ pub fn routes() -> Router<AppState> {
             "/api/provider-nodes/{id}",
             axum::routing::put(update_node).delete(delete_node),
         )
-        .route("/api/provider-nodes/validate", post(unavailable))
+        .route("/api/provider-nodes/validate", post(validate_node))
+}
+
+async fn validate_node(Json(body): Json<Value>) -> Response {
+    let (Some(base), Some(key)) = (
+        body["baseUrl"].as_str().filter(|s| !s.is_empty()),
+        body["apiKey"].as_str().filter(|s| !s.is_empty()),
+    ) else {
+        return err(StatusCode::BAD_REQUEST, "Base URL and API key required");
+    };
+    let Ok(url) = reqwest::Url::parse(base) else {
+        return err(StatusCode::BAD_REQUEST, "Invalid URL format");
+    };
+    let Some(host) = url.host_str() else {
+        return err(StatusCode::BAD_REQUEST, "Invalid URL format");
+    };
+    if !["http", "https"].contains(&url.scheme())
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return err(StatusCode::BAD_REQUEST, "URL not allowed");
+    }
+    let port = url.port_or_known_default().unwrap_or(443);
+    let Ok(addrs) = tokio::net::lookup_host((host, port)).await else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"valid":false,"error":"DNS lookup failed - invalid domain or network issue"}))).into_response();
+    };
+    let addrs: Vec<_> = addrs.collect();
+    if addrs.is_empty() || addrs.iter().any(|a| !public_address(a.ip())) {
+        return err(StatusCode::BAD_REQUEST, "URL not allowed");
+    }
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve_to_addrs(host, &addrs)
+        .build()
+    else {
+        return err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Network connection failed - check URL and network connectivity",
+        );
+    };
+    let kind = body["type"].as_str().unwrap_or("");
+    let model = body["modelId"].as_str().unwrap_or("");
+    let mut base = base.trim().trim_end_matches('/').to_string();
+    if kind == "anthropic-compatible" {
+        base = base.strip_suffix("/messages").unwrap_or(&base).to_string();
+    }
+    if kind == "custom-embedding" && model.trim().is_empty() {
+        return Json(json!({"valid":false,"error":"Model ID required for embedding validation"}))
+            .into_response();
+    }
+    let endpoint = if kind == "custom-embedding" {
+        "embeddings"
+    } else {
+        "models"
+    };
+    let mut request = if endpoint == "models" {
+        client.get(format!("{base}/{endpoint}"))
+    } else {
+        client
+            .post(format!("{base}/{endpoint}"))
+            .header("content-type", "application/json")
+            .body(json!({"model":model.trim(),"input":"ping"}).to_string())
+    };
+    request = request.bearer_auth(key);
+    if kind == "anthropic-compatible" {
+        request = request
+            .header("x-api-key", key)
+            .header("anthropic-version", "2023-06-01");
+    }
+    let Ok(res) = request.send().await else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"valid":false,"error":"Network connection failed - check URL and network connectivity"}))).into_response();
+    };
+    let status = res.status().as_u16();
+    if res.status().is_success() {
+        if endpoint == "embeddings" {
+            let data: Value = res
+                .text()
+                .await
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or(Value::Null);
+            return Json(json!({"valid":true,"method":"embeddings","dimensions":data["data"][0]["embedding"].as_array().map(Vec::len)})).into_response();
+        }
+        return Json(json!({"valid":true})).into_response();
+    }
+    if status == 401 || status == 403 {
+        return Json(json!({"valid":false,"error":"API key unauthorized"})).into_response();
+    }
+    if endpoint == "embeddings" {
+        let text = res.text().await.unwrap_or_default();
+        let suffix: String = text.chars().take(200).collect();
+        return Json(json!({"valid":false,"method":"embeddings","error":format!("Embeddings request failed ({status}){}", if suffix.is_empty() { String::new() } else { format!(": {suffix}") })})).into_response();
+    }
+    if !model.is_empty() {
+        let mut request = client
+            .post(format!("{base}/chat/completions"))
+            .bearer_auth(key)
+            .header("content-type", "application/json")
+            .body(
+                json!({"model":model,"messages":[{"role":"user","content":"ping"}],"max_tokens":1})
+                    .to_string(),
+            );
+        if kind == "anthropic-compatible" {
+            request = request
+                .header("x-api-key", key)
+                .header("anthropic-version", "2023-06-01");
+        }
+        let Ok(res) = request.send().await else {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"valid":false,"error":"Network connection failed - check URL and network connectivity"}))).into_response();
+        };
+        let status = res.status().as_u16();
+        if res.status().is_success() {
+            return Json(json!({"valid":true,"method":"chat"})).into_response();
+        }
+        let message = match status {
+            401 | 403 => "API key unauthorized".to_string(),
+            400 => "Invalid model or bad request".to_string(),
+            404 => "Chat endpoint not found".to_string(),
+            500..=599 => "Server error - try again later".to_string(),
+            _ => format!("Chat request failed ({status})"),
+        };
+        return Json(json!({"valid":false,"error":message,"method":"chat"})).into_response();
+    }
+    let message = match status {
+        404 => "/models endpoint not found - try chat validation with model ID".to_string(),
+        500..=599 => "Server error - try again later".to_string(),
+        _ => format!("Unexpected response ({status})"),
+    };
+    Json(json!({"valid":false,"error":message})).into_response()
+}
+
+fn public_address(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            !(ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_broadcast()
+                || ip.is_multicast()
+                || ip.octets()[0] == 0
+                || ip.octets()[0] >= 224
+                || (ip.octets()[0] == 100 && (64..=127).contains(&ip.octets()[1])))
+        }
+        std::net::IpAddr::V6(ip) => {
+            if let Some(v4) = ip.to_ipv4_mapped() {
+                return public_address(v4.into());
+            }
+            !(ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || (ip.segments()[0] & 0xfe00) == 0xfc00
+                || (ip.segments()[0] & 0xffc0) == 0xfe80)
+        }
+    }
+}
+
+#[cfg(test)]
+mod node_validation_tests {
+    use super::*;
+    use axum::{body::Body, http::Request};
+    use std::sync::{Arc, Mutex};
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn rejects_missing_and_private_targets() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrate(&db).unwrap();
+        let state = AppState {
+            db: Arc::new(Mutex::new(db)),
+            executor: Arc::new(crate::api::executor::HttpExecutor(reqwest::Client::new())),
+            jwt_secret: None,
+        };
+        let app = routes().with_state(state);
+        for body in [
+            json!({}),
+            json!({"baseUrl":"http://127.0.0.1:1234","apiKey":"test"}),
+        ] {
+            let request = Request::post("/api/provider-nodes/validate")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap();
+            assert_eq!(
+                app.clone().oneshot(request).await.unwrap().status(),
+                StatusCode::BAD_REQUEST
+            );
+        }
+    }
 }
 
 fn node(db: &rusqlite::Connection, id: &str) -> rusqlite::Result<Option<Value>> {
