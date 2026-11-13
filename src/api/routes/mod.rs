@@ -19,12 +19,25 @@ mod v1_models;
 mod v1_stubs;
 mod v1_usage;
 
+mod oauth_core;
+mod oauth_imports;
+mod obs_events;
+mod obs_usage;
+
 pub fn management() -> Router<AppState> {
     Router::new()
         .merge(mgmt_system::routes())
         .merge(mgmt_providers::routes())
         .merge(mgmt_models::routes())
         .merge(mgmt_misc::routes())
+        .merge(obs_events::router())
+        .merge(obs_usage::router())
+        .merge(oauth_core::router())
+        .merge(oauth_imports::router())
+}
+
+pub fn public() -> Router<AppState> {
+    Router::new().merge(oauth_core::public_router())
 }
 
 pub fn v1() -> Router<AppState> {

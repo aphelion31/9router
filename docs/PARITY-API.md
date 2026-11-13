@@ -74,28 +74,28 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `
 | /api/models/disabled | DELETE, GET, POST | partial |
 | /api/models | GET, PUT | stub501 |
 | /api/models/test | POST | stub501 |
-| /api/monitoring | GET | todo |
-| /api/notifications | GET, POST | todo |
-| /api/oauth/[provider]/[action] | GET, POST | todo |
-| /api/oauth/codex/bulk-import | POST | todo |
-| /api/oauth/codex/import-token | POST | todo |
-| /api/oauth/cursor/auto-import | GET | todo |
-| /api/oauth/cursor/import | GET, POST | todo |
-| /api/oauth/gitlab/pat | POST | todo |
-| /api/oauth/grok-cli/bulk-import | POST | todo |
-| /api/oauth/iflow/cookie | POST | todo |
-| /api/oauth/kiro/api-key | POST | todo |
-| /api/oauth/kiro/auto-import | GET | todo |
-| /api/oauth/kiro/import-cli-proxy | POST | todo |
-| /api/oauth/kiro/import | POST | todo |
-| /api/oauth/kiro/social-authorize | GET | todo |
-| /api/oauth/kiro/social-exchange | POST | todo |
-| /api/oauth/xiaomi-mimo/api-key | POST | todo |
-| /api/oauth/xiaomi-mimo/auto-import | GET | todo |
-| /api/oauth/xiaomi-mimo/login/start | POST | todo |
-| /api/oauth/xiaomi-mimo/login/status | GET | todo |
-| /api/oauth/zed/auto-import | GET | todo |
-| /api/oauth/zed/import | POST | todo |
+| /api/monitoring | GET | done |
+| /api/notifications | GET, POST | done |
+| /api/oauth/[provider]/[action] | GET, POST | done |
+| /api/oauth/codex/bulk-import | POST | done |
+| /api/oauth/codex/import-token | POST | done |
+| /api/oauth/cursor/auto-import | GET | done |
+| /api/oauth/cursor/import | GET, POST | done |
+| /api/oauth/gitlab/pat | POST | done |
+| /api/oauth/grok-cli/bulk-import | POST | done |
+| /api/oauth/iflow/cookie | POST | done |
+| /api/oauth/kiro/api-key | POST | done |
+| /api/oauth/kiro/auto-import | GET | done |
+| /api/oauth/kiro/import-cli-proxy | POST | done |
+| /api/oauth/kiro/import | POST | done |
+| /api/oauth/kiro/social-authorize | GET | done |
+| /api/oauth/kiro/social-exchange | POST | done |
+| /api/oauth/xiaomi-mimo/api-key | POST | done |
+| /api/oauth/xiaomi-mimo/auto-import | GET | done |
+| /api/oauth/xiaomi-mimo/login/start | POST | done |
+| /api/oauth/xiaomi-mimo/login/status | GET | done |
+| /api/oauth/zed/auto-import | GET | done |
+| /api/oauth/zed/import | POST | done |
 | /api/pricing | DELETE, GET, PATCH | stub501 |
 | /api/prompt-injection | DELETE, GET, PUT | todo |
 | /api/prompt-injection/stats | GET | todo |
@@ -133,7 +133,7 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `
 | /api/pxpipe/stats | GET | todo |
 | /api/pxpipe/status | GET | todo |
 | /api/pxpipe/stop | POST | todo |
-| /api/security-log | GET | todo |
+| /api/security-log | GET | done |
 | /api/settings/backup/[id] | GET, POST | stub501 |
 | /api/settings/backup | GET, POST | stub501 |
 | /api/settings/database | GET, POST | stub501 |
@@ -163,17 +163,17 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `
 | /api/tunnel/tailscale-disable | POST | todo |
 | /api/tunnel/tailscale-enable | POST | todo |
 | /api/tunnel/tailscale-install | POST | todo |
-| /api/usage/[connectionId]/claude-reset | POST | todo |
-| /api/usage/[connectionId]/codex-reset-credits | GET, POST | todo |
-| /api/usage/[connectionId] | GET | todo |
-| /api/usage/by-key | GET | todo |
-| /api/usage/chart | GET | todo |
-| /api/usage/latency | GET | todo |
-| /api/usage/logs | GET | todo |
-| /api/usage/providers | GET | todo |
-| /api/usage/request-details | GET | todo |
-| /api/usage/stats | GET | todo |
-| /api/usage/stream | GET | todo |
+| /api/usage/[connectionId]/claude-reset | POST | done |
+| /api/usage/[connectionId]/codex-reset-credits | GET, POST | done |
+| /api/usage/[connectionId] | GET | done |
+| /api/usage/by-key | GET | done |
+| /api/usage/chart | GET | done |
+| /api/usage/latency | GET | done |
+| /api/usage/logs | GET | done |
+| /api/usage/providers | GET | done |
+| /api/usage/request-details | GET | done |
+| /api/usage/stats | GET | done |
+| /api/usage/stream | GET | done |
 | /api/v1/api/chat | POST | stub501 |
 | /api/v1/audio/speech | POST | stub501 |
 | /api/v1/audio/transcriptions | POST | stub501 |
