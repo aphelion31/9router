@@ -2,6 +2,16 @@ pub fn smart_truncate(input: &str) -> String {
     truncate(input, false)
 }
 
+pub fn safe_apply(filter: Option<fn(&str) -> String>, text: &str) -> String {
+    let Some(filter) = filter else {
+        return text.to_owned();
+    };
+    std::panic::catch_unwind(|| filter(text)).unwrap_or_else(|_| {
+        tracing::warn!("rtk filter panicked, passing through raw output");
+        text.to_owned()
+    })
+}
+
 pub fn read_numbered(input: &str) -> String {
     truncate(input, true)
 }
@@ -338,6 +348,14 @@ pub fn dedup_log(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn safe_apply_preserves_raw_text_on_panic() {
+        fn fail(_: &str) -> String {
+            panic!("filter failed")
+        }
+        assert_eq!(safe_apply(Some(fail), "raw"), "raw");
+        assert_eq!(safe_apply(None, "raw"), "raw");
+    }
     #[test]
     fn git_diff_summarizes_changes() {
         assert_eq!(
