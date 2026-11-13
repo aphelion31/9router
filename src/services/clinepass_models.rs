@@ -16,10 +16,6 @@ fn cache() -> &'static Mutex<CacheMap> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub fn clear_cline_model_cache() {
-    cache().lock().unwrap_or_else(|e| e.into_inner()).clear();
-}
-
 fn normalize(list: &[Value], pass_only: bool) -> Vec<Value> {
     list.iter().filter_map(|item| {
         let id = item["id"].as_str()?;

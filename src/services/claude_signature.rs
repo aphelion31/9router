@@ -13,9 +13,6 @@ fn decode(input: &[u8]) -> Option<Vec<u8>> {
         .or_else(|_| STANDARD_NO_PAD.decode(input))
         .ok()
 }
-pub fn has_claude_signature_prefix(raw: &str) -> bool {
-    matches!(strip_prefix(raw).as_bytes().first(), Some(b'E' | b'R'))
-}
 pub fn is_valid_claude_signature(raw: &str) -> bool {
     let signature = strip_prefix(raw);
     if signature.len() > 32 * 1024 * 1024 {
@@ -39,6 +36,5 @@ mod tests {
         assert!(is_valid_claude_signature("Eg=="));
         assert!(is_valid_claude_signature("cache#RWc9PQ=="));
         assert!(!is_valid_claude_signature("not-a-signature"));
-        assert!(has_claude_signature_prefix("prefix#Eg=="));
     }
 }

@@ -24,7 +24,6 @@ pub struct QoderCatalog {
     pub expires_at_ms: u128,
     pub models: Vec<Value>,
     pub raw_configs: HashMap<String, Value>,
-    pub fetched: bool,
 }
 
 static PAT_JOB_CACHE: LazyLock<Mutex<HashMap<String, PatJobEntry>>> =
@@ -425,7 +424,6 @@ pub async fn resolve_qoder_models_with_base(
         expires_at_ms: now_ms() + CACHE_TTL_MS,
         models,
         raw_configs,
-        fetched: true,
     };
     CATALOG_CACHE.lock().unwrap().insert(key, entry.clone());
     Some(entry)
@@ -441,18 +439,6 @@ pub async fn get_qoder_model_config(
     let mut out: Map<String, Value> = config.as_object().cloned().unwrap_or_default();
     out.insert("key".into(), Value::String(model_key.to_string()));
     Some(Value::Object(out))
-}
-
-pub fn invalidate_qoder_catalog(credentials: &Value) {
-    CATALOG_CACHE
-        .lock()
-        .unwrap()
-        .remove(&cache_key(credentials));
-}
-
-pub fn clear_qoder_catalog() {
-    CATALOG_CACHE.lock().unwrap().clear();
-    PAT_JOB_CACHE.lock().unwrap().clear();
 }
 
 pub fn routable_qoder_models_from_catalog(catalog: &QoderCatalog) -> Vec<Value> {
@@ -521,7 +507,8 @@ mod tests {
             Router,
             routing::{get, post},
         };
-        clear_qoder_catalog();
+        CATALOG_CACHE.lock().unwrap().clear();
+        PAT_JOB_CACHE.lock().unwrap().clear();
         let app = Router::new()
             .route(
                 "/api/v1/jobToken/exchange",

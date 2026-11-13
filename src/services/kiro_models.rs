@@ -13,10 +13,6 @@ fn cache() -> &'static Mutex<HashMap<String, (Instant, Vec<Value>)>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub fn clear_kiro_model_cache() {
-    cache().lock().unwrap_or_else(|e| e.into_inner()).clear();
-}
-
 /// Builds the `ListAvailableModels` URL for the account's profile region.
 pub fn list_models_url(profile_arn: &str) -> String {
     let region = region_from_profile_arn(profile_arn);

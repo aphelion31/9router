@@ -16,13 +16,6 @@ fn catalog_cache() -> &'static Mutex<HashMap<String, (Instant, Vec<Value>)>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub fn clear_cursor_model_cache() {
-    catalog_cache()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clear();
-}
-
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -370,7 +363,7 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
 
-        clear_cursor_model_cache();
+        catalog_cache().lock().unwrap_or_else(|e| e.into_inner()).clear();
         let hits = Arc::new(AtomicUsize::new(0));
         let hits_clone = hits.clone();
         let payload: &'static [u8] = &[

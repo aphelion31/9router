@@ -14,10 +14,6 @@ fn cache() -> &'static Mutex<HashMap<u64, (Instant, Vec<Value>)>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub fn clear_grok_cli_model_cache() {
-    cache().lock().unwrap_or_else(|e| e.into_inner()).clear();
-}
-
 /// Live Grok CLI discovery. On 401/403 retries once with `refresh` (a freshly issued access token).
 /// Returns `None` on failure so callers keep the static catalog. Cached per token for 5 minutes.
 pub async fn resolve_grok_cli_models(

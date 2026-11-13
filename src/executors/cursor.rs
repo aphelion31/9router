@@ -1052,8 +1052,20 @@ pub async fn execute(
         .and_then(Value::as_array)
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    let reasoning_effort = request.body.get("reasoning_effort").and_then(Value::as_str);
-    let body = generate_cursor_body(messages, &request.model, tools, reasoning_effort, false);
+    let reasoning_effort = request
+        .body
+        .get("reasoning_effort")
+        .and_then(Value::as_str);
+    let credentials = json!({"accessToken": access_token, "providerSpecificData": request.provider_specific_data});
+    let selection = if matches!(request.model.as_str(), "auto" | "default") {
+        crate::services::cursor_models::resolve_cursor_models(client, &credentials, false)
+            .await
+            .and_then(|catalog| catalog["models"].as_array().and_then(|models| crate::services::cursor_models::resolve_auto_model_selection(models)))
+    } else {
+        None
+    };
+    let model = selection.as_ref().and_then(|s| s["modelId"].as_str()).unwrap_or(&request.model);
+    let body = generate_cursor_body(messages, model, tools, reasoning_effort, false);
 
     let mut builder = client.post(parsed).body(body);
     for (name, value) in build_cursor_headers(access_token, machine_id, ghost_mode) {
