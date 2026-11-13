@@ -263,4 +263,27 @@ impl Executor for HttpExecutor {
             })
         })
     }
+
+    /// Upstream 401/403 path: force an OAuth refresh (persisted, encrypted) and hand back the token.
+    fn refresh_credentials<'a>(
+        &'a self,
+        credentials: &'a crate::handlers::Credentials,
+    ) -> BoxFuture<'a, Result<Option<crate::handlers::RefreshedCredentials>, String>> {
+        Box::pin(async move {
+            if credentials.refresh_token.is_none() {
+                return Ok(None);
+            }
+            let path = crate::db::data_file().map_err(|e| e.to_string())?;
+            let conn = crate::oauth::force_refresh(path, &credentials.connection_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            let s = |k: &str| conn.data[k].as_str().map(str::to_owned);
+            Ok(Some(crate::handlers::RefreshedCredentials {
+                access_token: s("accessToken"),
+                refresh_token: s("refreshToken"),
+                expires_at: s("expiresAt"),
+                copilot_token: None,
+            }))
+        })
+    }
 }
