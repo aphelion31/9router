@@ -25,10 +25,10 @@ use std::{
 };
 
 #[derive(Clone)]
-struct AppState {
-    db: Arc<Mutex<Connection>>,
-    executor: Arc<HttpExecutor>,
-    jwt_secret: Option<Vec<u8>>,
+pub(crate) struct AppState {
+    pub(crate) db: Arc<Mutex<Connection>>,
+    pub(crate) executor: Arc<HttpExecutor>,
+    pub(crate) jwt_secret: Option<Vec<u8>>,
 }
 
 pub fn router() -> Router {
@@ -69,6 +69,7 @@ fn make_router_with_db(
         .route("/api/combos", get(combos))
         .route("/api/settings", get(settings).put(save_settings))
         .route("/api/usage", get(usage))
+        .merge(crate::api::routes::management())
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             dashboard_auth,
@@ -79,6 +80,7 @@ fn make_router_with_db(
         .route("/v1/responses", post(completion))
         .route("/v1/models", get(models))
         .route("/v1beta/models/{*path}", post(gemini))
+        .merge(crate::api::routes::v1())
         .route_layer(middleware::from_fn_with_state(state.clone(), api_auth));
     let dashboard_pages = Router::new()
         .route("/dashboard", get(dashboard::overview_page))
