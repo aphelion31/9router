@@ -6,6 +6,41 @@ pub fn read_numbered(input: &str) -> String {
     truncate(input, true)
 }
 
+pub fn find(input: &str) -> String {
+    let lines: Vec<_> = input
+        .split('\n')
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    if lines.is_empty() {
+        return input.into();
+    }
+    let mut directories = std::collections::BTreeMap::<&str, Vec<&str>>::new();
+    for path in &lines {
+        let (directory, name) = match path.rfind(['/', '\\']) {
+            Some(index) => (
+                if index == 0 { "/" } else { &path[..index] },
+                &path[index + 1..],
+            ),
+            None => (".", *path),
+        };
+        directories.entry(directory).or_default().push(name);
+    }
+    let mut out = format!("{} files in {} dirs:\n\n", lines.len(), directories.len());
+    for (dir, files) in directories.iter().take(20) {
+        out.push_str(&format!("{}/  ({})\n", dir.replace('\\', "/"), files.len()));
+        for file in files.iter().take(10) {
+            out.push_str(&format!("  {file}\n"));
+        }
+        if files.len() > 10 {
+            out.push_str(&format!("  +{}\n", files.len() - 10));
+        }
+    }
+    if directories.len() > 20 {
+        out.push_str(&format!("\n+{} more dirs\n", directories.len() - 20));
+    }
+    out
+}
+
 pub fn git_status(input: &str) -> String {
     if input.trim().is_empty() {
         return "Clean working tree".into();
@@ -165,6 +200,13 @@ pub fn dedup_log(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn find_groups_unix_and_windows_paths() {
+        assert_eq!(
+            find("src/a\nsrc/b\nC:\\foo\\c"),
+            "3 files in 2 dirs:\n\nC:/foo/  (1)\n  c\nsrc/  (2)\n  a\n  b\n"
+        );
+    }
     #[test]
     fn git_status_formats_porcelain() {
         assert_eq!(
