@@ -7,6 +7,7 @@ pub mod client_detector;
 pub mod clinepass_models;
 pub mod connection_proxy;
 pub mod copilot_models;
+pub mod cursor_models;
 pub mod empty_failover;
 pub mod flaky_guard;
 pub mod gemini_cookies;
