@@ -1,12 +1,7 @@
-use anyhow::{Context, bail};
+use anyhow::Context;
 use serde_json::{Value, json};
 
 pub(super) fn prepare(model: &str, body: &mut Value) -> anyhow::Result<()> {
-    if model.to_ascii_lowercase().contains("claude") {
-        bail!(
-            "GitHub Copilot Claude requires messages endpoint translation, which is not implemented"
-        );
-    }
     let object = body
         .as_object_mut()
         .context("GitHub request body must be an object")?;

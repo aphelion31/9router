@@ -87,6 +87,20 @@ pub async fn execute(
     } else {
         reqwest::Url::parse(endpoint).context("invalid upstream URL")?
     };
+    let github_claude =
+        provider.id == "github" && request.model.to_ascii_lowercase().contains("claude");
+    if github_claude {
+        url.set_path("/v1/messages");
+        request.body = crate::translator::claude::openai_to_claude_request(
+            &request.model,
+            &request.body,
+            request.stream,
+            None,
+        );
+        if let Some(body) = request.body.as_object_mut() {
+            body.remove("_toolNameMap");
+        }
+    }
     if !matches!(url.scheme(), "http" | "https") {
         bail!("upstream URL must use HTTP or HTTPS");
     }
@@ -115,7 +129,7 @@ pub async fn execute(
         body.entry("instructions")
             .or_insert_with(|| "You are a helpful assistant.".into());
     }
-    if provider.id == "github" {
+    if provider.id == "github" && !github_claude {
         github::prepare(&request.model, &mut request.body)?;
     }
     let mut builder = client
@@ -319,6 +333,37 @@ mod tests {
         );
         assert_eq!(result["body"]["anthropic_version"], "bedrock-2023-05-31");
         assert!(result["body"].get("model").is_none());
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn github_claude_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/chat/completions", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().fallback(post(mock)))
+                .await
+                .unwrap()
+        });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "github".into(),
+                model: "claude-sonnet-4".into(),
+                body: json!({"messages": [{"role":"user", "content":"hello"}]}),
+                stream: false,
+                api_key: None,
+                access_token: Some("secret".into()),
+                base_url: Some(url),
+            },
+        )
+        .await
+        .unwrap();
+        let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(result["uri"], "/v1/messages");
+        assert_eq!(result["authorization"], "Bearer secret");
+        assert_eq!(result["version"], "2023-06-01");
+        assert_eq!(result["body"]["model"], "claude-sonnet-4");
         task.abort();
     }
 

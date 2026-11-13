@@ -9,6 +9,9 @@ impl Executor for HttpExecutor {
         req: ExecutorRequest,
     ) -> BoxFuture<'a, Result<ExecutorResponse, String>> {
         Box::pin(async move {
+            let response_format = (req.provider == "github"
+                && req.model.to_ascii_lowercase().contains("claude"))
+            .then(|| "claude".to_string());
             let base_url = req
                 .credentials
                 .provider_specific_data
@@ -64,7 +67,7 @@ impl Executor for HttpExecutor {
                 headers,
                 body,
                 url,
-                response_format: None,
+                response_format,
             })
         })
     }
