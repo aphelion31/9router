@@ -4,6 +4,7 @@ use axum::Router;
 
 use crate::server::AppState;
 
+mod oauth_core;
 mod obs_events;
 mod obs_usage;
 
@@ -11,6 +12,11 @@ pub fn management() -> Router<AppState> {
     Router::new()
         .merge(obs_events::router())
         .merge(obs_usage::router())
+        .merge(oauth_core::router())
+}
+
+pub fn public() -> Router<AppState> {
+    Router::new().merge(oauth_core::public_router())
 }
 
 pub fn v1() -> Router<AppState> {

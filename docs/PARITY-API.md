@@ -76,7 +76,7 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` depends on an
 | /api/models/test | POST | todo |
 | /api/monitoring | GET | done |
 | /api/notifications | GET, POST | done |
-| /api/oauth/[provider]/[action] | GET, POST | todo |
+| /api/oauth/[provider]/[action] | GET, POST | done |
 | /api/oauth/codex/bulk-import | POST | todo |
 | /api/oauth/codex/import-token | POST | todo |
 | /api/oauth/cursor/auto-import | GET | todo |

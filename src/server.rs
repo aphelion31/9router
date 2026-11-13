@@ -119,6 +119,7 @@ fn make_router_with_db(
         .route("/dashboard/app.js", get(dashboard::app_js))
         .route("/api/auth/login", post(auth_login))
         .route("/api/auth/logout", post(auth_logout))
+        .merge(crate::api::routes::public())
         .route(
             "/api/health",
             get(|| async { Json(json!({"status":"ok"})) }),
