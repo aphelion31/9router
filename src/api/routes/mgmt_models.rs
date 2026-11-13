@@ -17,7 +17,7 @@ async fn unavailable() -> Response {
 }
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/api/combos", get(list_combos).post(create))
+        .route("/api/combos", post(create))
         .route(
             "/api/combos/{id}",
             get(get_combo).put(update).delete(delete),
@@ -227,27 +227,6 @@ async fn disabled_delete(
 fn combo(db: &rusqlite::Connection, id: &str) -> rusqlite::Result<Option<Value>> {
     db.query_row("SELECT id,name,kind,models,createdAt,updatedAt FROM combos WHERE id=?1",[id],|r|{let raw:String=r.get(3)?;Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"kind":r.get::<_,Option<String>>(2)?,"models":serde_json::from_str::<Value>(&raw).unwrap_or(json!([])),"createdAt":r.get::<_,String>(4)?,"updatedAt":r.get::<_,String>(5)?}))}).optional()
 }
-async fn list_combos(State(s): State<AppState>) -> Response {
-    let Ok(db) = s.db.lock() else {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, "Failed to fetch combos");
-    };
-    let result = (|| -> rusqlite::Result<Vec<Value>> {
-        let mut stmt = db.prepare("SELECT id FROM combos ORDER BY createdAt ASC")?;
-        let ids = stmt.query_map([], |r| r.get::<_, String>(0))?;
-        let mut combos = Vec::new();
-        for id in ids {
-            if let Some(value) = combo(&db, &id?)? {
-                combos.push(value);
-            }
-        }
-        Ok(combos)
-    })();
-    match result {
-        Ok(combos) => Json(json!({"combos":combos})).into_response(),
-        Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "Failed to fetch combos"),
-    }
-}
-
 fn normalize_members(db: &rusqlite::Connection, models: &Value) -> Value {
     let nodes = (|| -> rusqlite::Result<Vec<(String, String)>> {
         let mut stmt = db.prepare("SELECT id,data FROM providerNodes")?;
@@ -512,12 +491,16 @@ mod tests {
             serde_json::from_slice(&to_bytes(response.into_body(), 10000).await.unwrap()).unwrap();
         assert_eq!(body["models"], json!(["node1/model", "other/model"]));
         let response = app
-            .oneshot(Request::get("/api/combos").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::get(format!("/api/combos/{}", body["id"].as_str().unwrap()))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let body: Value =
             serde_json::from_slice(&to_bytes(response.into_body(), 10000).await.unwrap()).unwrap();
-        assert_eq!(body["combos"][0]["models"][0], "node1/model");
+        assert_eq!(body["models"][0], "node1/model");
     }
 }
