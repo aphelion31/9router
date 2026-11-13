@@ -199,6 +199,6 @@ Status: `todo` not ported, `done` ported + oneshot test, `stub501` returns 501 `
 | /api/v1/web/fetch | POST | stub501 |
 | /api/v1beta/models/[...path] | POST | done |
 | /api/v1beta/models | GET | done |
-| /api/version | GET | stub501 |
-| /api/version/shutdown | POST | stub501 |
-| /api/version/update | POST | stub501 |
+| /api/version | GET | done |
+| /api/version/shutdown | POST | done |
+| /api/version/update | POST | unsupported (spawns native updater child process) |

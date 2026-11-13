@@ -56,9 +56,9 @@ pub fn routes() -> Router<AppState> {
             "/api/settings/webhook-events",
             get(unavailable).post(unavailable),
         )
-        .route("/api/version", get(unavailable))
+        .route("/api/version", get(version))
         .route("/api/version/update", post(unavailable))
-        .route("/api/version/shutdown", post(unavailable))
+        .route("/api/version/shutdown", post(version_shutdown))
         .route("/api/shutdown", post(shutdown))
 }
 async fn shutdown(headers: axum::http::HeaderMap) -> Response {
@@ -278,6 +278,116 @@ async fn locale(Json(body): Json<Value>) -> Response {
         .into_response()
 }
 
+fn parse_version(v: &str) -> Option<([u64; 3], u64)> {
+    let v = v.trim().trim_start_matches('v');
+    let (core, pro) = match v.split_once("-pro.") {
+        Some((c, p)) => {
+            let p_num = p
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse::<u64>()
+                .unwrap_or(0);
+            (c, p_num)
+        }
+        None => (v.split(['-', '+']).next().unwrap_or(v), 0),
+    };
+    let mut parts = core.split('.');
+    let major = parts.next()?.parse::<u64>().ok()?;
+    let minor = parts.next()?.parse::<u64>().ok()?;
+    let patch_str: String = parts
+        .next()?
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    let patch = patch_str.parse::<u64>().ok()?;
+    Some(([major, minor, patch], pro))
+}
+
+fn compare_versions(a: &str, b: &str) -> i8 {
+    let (Some(pa), Some(pb)) = (parse_version(a), parse_version(b)) else {
+        return 0;
+    };
+    for i in 0..3 {
+        if pa.0[i] > pb.0[i] {
+            return 1;
+        }
+        if pa.0[i] < pb.0[i] {
+            return -1;
+        }
+    }
+    if pa.1 > pb.1 {
+        1
+    } else if pa.1 < pb.1 {
+        -1
+    } else {
+        0
+    }
+}
+
+static VERSION_CACHE: std::sync::OnceLock<tokio::sync::Mutex<(Option<String>, Option<std::time::Instant>)>> =
+    std::sync::OnceLock::new();
+
+async fn get_latest_version_cached() -> Option<String> {
+    let cache = VERSION_CACHE.get_or_init(|| tokio::sync::Mutex::new((None, None)));
+    {
+        let guard = cache.lock().await;
+        if let (Some(val), Some(at)) = (&guard.0, guard.1) {
+            if at.elapsed() < std::time::Duration::from_secs(3600) {
+                return Some(val.clone());
+            }
+        }
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(4))
+        .build()
+        .ok()?;
+    let resp = client
+        .get("https://api.github.com/repos/giienew/9router-pro/releases/latest")
+        .header("User-Agent", "9router-pro")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .ok()?;
+    let bytes = resp.bytes().await.ok()?;
+    let json: Value = serde_json::from_slice(&bytes).ok()?;
+    let latest = json["tag_name"]
+        .as_str()
+        .map(|s| s.trim_start_matches('v').to_string())
+        .filter(|s| !s.is_empty());
+    if let Some(ref v) = latest {
+        let mut guard = cache.lock().await;
+        *guard = (Some(v.clone()), Some(std::time::Instant::now()));
+    }
+    latest
+}
+
+async fn version() -> Response {
+    let current = env!("CARGO_PKG_VERSION");
+    let latest = get_latest_version_cached().await;
+    let has_update = latest
+        .as_deref()
+        .is_some_and(|l| compare_versions(l, current) > 0);
+    Json(json!({
+        "currentVersion": current,
+        "latestVersion": latest,
+        "hasUpdate": has_update
+    }))
+    .into_response()
+}
+
+async fn version_shutdown() -> Response {
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        crate::server::shutdown_notify().notify_one();
+    });
+    Json(json!({
+        "success": true,
+        "message": "Shutting down for manual update..."
+    }))
+    .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,7 +449,7 @@ mod tests {
         assert_eq!(st, StatusCode::BAD_REQUEST);
 
         let (st, _) = call(
-            app,
+            app.clone(),
             Request::builder()
                 .method(Method::POST)
                 .uri("/api/shutdown")
@@ -348,5 +458,28 @@ mod tests {
         )
         .await;
         assert_eq!(st, StatusCode::UNAUTHORIZED);
+
+        assert_eq!(compare_versions("0.5.104-pro.2", "0.5.104-pro.1"), 1);
+        assert_eq!(compare_versions("0.5.104", "0.5.104-pro.1"), -1);
+
+        let (st, body) = call(
+            app.clone(),
+            Request::get("/api/version").body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(body["currentVersion"], env!("CARGO_PKG_VERSION"));
+
+        let (st, body) = call(
+            app,
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/version/shutdown")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(body["success"], true);
     }
 }
