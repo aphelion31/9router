@@ -10,6 +10,7 @@ impl Executor for HttpExecutor {
     ) -> BoxFuture<'a, Result<ExecutorResponse, String>> {
         Box::pin(async move {
             let bedrock_xai = req.provider == "bedrock-xai";
+            let vertex = matches!(req.provider.as_str(), "vertex" | "vertex-partner");
             let bedrock_stream = (req.provider == "bedrock" || bedrock_xai) && req.stream;
             let response_format = (req.provider == "github"
                 && req.model.to_ascii_lowercase().contains("claude"))
@@ -35,7 +36,19 @@ impl Executor for HttpExecutor {
             .await
             .map_err(|e| e.to_string())?;
             let status = response.status().as_u16();
-            let url = Some(response.url().to_string());
+            let mut response_url = response.url().clone();
+            if vertex && response_url.query().is_some() {
+                let pairs: Vec<(String, String)> = response_url
+                    .query_pairs()
+                    .filter(|(name, _)| name != "key")
+                    .map(|(name, value)| (name.into_owned(), value.into_owned()))
+                    .collect();
+                response_url.set_query(None);
+                if !pairs.is_empty() {
+                    response_url.query_pairs_mut().extend_pairs(pairs);
+                }
+            }
+            let url = Some(response_url.to_string());
             let headers = response
                 .headers()
                 .iter()
