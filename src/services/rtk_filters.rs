@@ -6,6 +6,29 @@ pub fn read_numbered(input: &str) -> String {
     truncate(input, true)
 }
 
+pub fn tree(input: &str) -> String {
+    let mut lines = Vec::new();
+    for line in input.split('\n') {
+        if (line.contains("director") && line.contains("file"))
+            || (line.trim().is_empty() && lines.is_empty())
+        {
+            continue;
+        }
+        lines.push(line);
+    }
+    while lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.pop();
+    }
+    if lines.len() > 200 {
+        return format!(
+            "{}\n... +{} more lines",
+            lines[..200].join("\n"),
+            lines.len() - 200
+        );
+    }
+    lines.join("\n")
+}
+
 fn truncate(input: &str, numbered: bool) -> String {
     let lines: Vec<_> = input.split('\n').collect();
     if lines.len() < 250 {
@@ -64,6 +87,10 @@ pub fn dedup_log(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn tree_removes_summary_and_blank_edges() {
+        assert_eq!(tree("\n.\n├── a\n\n1 directory, 1 file\n"), ".\n├── a");
+    }
     #[test]
     fn truncation_threshold_and_numbered_suffix() {
         let short = (0..249)
