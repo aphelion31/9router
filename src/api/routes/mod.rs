@@ -8,6 +8,10 @@ use axum::{
 use serde_json::json;
 
 use crate::server::AppState;
+mod mgmt_misc;
+mod mgmt_models;
+mod mgmt_providers;
+mod mgmt_system;
 
 mod v1_catalog;
 mod v1_count_tokens;
@@ -17,6 +21,10 @@ mod v1_usage;
 
 pub fn management() -> Router<AppState> {
     Router::new()
+        .merge(mgmt_system::routes())
+        .merge(mgmt_providers::routes())
+        .merge(mgmt_models::routes())
+        .merge(mgmt_misc::routes())
 }
 
 pub fn v1() -> Router<AppState> {
