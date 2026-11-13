@@ -40,7 +40,7 @@ Status: **in progress**. Partial entries cover only the functions named, not ful
 | `open-sse/services/copilotModels.js` | Ported: `services::copilot_models` (live catalog, 401 token refresh retry, cache) |
 | `open-sse/services/cursorModels.js` | Partial: protobuf catalog parsing and selection, discovery pending |
 | `open-sse/services/grokCliModels.js` | Partial: model parsing, no live discovery or refresh |
-| `open-sse/services/kimchiModels.js` | Partial: normalization and URL, no discovery or cache |
+| `open-sse/services/kimchiModels.js` | Ported: `services::kimchi_models` (metadata discovery, auth, cache) |
 | `open-sse/services/kiroModels.js` | Partial: variant expansion, discovery and refresh pending |
 | `open-sse/services/qoderModels.js` | Partial: PAT identification and catalog visibility |
 | `open-sse/services/capacityAdapter.js` | Partial: pool selection, no history stripping |
