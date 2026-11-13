@@ -70,6 +70,25 @@ mod tests {
     }
 
     #[test]
+    fn retry_after_header_and_resets_in_seconds_set_cooldown() {
+        use super::classify::classify_with_retry_after;
+        assert_eq!(
+            classify_with_retry_after("openai", 429, "rate limit", Some(Duration::from_secs(42)), NOW),
+            Verdict::Fixed(Duration::from_secs(42))
+        );
+        let body = r#"{"error":{"message":"rate limit","resets_in_seconds":17}}"#;
+        assert_eq!(
+            classify("openai", 429, body, NOW),
+            Verdict::Fixed(Duration::from_secs(17))
+        );
+        // Capped at the max rate-limit cooldown.
+        assert_eq!(
+            classify_with_retry_after("openai", 429, "", Some(Duration::from_secs(9999)), NOW),
+            Verdict::Fixed(super::classify::MAX_RATE_LIMIT_COOLDOWN)
+        );
+    }
+
+    #[test]
     fn status_classes() {
         assert_eq!(classify("openai", 401, "", NOW), Verdict::Fixed(LONG_COOLDOWN));
         assert_eq!(classify("openai", 503, "", NOW), Verdict::Fixed(TRANSIENT_COOLDOWN));

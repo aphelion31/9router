@@ -154,6 +154,67 @@ pub fn kv_get(conn: &Connection, scope: &str, key: &str) -> Result<Option<String
         .optional()?)
 }
 
+// ---- usage repo ----
+
+#[derive(Debug, Clone, Default)]
+pub struct UsageRow {
+    pub timestamp: String,
+    pub provider: String,
+    pub model: String,
+    pub connection_id: Option<String>,
+    pub api_key: Option<String>,
+    pub endpoint: Option<String>,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub status: i64,
+    pub latency_ms: i64,
+    pub request_id: String,
+}
+
+pub fn usage_insert(conn: &Connection, r: &UsageRow) -> Result<()> {
+    let meta = serde_json::json!({ "latencyMs": r.latency_ms }).to_string();
+    conn.execute(
+        "INSERT INTO usageHistory(timestamp, provider, model, connectionId, apiKey, endpoint,
+            promptTokens, completionTokens, status, meta, requestId)
+         VALUES(COALESCE(?1, strftime('%Y-%m-%dT%H:%M:%fZ','now')), ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            if r.timestamp.is_empty() { None } else { Some(r.timestamp.as_str()) }, r.provider, r.model, r.connection_id, r.api_key, r.endpoint,
+            r.prompt_tokens, r.completion_tokens, r.status.to_string(), meta, r.request_id
+        ],
+    )?;
+    Ok(())
+}
+
+/// Totals per provider and model for the last `since` (ISO-8601 lower bound), plus grand totals.
+pub fn usage_summary(conn: &Connection, since: &str) -> Result<serde_json::Value> {
+    let mut stmt = conn.prepare(
+        "SELECT provider, model, COUNT(*), COALESCE(SUM(promptTokens),0), COALESCE(SUM(completionTokens),0),
+                SUM(CASE WHEN status NOT LIKE '2%' THEN 1 ELSE 0 END)
+         FROM usageHistory WHERE timestamp >= ?1 GROUP BY provider, model ORDER BY COUNT(*) DESC",
+    )?;
+    let rows: Vec<serde_json::Value> = stmt
+        .query_map([since], |r| {
+            Ok(serde_json::json!({
+                "provider": r.get::<_, Option<String>>(0)?,
+                "model": r.get::<_, Option<String>>(1)?,
+                "requests": r.get::<_, i64>(2)?,
+                "promptTokens": r.get::<_, i64>(3)?,
+                "completionTokens": r.get::<_, i64>(4)?,
+                "errors": r.get::<_, i64>(5)?,
+            }))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    let total = |k: &str| rows.iter().filter_map(|r| r[k].as_i64()).sum::<i64>();
+    Ok(serde_json::json!({
+        "since": since,
+        "totalRequests": total("requests"),
+        "totalPromptTokens": total("promptTokens"),
+        "totalCompletionTokens": total("completionTokens"),
+        "totalErrors": total("errors"),
+        "byModel": rows,
+    }))
+}
+
 // ---- settings repo ----
 
 /// Settings row `id = 1`. Missing row reads as an empty object.
@@ -269,6 +330,30 @@ mod tests {
             .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn usage_insert_and_summary() {
+        let c = mem();
+        let row = |model: &str, status: i64| UsageRow {
+            timestamp: "2026-11-13T00:00:00.000Z".into(),
+            provider: "openai".into(),
+            model: model.into(),
+            prompt_tokens: 10,
+            completion_tokens: 4,
+            status,
+            latency_ms: 12,
+            request_id: "r".into(),
+            ..Default::default()
+        };
+        usage_insert(&c, &row("gpt", 200)).unwrap();
+        usage_insert(&c, &row("gpt", 502)).unwrap();
+        let s = usage_summary(&c, "2026-01-01T00:00:00.000Z").unwrap();
+        assert_eq!(s["totalRequests"], 2);
+        assert_eq!(s["totalPromptTokens"], 20);
+        assert_eq!(s["totalCompletionTokens"], 8);
+        assert_eq!(s["totalErrors"], 1);
+        assert_eq!(usage_summary(&c, "2027-01-01T00:00:00.000Z").unwrap()["totalRequests"], 0);
     }
 
     #[test]

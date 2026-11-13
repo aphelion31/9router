@@ -22,11 +22,27 @@ use crate::translator::{needs_translation, normalize_format, translate_request};
 pub type RefreshHook =
     Arc<dyn Fn(RefreshedCredentials) -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
 pub type SuccessHook = Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>;
+/// Called once per completed upstream call with `(prompt_tokens, completion_tokens)`.
+/// Streaming reports the last usage seen in the SSE stream, sent when the stream ends.
+pub type UsageHook = Arc<dyn Fn(u64, u64) -> BoxFuture<'static, ()> + Send + Sync>;
 
 #[derive(Default, Clone)]
 pub struct ChatCoreHooks {
     pub on_credentials_refreshed: Option<RefreshHook>,
     pub on_request_success: Option<SuccessHook>,
+    pub on_usage: Option<UsageHook>,
+}
+
+/// Token counts from a raw upstream body (OpenAI, Claude, Gemini, Responses shapes).
+pub fn usage_from_body(body: &Value) -> Option<(u64, u64)> {
+    let u = body.get("usage").or_else(|| body.get("usageMetadata"))?;
+    let pick = |keys: &[&str]| keys.iter().find_map(|k| u.get(*k).and_then(Value::as_u64));
+    let input = pick(&["prompt_tokens", "input_tokens", "promptTokenCount"]);
+    let output = pick(&["completion_tokens", "output_tokens", "candidatesTokenCount"]);
+    if input.is_none() && output.is_none() {
+        return None;
+    }
+    Some((input.unwrap_or(0), output.unwrap_or(0)))
 }
 
 #[derive(Debug, Clone)]
@@ -41,6 +57,8 @@ pub struct ChatCoreOptions {
     pub user_agent: Option<String>,
     pub client_tool: Option<String>,
     pub provider_session_id: Option<String>,
+    /// Upper bound for upstream response headers. Exceeding it returns status 504.
+    pub first_response_timeout: Option<std::time::Duration>,
 }
 
 pub enum ChatCoreResult {
@@ -49,6 +67,8 @@ pub enum ChatCoreResult {
         status: u16,
         message: String,
         headers: Vec<(String, String)>,
+        /// Upstream `retry-after` header, in seconds.
+        retry_after: Option<u64>,
     },
 }
 
@@ -660,6 +680,47 @@ async fn read_body_bytes(body: ExecutorBody) -> Result<Vec<u8>, String> {
     }
 }
 
+/// Forwards upstream chunks unchanged and reports the last usage found in the SSE JSON lines
+/// once the stream ends. Lines are reassembled across chunk boundaries.
+fn tap_usage(
+    mut upstream: mpsc::Receiver<Result<Vec<u8>, String>>,
+    hook: UsageHook,
+) -> mpsc::Receiver<Result<Vec<u8>, String>> {
+    let (tx, rx) = mpsc::channel(64);
+    tokio::spawn(async move {
+        let mut buf: Vec<u8> = Vec::new();
+        let mut usage: Option<(u64, u64)> = None;
+        let scan = |line: &[u8], usage: &mut Option<(u64, u64)>| {
+            if let Some(SseLine::Json(v)) = parse_sse_line(&String::from_utf8_lossy(line))
+                && let Some(found) = usage_from_body(&v)
+            {
+                *usage = Some(found);
+            }
+        };
+        while let Some(chunk) = upstream.recv().await {
+            if let Ok(bytes) = &chunk {
+                buf.extend_from_slice(bytes);
+                while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                    let line: Vec<u8> = buf.drain(..=pos).collect();
+                    scan(&line, &mut usage);
+                }
+            }
+            if tx.send(chunk.clone()).await.is_err() {
+                break;
+            }
+            if chunk.is_err() {
+                break;
+            }
+        }
+        if !buf.is_empty() {
+            scan(&buf, &mut usage);
+        }
+        let (p, c) = usage.unwrap_or((0, 0));
+        hook(p, c).await;
+    });
+    rx
+}
+
 fn parse_sse_text_to_last_json(text: &str) -> Option<Value> {
     let mut last = None;
     for line in text.lines() {
@@ -814,13 +875,29 @@ pub async fn handle_chat_core(
         client_tool: options.client_tool.clone(),
     };
 
-    let mut provider_resp = match executor.execute(exec_req.clone()).await {
+    let first = executor.execute(exec_req.clone());
+    let first = match options.first_response_timeout {
+        Some(limit) => match tokio::time::timeout(limit, first).await {
+            Ok(r) => r,
+            Err(_) => {
+                return ChatCoreResult::Error {
+                    status: 504,
+                    message: format!("No first response within {}s", limit.as_secs()),
+                    headers: vec![],
+                    retry_after: None,
+                };
+            }
+        },
+        None => first.await,
+    };
+    let mut provider_resp = match first {
         Ok(r) => r,
         Err(err) => {
             return ChatCoreResult::Error {
                 status: 502,
                 message: err,
                 headers: vec![],
+                retry_after: None,
             };
         }
     };
@@ -840,6 +917,10 @@ pub async fn handle_chat_core(
     if !(200..300).contains(&provider_resp.status) {
         let status = provider_resp.status;
         let headers = provider_resp.headers;
+        let retry_after = headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("retry-after"))
+            .and_then(|(_, v)| v.trim().parse::<u64>().ok());
         let bytes = read_body_bytes(provider_resp.body).await.unwrap_or_default();
         let message = serde_json::from_slice::<Value>(&bytes)
             .ok()
@@ -861,6 +942,7 @@ pub async fn handle_chat_core(
             status,
             message,
             headers,
+            retry_after,
         };
     }
 
@@ -881,6 +963,7 @@ pub async fn handle_chat_core(
                         status: 502,
                         message: "Invalid JSON response from upstream".to_string(),
                         headers: provider_resp.headers,
+                        retry_after: None,
                     };
                 }
             }
@@ -897,11 +980,13 @@ pub async fn handle_chat_core(
                         status: 502,
                         message: "Invalid streaming body for non-stream request".to_string(),
                         headers: provider_resp.headers,
+                        retry_after: None,
                     };
                 }
             }
         };
 
+        let usage = hooks.on_usage.as_ref().map(|_| usage_from_body(&raw_json).unwrap_or((0, 0)));
         let mut translated = if needs_translation(&resp_format, &source_format) {
             translate_non_streaming_response(&raw_json, &resp_format, &source_format)
         } else {
@@ -916,6 +1001,9 @@ pub async fn handle_chat_core(
                 .or_insert_with(|| json!(now_unix_secs()));
         }
 
+        if let (Some(hook), Some((p, c))) = (&hooks.on_usage, usage) {
+            hook(p, c).await;
+        }
         return ChatCoreResult::Success(build_json_response(
             200,
             &provider_resp.headers,
@@ -939,6 +1027,10 @@ pub async fn handle_chat_core(
         }
     };
 
+    let rx = match &hooks.on_usage {
+        Some(hook) => tap_usage(rx, hook.clone()),
+        None => rx,
+    };
     let body = translate_sse_to_body(rx, resp_format, source_format);
     ChatCoreResult::Success(build_sse_response(&provider_resp.headers, body))
 }
