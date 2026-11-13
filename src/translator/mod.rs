@@ -1,31 +1,51 @@
+pub mod antigravity;
 pub mod claude;
+pub mod commandcode;
 pub mod concerns;
+pub mod cursor;
+pub mod deepseek_web_tools;
 pub mod formats;
 pub mod gemini;
+pub mod kiro;
+pub mod modality;
+pub mod ollama;
 pub mod openai_responses;
 pub mod schema;
+pub mod thinking;
+pub mod vertex;
+pub mod web_tools;
 
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+use crate::translator::antigravity::antigravity_to_openai_request;
 use crate::translator::claude::{
     claude_to_openai_request, claude_to_openai_response, openai_to_claude_request,
     openai_to_claude_request_for_antigravity, openai_to_claude_response,
 };
+use crate::translator::commandcode::{commandcode_to_openai_response, openai_to_commandcode_request};
 use crate::translator::concerns::{filter_to_openai_format, lift_reasoning_aliases};
+use crate::translator::cursor::{cursor_to_openai_response, openai_to_cursor_request};
 use crate::translator::formats::{
-    FORMAT_ANTIGRAVITY, FORMAT_CLAUDE, FORMAT_GEMINI, FORMAT_GEMINI_CLI, FORMAT_OPENAI,
-    FORMAT_OPENAI_RESPONSE, FORMAT_OPENAI_RESPONSES, FORMAT_VERTEX,
+    FORMAT_ANTIGRAVITY, FORMAT_CLAUDE, FORMAT_COMMANDCODE, FORMAT_CURSOR, FORMAT_GEMINI,
+    FORMAT_GEMINI_CLI, FORMAT_KIRO, FORMAT_OLLAMA, FORMAT_OPENAI, FORMAT_OPENAI_RESPONSE,
+    FORMAT_OPENAI_RESPONSES, FORMAT_VERTEX,
 };
 use crate::translator::gemini::{
     gemini_to_openai_request, gemini_to_openai_response, openai_to_antigravity_request,
     openai_to_antigravity_response, openai_to_gemini_cli_request, openai_to_gemini_request,
 };
+use crate::translator::kiro::{
+    claude_to_kiro_request, kiro_to_claude_response, kiro_to_openai_response,
+    openai_to_kiro_request,
+};
+use crate::translator::ollama::{ollama_to_openai_response, openai_to_ollama_request};
 use crate::translator::openai_responses::{
     openai_responses_to_openai_request, openai_responses_to_openai_response,
     openai_to_openai_responses_request, openai_to_openai_responses_response,
 };
+use crate::translator::vertex::openai_to_vertex_request;
 
 pub type RequestFn = fn(&str, &Value, bool, Option<&Value>) -> Value;
 pub type ResponseFn = fn(Option<&Value>, &mut TranslateState) -> Vec<Value>;
@@ -124,12 +144,18 @@ fn get_registry() -> &'static Registry {
         requests.insert(route_key(FORMAT_GEMINI, FORMAT_OPENAI), gemini_to_openai_request);
         requests.insert(route_key(FORMAT_GEMINI_CLI, FORMAT_OPENAI), gemini_to_openai_request);
         requests.insert(route_key(FORMAT_VERTEX, FORMAT_OPENAI), gemini_to_openai_request);
-        requests.insert(route_key(FORMAT_ANTIGRAVITY, FORMAT_OPENAI), gemini_to_openai_request);
+        requests.insert(route_key(FORMAT_ANTIGRAVITY, FORMAT_OPENAI), antigravity_to_openai_request);
 
         requests.insert(route_key(FORMAT_OPENAI, FORMAT_GEMINI), openai_to_gemini_request);
         requests.insert(route_key(FORMAT_OPENAI, FORMAT_GEMINI_CLI), openai_to_gemini_cli_request);
-        requests.insert(route_key(FORMAT_OPENAI, FORMAT_VERTEX), openai_to_gemini_request);
+        requests.insert(route_key(FORMAT_OPENAI, FORMAT_VERTEX), openai_to_vertex_request);
         requests.insert(route_key(FORMAT_OPENAI, FORMAT_ANTIGRAVITY), openai_to_antigravity_request);
+
+        requests.insert(route_key(FORMAT_CLAUDE, FORMAT_KIRO), claude_to_kiro_request);
+        requests.insert(route_key(FORMAT_OPENAI, FORMAT_KIRO), openai_to_kiro_request);
+        requests.insert(route_key(FORMAT_OPENAI, FORMAT_CURSOR), openai_to_cursor_request);
+        requests.insert(route_key(FORMAT_OPENAI, FORMAT_OLLAMA), openai_to_ollama_request);
+        requests.insert(route_key(FORMAT_OPENAI, FORMAT_COMMANDCODE), openai_to_commandcode_request);
 
         requests.insert(
             route_key(FORMAT_OPENAI_RESPONSES, FORMAT_OPENAI),
@@ -162,6 +188,12 @@ fn get_registry() -> &'static Registry {
             route_key(FORMAT_OPENAI, FORMAT_OPENAI_RESPONSES),
             openai_to_openai_responses_response,
         );
+
+        responses.insert(route_key(FORMAT_KIRO, FORMAT_CLAUDE), kiro_to_claude_response);
+        responses.insert(route_key(FORMAT_KIRO, FORMAT_OPENAI), kiro_to_openai_response);
+        responses.insert(route_key(FORMAT_CURSOR, FORMAT_OPENAI), cursor_to_openai_response);
+        responses.insert(route_key(FORMAT_OLLAMA, FORMAT_OPENAI), ollama_to_openai_response);
+        responses.insert(route_key(FORMAT_COMMANDCODE, FORMAT_OPENAI), commandcode_to_openai_response);
 
         Registry { requests, responses }
     })
@@ -296,6 +328,9 @@ pub fn translate_response(
     }
     out
 }
+
+#[cfg(test)]
+mod tests_parity;
 
 #[cfg(test)]
 mod tests {

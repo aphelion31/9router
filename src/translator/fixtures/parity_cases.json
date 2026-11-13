@@ -1,0 +1,108 @@
+{
+  "antigravity_request": {
+    "model": "claude-sonnet-4-5",
+    "systemInstruction": {
+      "parts": [
+        { "text": "You are Antigravity, a powerful agentic AI coding assistant." },
+        { "text": "Be helpful and concise." }
+      ]
+    },
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          { "text": "Inspect this image" },
+          { "inlineData": { "mimeType": "image/png", "data": "QUFBQQ==" } }
+        ]
+      },
+      {
+        "role": "model",
+        "parts": [
+          { "text": "Let me think", "thought": true },
+          { "functionCall": { "name": "read_file", "args": { "path": "Cargo.toml" } } }
+        ]
+      },
+      {
+        "role": "user",
+        "parts": [
+          { "functionResponse": { "name": "read_file", "response": { "result": "[package]" } } }
+        ]
+      }
+    ],
+    "tools": [
+      {
+        "functionDeclarations": [
+          {
+            "name": "read_file",
+            "description": "Read a file",
+            "parameters": {
+              "type": "OBJECT",
+              "properties": { "path": { "type": "STRING" } },
+              "required": ["path"]
+            }
+          }
+        ]
+      }
+    ],
+    "generationConfig": {
+      "temperature": 0.2,
+      "maxOutputTokens": 1024,
+      "thinkingConfig": { "thinkingBudget": 8192 }
+    }
+  },
+  "vertex_request": {
+    "messages": [
+      { "role": "system", "content": "Be exact." },
+      { "role": "user", "content": "Call search" }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "search",
+          "description": "Search docs",
+          "parameters": {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "q": { "type": "string", "minLength": 1 },
+              "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+            },
+            "required": ["q", "missing_field"]
+          }
+        }
+      }
+    ]
+  },
+  "ollama_stream": [
+    { "model": "qwen3:8b", "message": { "role": "assistant", "thinking": "hmm", "content": "" }, "done": false },
+    { "model": "qwen3:8b", "message": { "role": "assistant", "content": "Hello " }, "done": false },
+    {
+      "model": "qwen3:8b",
+      "message": {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          { "id": "call_ol_1", "function": { "index": 0, "name": "get_weather", "arguments": { "city": "Tokyo" } } }
+        ]
+      },
+      "done": false
+    },
+    { "model": "qwen3:8b", "done": true, "done_reason": "stop", "prompt_eval_count": 12, "eval_count": 7 }
+  ],
+  "commandcode_stream": [
+    { "type": "reasoning-delta", "text": "plan", "model": "claude-sonnet-4" },
+    { "type": "text-delta", "text": "Hi" },
+    { "type": "tool-input-start", "id": "tc_1", "toolName": "bash" },
+    { "type": "tool-input-delta", "id": "tc_1", "delta": "{\"cmd\":\"ls\"}" },
+    { "type": "finish-step", "finishReason": "tool-calls", "usage": { "inputTokens": 20, "outputTokens": 10, "cachedInputTokens": 4 } },
+    { "type": "finish", "finishReason": "tool-calls", "totalUsage": { "inputTokens": 20, "outputTokens": 10, "cachedInputTokens": 4 } }
+  ],
+  "kiro_stream": [
+    { "content": "Working on it." },
+    { "toolUseId": "tu_k_1", "name": "read_file", "input": { "path": "README.md" }, "stop": true },
+    { "usage": 1.5, "unit": "credit" },
+    { "stop": true }
+  ]
+}

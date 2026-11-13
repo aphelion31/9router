@@ -9,6 +9,10 @@ pub const FORMAT_GEMINI_CLI: &str = "gemini-cli";
 pub const FORMAT_VERTEX: &str = "vertex";
 pub const FORMAT_CODEX: &str = "codex";
 pub const FORMAT_ANTIGRAVITY: &str = "antigravity";
+pub const FORMAT_KIRO: &str = "kiro";
+pub const FORMAT_CURSOR: &str = "cursor";
+pub const FORMAT_OLLAMA: &str = "ollama";
+pub const FORMAT_COMMANDCODE: &str = "commandcode";
 
 /// Detect request/response format from an endpoint path.
 pub fn detect_format_by_endpoint(endpoint_path: &str) -> &'static str {
