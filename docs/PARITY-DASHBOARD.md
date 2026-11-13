@@ -1,0 +1,32 @@
+# Dashboard Parity Checklist (9router-pro -> 9router-dash)
+
+Status of dashboard pages ported from `9router-pro/src/app/(dashboard)/dashboard` into `src/dashboard/` (vanilla HTML/JS/CSS via `include_str!`).
+
+| # | Page | Route | Status | Notes |
+|---|------|-------|--------|-------|
+| 0 | Login | `/login` | Done | `login.html` |
+| 1 | Overview | `/dashboard` | Done | `overview.html` |
+| 2 | Endpoint & Key | `/dashboard/endpoint` | Done | `endpoint.html` |
+| 3 | Providers | `/dashboard/providers` | Done | `providers.html` |
+| 4 | Combos | `/dashboard/combos` | Done | `combos.html` |
+| 5 | Providers New | `/dashboard/providers/new` | Done | `providers_new.html` |
+| 6 | Provider Detail | `/dashboard/providers/{id}` | Done | `provider_detail.html` |
+| 7 | Usage | `/dashboard/usage` | Done | `usage.html` |
+| 8 | Provider Quota | `/dashboard/quota` | Done | `quota.html` |
+| 9 | Token Saver | `/dashboard/token-saver` | Done | `token_saver.html` |
+| 10 | Prompt Injection | `/dashboard/prompt-injection` | Done | `prompt_injection.html` |
+| 11 | Profile & Settings | `/dashboard/profile` | Done | `profile.html` |
+| 12 | Skills | `/dashboard/skills` | Done | `skills.html` |
+| 13 | PxPipe | `/dashboard/pxpipe` | Done | `pxpipe.html` |
+| 14 | Proxy Pools | `/dashboard/proxy-pools` | Done | `proxy_pools.html` |
+| 15 | MITM | `/dashboard/mitm` | Done | `mitm.html` |
+| 16 | Automation | `/dashboard/automation` | Done | `automation.html` |
+| 17 | CLI Tools | `/dashboard/cli-tools` | Done | `cli_tools.html` |
+| 18 | CLI Tool Detail | `/dashboard/cli-tools/{toolId}` | Done | `cli_tool_detail.html` |
+| 19 | Basic Chat | `/dashboard/basic-chat` | Done | `basic_chat.html` |
+| 20 | Console Log | `/dashboard/console-log` | Done | `console_log.html` |
+| 21 | Translator | `/dashboard/translator` | Done | `translator.html` |
+| 22 | Media Web | `/dashboard/media-providers/web` | Done | `media_web.html` |
+| 23 | Media Kind | `/dashboard/media-providers/{kind}` | Done | `media_kind.html` |
+| 24 | Media Provider Detail | `/dashboard/media-providers/{kind}/{id}` | Done | `media_detail.html` |
+| 25 | Media Combo Detail | `/dashboard/media-providers/combo/{id}` | Done | `media_combo_detail.html` |

@@ -84,7 +84,28 @@ fn make_router_with_db(
         .route("/dashboard", get(dashboard::overview_page))
         .route("/dashboard/endpoint", get(dashboard::endpoint_page))
         .route("/dashboard/providers", get(dashboard::providers_page))
+        .route("/dashboard/providers/new", get(dashboard::providers_new_page))
+        .route("/dashboard/providers/{id}", get(dashboard::provider_detail_page))
         .route("/dashboard/combos", get(dashboard::combos_page))
+        .route("/dashboard/usage", get(dashboard::usage_page))
+        .route("/dashboard/quota", get(dashboard::quota_page))
+        .route("/dashboard/token-saver", get(dashboard::token_saver_page))
+        .route("/dashboard/prompt-injection", get(dashboard::prompt_injection_page))
+        .route("/dashboard/profile", get(dashboard::profile_page))
+        .route("/dashboard/skills", get(dashboard::skills_page))
+        .route("/dashboard/pxpipe", get(dashboard::pxpipe_page))
+        .route("/dashboard/proxy-pools", get(dashboard::proxy_pools_page))
+        .route("/dashboard/mitm", get(dashboard::mitm_page))
+        .route("/dashboard/automation", get(dashboard::automation_page))
+        .route("/dashboard/cli-tools", get(dashboard::cli_tools_page))
+        .route("/dashboard/cli-tools/{toolId}", get(dashboard::cli_tool_detail_page))
+        .route("/dashboard/basic-chat", get(dashboard::basic_chat_page))
+        .route("/dashboard/console-log", get(dashboard::console_log_page))
+        .route("/dashboard/translator", get(dashboard::translator_page))
+        .route("/dashboard/media-providers/web", get(dashboard::media_web_page))
+        .route("/dashboard/media-providers/combo/{id}", get(dashboard::media_combo_detail_page))
+        .route("/dashboard/media-providers/{kind}", get(dashboard::media_kind_page))
+        .route("/dashboard/media-providers/{kind}/{id}", get(dashboard::media_detail_page))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             dashboard_page_auth,
@@ -803,6 +824,74 @@ mod tests {
         let body = to_bytes(r.into_body(), 100_000).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
         assert!(html.contains("Endpoint &amp; API Keys"));
+    }
+
+    #[tokio::test]
+    async fn all_dashboard_pages_require_auth_and_return_200_when_logged_in() {
+        let paths = [
+            "/dashboard",
+            "/dashboard/endpoint",
+            "/dashboard/providers",
+            "/dashboard/providers/new",
+            "/dashboard/providers/openai",
+            "/dashboard/combos",
+            "/dashboard/usage",
+            "/dashboard/quota",
+            "/dashboard/token-saver",
+            "/dashboard/prompt-injection",
+            "/dashboard/profile",
+            "/dashboard/skills",
+            "/dashboard/pxpipe",
+            "/dashboard/proxy-pools",
+            "/dashboard/mitm",
+            "/dashboard/automation",
+            "/dashboard/cli-tools",
+            "/dashboard/cli-tools/claude",
+            "/dashboard/basic-chat",
+            "/dashboard/console-log",
+            "/dashboard/translator",
+            "/dashboard/media-providers/web",
+            "/dashboard/media-providers/image",
+            "/dashboard/media-providers/image/dall-e",
+            "/dashboard/media-providers/combo/default",
+        ];
+        let app = test_router();
+        let tok = token();
+        for p in paths {
+            let unauth = app
+                .clone()
+                .oneshot(Request::get(p).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert!(
+                unauth.status().is_redirection(),
+                "expected redirect for unauthenticated {p}, got {}",
+                unauth.status()
+            );
+            assert_eq!(unauth.headers().get("location").unwrap(), "/login");
+
+            let auth = app
+                .clone()
+                .oneshot(
+                    Request::get(p)
+                        .header("cookie", format!("auth_token={tok}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(auth.status(), 200, "expected 200 for {p}");
+            let ct = auth
+                .headers()
+                .get("content-type")
+                .unwrap()
+                .to_str()
+                .unwrap();
+            assert!(ct.contains("text/html"), "expected html for {p}");
+            let body = to_bytes(auth.into_body(), 200_000).await.unwrap();
+            let html = std::str::from_utf8(&body).unwrap();
+            assert!(html.contains("/dashboard/app.js"), "missing app.js on {p}");
+        }
     }
     #[tokio::test]
     async fn login_sets_auth_cookie_and_allows_dashboard() {

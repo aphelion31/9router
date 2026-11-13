@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Media Combo Detail — 9Router</title>
+  <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body data-page="media-combo-detail">
+  <div class="layout">
+    <aside class="sidebar"></aside>
+    <main class="main">
+      <div id="error-banner" class="banner banner-error hidden" role="alert" aria-live="polite"></div>
+      <header class="page-header">
+        <div>
+          <a href="/dashboard/combos" class="muted text-sm">&larr; Back to Combos</a>
+          <h1 id="mcd-title" class="page-title mt-12">Combo Detail</h1>
+          <p class="page-subtitle">Inspect and edit media/model combo fallback chain</p>
+        </div>
+        <button id="mcd-delete" type="button" class="btn btn-danger">Delete Combo</button>
+      </header>
+
+      <section class="card">
+        <div class="field">
+          <label for="mcd-json">Combo Definition (JSON)</label>
+          <textarea id="mcd-json" class="mono" rows="10">{}</textarea>
+        </div>
+        <button id="mcd-save" type="button" class="btn btn-primary">Save Changes</button>
+      </section>
+    </main>
+  </div>
+  <script src="/dashboard/app.js"></script>
+  <script>
+    window.__NR.pages["media-combo-detail"] = async function () {
+      var nr = window.__NR;
+      var id = nr.pathSegment(0);
+      document.getElementById("mcd-title").textContent = "Combo: " + (id || "-");
+      var jsonEl = document.getElementById("mcd-json");
+
+      try {
+        var data = await nr.apiFetch("/api/combos/" + encodeURIComponent(id));
+        jsonEl.value = JSON.stringify(data.combo || data, null, 2);
+      } catch (err) {
+        nr.showBanner("Failed to load combo: " + err.message, "error");
+      }
+
+      document.getElementById("mcd-save").addEventListener("click", async function () {
+        try {
+          var parsed = JSON.parse(jsonEl.value);
+          await nr.apiFetch("/api/combos/" + encodeURIComponent(id), {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(parsed)
+          });
+          nr.showBanner("Combo updated.", "success");
+        } catch (err) {
+          nr.showBanner("Update failed: " + err.message, "error");
+        }
+      });
+
+      document.getElementById("mcd-delete").addEventListener("click", async function () {
+        try {
+          await nr.apiFetch("/api/combos/" + encodeURIComponent(id), { method: "DELETE" });
+          window.location.assign("/dashboard/combos");
+        } catch (err) {
+          nr.showBanner("Delete failed: " + err.message, "error");
+        }
+      });
+    };
+  </script>
+</body>
+</html>

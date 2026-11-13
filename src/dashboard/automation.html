@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Automation — 9Router</title>
+  <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body data-page="automation">
+  <div class="layout">
+    <aside class="sidebar"></aside>
+    <main class="main">
+      <div id="error-banner" class="banner banner-error hidden" role="alert" aria-live="polite"></div>
+      <header class="page-header">
+        <div>
+          <h1 class="page-title">Automation &amp; Alerts</h1>
+          <p class="page-subtitle">Webhook notifications, maintenance tasks, and 2FA (TOTP)</p>
+        </div>
+        <button id="au-refresh" type="button" class="btn">Refresh</button>
+      </header>
+
+      <section class="card">
+        <h2 class="card-title">Notifications (Telegram / Discord / Webhook)</h2>
+        <div class="field" style="max-width:460px">
+          <label for="au-webhook">Webhook URL</label>
+          <input id="au-webhook" type="url" placeholder="https://hooks.slack.com/...">
+        </div>
+        <div class="toggle-row mb-12">
+          <label for="au-notif-on">Enable Quota &amp; Error Alerts</label>
+          <input id="au-notif-on" type="checkbox">
+        </div>
+        <div class="row">
+          <button id="au-notif-save" type="button" class="btn btn-primary">Save Notifications</button>
+          <button id="au-notif-test" type="button" class="btn">Send Test Alert</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 class="card-title">Maintenance &amp; Cleanup</h2>
+        <p class="muted text-sm mb-12">Prune old usage logs and vacuum database storage.</p>
+        <button id="au-maint" type="button" class="btn">Run Maintenance Now</button>
+      </section>
+
+      <section class="card">
+        <h2 class="card-title">Two-Factor Authentication (TOTP)</h2>
+        <div id="au-totp-status" class="muted text-sm mb-12">Checking TOTP status...</div>
+        <button id="au-totp-setup" type="button" class="btn">Setup / Manage TOTP</button>
+      </section>
+    </main>
+  </div>
+  <script src="/dashboard/app.js"></script>
+  <script>
+    window.__NR.pages["automation"] = async function () {
+      var nr = window.__NR;
+      var webhookEl = document.getElementById("au-webhook");
+      var notifOnEl = document.getElementById("au-notif-on");
+      var totpEl = document.getElementById("au-totp-status");
+
+      async function load() {
+        try {
+          var n = await nr.apiFetch("/api/settings/notifications");
+          webhookEl.value = n.webhookUrl || "";
+          notifOnEl.checked = !!n.enabled;
+        } catch (e) {}
+        try {
+          var t = await nr.apiFetch("/api/auth/totp");
+          totpEl.textContent = t.enabled ? "TOTP 2FA is enabled." : "TOTP 2FA is not enabled.";
+        } catch (e) {
+          totpEl.textContent = "TOTP status unavailable.";
+        }
+      }
+
+      document.getElementById("au-notif-save").addEventListener("click", async function () {
+        try {
+          await nr.apiFetch("/api/settings/notifications", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ webhookUrl: webhookEl.value.trim(), enabled: !!notifOnEl.checked })
+          });
+          nr.showBanner("Notification settings saved.", "success");
+        } catch (err) {
+          nr.showBanner("Save failed: " + err.message, "error");
+        }
+      });
+
+      document.getElementById("au-notif-test").addEventListener("click", async function () {
+        try {
+          await nr.apiFetch("/api/settings/notifications/test", { method: "POST" });
+          nr.showBanner("Test alert sent.", "success");
+        } catch (err) {
+          nr.showBanner("Test alert failed: " + err.message, "error");
+        }
+      });
+
+      document.getElementById("au-maint").addEventListener("click", async function () {
+        try {
+          await nr.apiFetch("/api/settings/maintenance", { method: "POST" });
+          nr.showBanner("Maintenance completed.", "success");
+        } catch (err) {
+          nr.showBanner("Maintenance failed: " + err.message, "error");
+        }
+      });
+
+      document.getElementById("au-totp-setup").addEventListener("click", async function () {
+        try {
+          var res = await nr.apiFetch("/api/auth/totp", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "setup" }) });
+          totpEl.textContent = res.secret ? ("TOTP Secret: " + res.secret) : JSON.stringify(res);
+        } catch (err) {
+          nr.showBanner("TOTP setup failed: " + err.message, "error");
+        }
+      });
+
+      document.getElementById("au-refresh").addEventListener("click", load);
+      await load();
+    };
+  </script>
+</body>
+</html>

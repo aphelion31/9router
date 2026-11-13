@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Proxy Pools — 9Router</title>
+  <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body data-page="proxy-pools">
+  <div class="layout">
+    <aside class="sidebar"></aside>
+    <main class="main">
+      <div id="error-banner" class="banner banner-error hidden" role="alert" aria-live="polite"></div>
+      <header class="page-header">
+        <div>
+          <h1 class="page-title">Proxy Pools</h1>
+          <p class="page-subtitle">Manage outbound HTTP/SOCKS proxy endpoints and health checks</p>
+        </div>
+        <div class="row">
+          <button id="pp-test-all" type="button" class="btn">Test All</button>
+          <button id="pp-del-failed" type="button" class="btn btn-danger">Delete Failed</button>
+          <button id="pp-refresh" type="button" class="btn">Refresh</button>
+        </div>
+      </header>
+
+      <section class="card" aria-labelledby="pp-add-heading">
+        <h2 id="pp-add-heading" class="card-title">Add Proxy</h2>
+        <form id="pp-form" class="row">
+          <input id="pp-name" type="text" placeholder="Name" aria-label="Proxy name">
+          <input id="pp-url" type="url" placeholder="http://user:pass@host:port" aria-label="Proxy URL" required style="flex:1;min-width:240px">
+          <button type="submit" class="btn btn-primary">Add Proxy</button>
+        </form>
+      </section>
+
+      <section class="card" aria-labelledby="pp-list-heading">
+        <h2 id="pp-list-heading" class="card-title">Configured Proxies</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Name</th><th>URL</th><th>Status</th><th>Latency</th><th>Actions</th></tr></thead>
+            <tbody id="pp-tbody"><tr><td colspan="5" class="mono">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="/dashboard/app.js"></script>
+  <script>
+    window.__NR.pages["proxy-pools"] = async function () {
+      var nr = window.__NR;
+      var tbody = document.getElementById("pp-tbody");
+
+      async function load() {
+        tbody.innerHTML = '<tr><td colspan="5" class="mono">Loading...</td></tr>';
+        try {
+          var data = await nr.apiFetch("/api/proxy-pools");
+          var list = Array.isArray(data.items) ? data.items : (Array.isArray(data.pools) ? data.pools : (Array.isArray(data) ? data : []));
+          if (list.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5">No proxies configured.</td></tr>';
+            return;
+          }
+          tbody.innerHTML = "";
+          list.forEach(function (p) {
+            var tr = document.createElement("tr");
+            var active = p.isActive !== false;
+            var ok = p.status === "ok" || p.status === "healthy" || active;
+            tr.innerHTML =
+              "<td>" + nr.escapeHtml(p.name || "-") + "</td>" +
+              '<td class="mono">' + nr.escapeHtml(p.proxyUrl || p.url || "-") + "</td>" +
+              '<td><span class="badge ' + (ok ? "badge-ok" : "badge-danger") + '">' + nr.escapeHtml(p.status || (active ? "Active" : "Paused")) + "</span></td>" +
+              "<td>" + (p.latencyMs != null ? nr.fmtNum(p.latencyMs) + " ms" : "-") + "</td>" +
+              '<td class="row">' +
+                '<button type="button" class="btn btn-sm test-btn">Test</button>' +
+                '<button type="button" class="btn btn-sm btn-danger del-btn">Delete</button>' +
+              "</td>";
+            tr.querySelector(".test-btn").addEventListener("click", async function () {
+              await nr.apiFetch("/api/proxy-pools/" + encodeURIComponent(p.id) + "/test", { method: "POST" });
+              load();
+            });
+            tr.querySelector(".del-btn").addEventListener("click", async function () {
+              await nr.apiFetch("/api/proxy-pools/" + encodeURIComponent(p.id), { method: "DELETE" });
+              load();
+            });
+            tbody.appendChild(tr);
+          });
+        } catch (err) {
+          tbody.innerHTML = '<tr><td colspan="5">Proxy pools API unavailable.</td></tr>';
+          nr.showBanner("Failed to load proxy pools: " + err.message, "error");
+        }
+      }
+
+      document.getElementById("pp-form").addEventListener("submit", async function (e) {
+        e.preventDefault();
+        try {
+          await nr.apiFetch("/api/proxy-pools", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: document.getElementById("pp-name").value.trim() || "Proxy",
+              proxyUrl: document.getElementById("pp-url").value.trim(),
+              isActive: true
+            })
+          });
+          document.getElementById("pp-form").reset();
+          nr.showBanner("Proxy added.", "success");
+          load();
+        } catch (err) {
+          nr.showBanner("Failed to add proxy: " + err.message, "error");
+        }
+      });
+
+      document.getElementById("pp-test-all").addEventListener("click", async function () {
+        try {
+          await nr.apiFetch("/api/proxy-pools/test-all", { method: "POST" });
+          nr.showBanner("Test-all started.", "success");
+          load();
+        } catch (err) {
+          nr.showBanner("Test-all failed: " + err.message, "error");
+        }
+      });
+
+      document.getElementById("pp-del-failed").addEventListener("click", async function () {
+        try {
+          await nr.apiFetch("/api/proxy-pools/delete-failed", { method: "POST" });
+          load();
+        } catch (err) {
+          nr.showBanner("Delete failed: " + err.message, "error");
+        }
+      });
+
+      document.getElementById("pp-refresh").addEventListener("click", load);
+      await load();
+    };
+  </script>
+</body>
+</html>

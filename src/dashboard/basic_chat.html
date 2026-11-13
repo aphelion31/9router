@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Basic Chat — 9Router</title>
+  <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body data-page="basic-chat">
+  <div class="layout">
+    <aside class="sidebar"></aside>
+    <main class="main">
+      <div id="error-banner" class="banner banner-error hidden" role="alert" aria-live="polite"></div>
+      <header class="page-header">
+        <div>
+          <h1 class="page-title">Basic Chat</h1>
+          <p class="page-subtitle">Test routed chat completions directly through <code>/v1/chat/completions</code></p>
+        </div>
+        <button id="bc-clear" type="button" class="btn">Clear Chat</button>
+      </header>
+
+      <section class="card">
+        <div class="row mb-12">
+          <div class="field" style="flex:1;min-width:200px;margin-bottom:0">
+            <label for="bc-model">Model</label>
+            <input id="bc-model" type="text" value="gpt-4o" placeholder="provider/model or combo">
+          </div>
+          <div class="field" style="flex:1;min-width:200px;margin-bottom:0">
+            <label for="bc-key">API Key</label>
+            <select id="bc-key"></select>
+          </div>
+        </div>
+        <div class="field">
+          <label for="bc-system">System Prompt (optional)</label>
+          <input id="bc-system" type="text" placeholder="You are a helpful assistant.">
+        </div>
+      </section>
+
+      <section class="card">
+        <div id="bc-log" class="chat-log mb-12">
+          <div class="muted text-sm">Send a message below to test routing.</div>
+        </div>
+        <form id="bc-form" class="row">
+          <textarea id="bc-input" rows="2" placeholder="Ask anything..." style="flex:1" required></textarea>
+          <button id="bc-send" type="submit" class="btn btn-primary">Send</button>
+        </form>
+      </section>
+    </main>
+  </div>
+  <script src="/dashboard/app.js"></script>
+  <script>
+    window.__NR.pages["basic-chat"] = async function () {
+      var nr = window.__NR;
+      var keySel = document.getElementById("bc-key");
+      var logEl = document.getElementById("bc-log");
+      var messages = [];
+
+      try {
+        var keys = await nr.apiFetch("/api/keys");
+        var list = Array.isArray(keys.keys) ? keys.keys : [];
+        keySel.innerHTML = "";
+        if (list.length === 0) {
+          var opt = document.createElement("option");
+          opt.value = "";
+          opt.textContent = "(no API keys)";
+          keySel.appendChild(opt);
+        } else {
+          list.forEach(function (k) {
+            var opt = document.createElement("option");
+            opt.value = k.key || "";
+            opt.textContent = k.name || k.id;
+            keySel.appendChild(opt);
+          });
+        }
+      } catch (e) {}
+
+      function renderMessages() {
+        if (messages.length === 0) {
+          logEl.innerHTML = '<div class="muted text-sm">Send a message below to test routing.</div>';
+          return;
+        }
+        logEl.innerHTML = "";
+        messages.forEach(function (m) {
+          var div = document.createElement("div");
+          div.className = "chat-msg " + (m.role === "user" ? "chat-msg-user" : "chat-msg-assistant");
+          div.textContent = (m.role === "user" ? "You: " : "Assistant: ") + m.content;
+          logEl.appendChild(div);
+        });
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+
+      document.getElementById("bc-clear").addEventListener("click", function () {
+        messages = [];
+        renderMessages();
+      });
+
+      document.getElementById("bc-form").addEventListener("submit", async function (e) {
+        e.preventDefault();
+        var text = document.getElementById("bc-input").value.trim();
+        var model = document.getElementById("bc-model").value.trim();
+        var apiKey = keySel.value;
+        if (!text || !model) return;
+        messages.push({ role: "user", content: text });
+        document.getElementById("bc-input").value = "";
+        renderMessages();
+
+        var reqMsgs = [];
+        var sys = document.getElementById("bc-system").value.trim();
+        if (sys) reqMsgs.push({ role: "system", content: sys });
+        reqMsgs = reqMsgs.concat(messages);
+
+        var headers = { "Content-Type": "application/json" };
+        if (apiKey) headers["Authorization"] = "Bearer " + apiKey;
+
+        var sendBtn = document.getElementById("bc-send");
+        sendBtn.disabled = true;
+        try {
+          var res = await fetch("/v1/chat/completions", {
+            method: "POST",
+            headers: headers,
+            body: JSON.stringify({ model: model, messages: reqMsgs, stream: false })
+          });
+          var data = await res.json();
+          if (!res.ok) throw new Error((data.error && data.error.message) || ("HTTP " + res.status));
+          var reply = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || JSON.stringify(data);
+          messages.push({ role: "assistant", content: reply });
+          renderMessages();
+        } catch (err) {
+          nr.showBanner("Chat request failed: " + err.message, "error");
+        } finally {
+          sendBtn.disabled = false;
+        }
+      });
+    };
+  </script>
+</body>
+</html>

@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Usage — 9Router</title>
+  <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body data-page="usage">
+  <div class="layout">
+    <aside class="sidebar"></aside>
+    <main class="main">
+      <div id="error-banner" class="banner banner-error hidden" role="alert" aria-live="polite"></div>
+      <header class="page-header">
+        <div>
+          <h1 class="page-title">Usage &amp; Analytics</h1>
+          <p class="page-subtitle">Token consumption, latency, and request history</p>
+        </div>
+        <div class="row">
+          <select id="usage-period" aria-label="Time period">
+            <option value="today">Today</option>
+            <option value="24h">24h</option>
+            <option value="7d" selected>7D</option>
+            <option value="30d">30D</option>
+            <option value="60d">60D</option>
+            <option value="all">All</option>
+          </select>
+          <button id="usage-refresh" type="button" class="btn">Refresh</button>
+        </div>
+      </header>
+
+      <div class="tabs" role="tablist">
+        <button type="button" class="tab-btn" role="tab" data-tab="overview" aria-selected="true">Overview</button>
+        <button type="button" class="tab-btn" role="tab" data-tab="details" aria-selected="false">Request Details</button>
+        <button type="button" class="tab-btn" role="tab" data-tab="logs" aria-selected="false">Logs</button>
+      </div>
+
+      <section id="tab-overview">
+        <div class="grid">
+          <div class="card"><div class="stat-label">Requests</div><div id="u-reqs" class="stat-value">-</div></div>
+          <div class="card"><div class="stat-label">Input Tokens</div><div id="u-in" class="stat-value">-</div></div>
+          <div class="card"><div class="stat-label">Output Tokens</div><div id="u-out" class="stat-value">-</div></div>
+          <div class="card"><div class="stat-label">Estimated Cost</div><div id="u-cost" class="stat-value">-</div></div>
+        </div>
+        <div class="card">
+          <h2 class="card-title">By Model / Provider</h2>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Model</th><th>Provider</th><th>Requests</th><th>Tokens</th><th>Latency</th></tr></thead>
+              <tbody id="u-breakdown-tbody"><tr><td colspan="5" class="mono">Loading...</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-details" class="hidden">
+        <div class="card">
+          <h2 class="card-title">Recent Requests</h2>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Time</th><th>Model</th><th>Provider</th><th>Tokens</th><th>Status</th></tr></thead>
+              <tbody id="u-details-tbody"><tr><td colspan="5" class="mono">Loading...</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-logs" class="hidden">
+        <div class="card">
+          <h2 class="card-title">Request Logs</h2>
+          <pre id="u-logs-box" class="log-box">Loading...</pre>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="/dashboard/app.js"></script>
+  <script>
+    window.__NR.pages["usage"] = async function () {
+      var nr = window.__NR;
+      var periodSel = document.getElementById("usage-period");
+      var tabBtns = document.querySelectorAll(".tab-btn");
+      var activeTab = "overview";
+
+      function switchTab(t) {
+        activeTab = t;
+        tabBtns.forEach(function (b) { b.setAttribute("aria-selected", b.getAttribute("data-tab") === t ? "true" : "false"); });
+        document.getElementById("tab-overview").classList.toggle("hidden", t !== "overview");
+        document.getElementById("tab-details").classList.toggle("hidden", t !== "details");
+        document.getElementById("tab-logs").classList.toggle("hidden", t !== "logs");
+        load();
+      }
+      tabBtns.forEach(function (b) {
+        b.addEventListener("click", function () { switchTab(b.getAttribute("data-tab")); });
+      });
+
+      async function load() {
+        var period = periodSel.value;
+        if (activeTab === "overview") {
+          try {
+            var data = await nr.apiFetch("/api/usage?period=" + encodeURIComponent(period));
+            var summary = data.summary || data;
+            document.getElementById("u-reqs").textContent = nr.fmtNum(summary.totalRequests || summary.requests || 0);
+            document.getElementById("u-in").textContent = nr.fmtNum(summary.promptTokens || summary.inputTokens || 0);
+            document.getElementById("u-out").textContent = nr.fmtNum(summary.completionTokens || summary.outputTokens || 0);
+            var cost = Number(summary.totalCost || summary.cost || 0);
+            document.getElementById("u-cost").textContent = "$" + (isFinite(cost) ? cost.toFixed(4) : "0.0000");
+
+            var rows = Array.isArray(data.byModel) ? data.byModel : (Array.isArray(data.breakdown) ? data.breakdown : []);
+            var tbody = document.getElementById("u-breakdown-tbody");
+            if (rows.length === 0) {
+              tbody.innerHTML = '<tr><td colspan="5">No usage recorded for this period.</td></tr>';
+            } else {
+              tbody.innerHTML = "";
+              rows.forEach(function (r) {
+                var tr = document.createElement("tr");
+                tr.innerHTML =
+                  '<td class="mono">' + nr.escapeHtml(r.model || "-") + "</td>" +
+                  "<td>" + nr.escapeHtml(r.provider || "-") + "</td>" +
+                  "<td>" + nr.fmtNum(r.requests || 0) + "</td>" +
+                  "<td>" + nr.fmtNum(r.totalTokens || ((r.promptTokens || 0) + (r.completionTokens || 0))) + "</td>" +
+                  "<td>" + (r.avgLatencyMs != null ? nr.fmtNum(r.avgLatencyMs) + " ms" : "-") + "</td>";
+                tbody.appendChild(tr);
+              });
+            }
+          } catch (err) {
+            nr.showBanner("Failed to load usage: " + err.message, "error");
+          }
+        } else if (activeTab === "details") {
+          var dtbody = document.getElementById("u-details-tbody");
+          try {
+            var det = await nr.apiFetch("/api/usage/request-details?limit=50");
+            var list = Array.isArray(det.items) ? det.items : (Array.isArray(det.requests) ? det.requests : []);
+            if (list.length === 0) {
+              dtbody.innerHTML = '<tr><td colspan="5">No recent request details.</td></tr>';
+            } else {
+              dtbody.innerHTML = "";
+              list.forEach(function (r) {
+                var tr = document.createElement("tr");
+                tr.innerHTML =
+                  '<td class="mono">' + nr.fmtDate(r.timestamp || r.createdAt) + "</td>" +
+                  '<td class="mono">' + nr.escapeHtml(r.model || "-") + "</td>" +
+                  "<td>" + nr.escapeHtml(r.provider || "-") + "</td>" +
+                  "<td>" + nr.fmtNum(r.totalTokens || 0) + "</td>" +
+                  '<td><span class="badge ' + ((r.status || 200) < 400 ? "badge-ok" : "badge-danger") + '">' + nr.escapeHtml(r.status || "200") + "</span></td>";
+                dtbody.appendChild(tr);
+              });
+            }
+          } catch (err) {
+            dtbody.innerHTML = '<tr><td colspan="5">Unable to load request details.</td></tr>';
+          }
+        } else {
+          var box = document.getElementById("u-logs-box");
+          try {
+            var logs = await nr.apiFetch("/api/usage/request-logs?limit=100");
+            box.textContent = JSON.stringify(logs, null, 2);
+          } catch (err) {
+            box.textContent = "Request logs unavailable: " + err.message;
+          }
+        }
+      }
+
+      periodSel.addEventListener("change", load);
+      document.getElementById("usage-refresh").addEventListener("click", load);
+      await load();
+    };
+  </script>
+</body>
+</html>

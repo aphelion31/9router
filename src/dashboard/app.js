@@ -103,6 +103,107 @@
     return data || {};
   }
 
+  function renderSidebar() {
+    var aside = document.querySelector("aside.sidebar");
+    if (!aside) return;
+    var path = window.location.pathname || "/dashboard";
+    function isActive(href) {
+      if (href === "/dashboard") return path === "/dashboard" || path === "/dashboard/";
+      return path === href || path.indexOf(href + "/") === 0;
+    }
+    var groups = [
+      {
+        label: null,
+        items: [
+          { href: "/dashboard", label: "Dashboard" },
+          { href: "/dashboard/endpoint", label: "Endpoint & Key" },
+          { href: "/dashboard/providers", label: "Providers" },
+          { href: "/dashboard/combos", label: "Combos" },
+          { href: "/dashboard/usage", label: "Usage" },
+          { href: "/dashboard/quota", label: "Provider Quota" },
+          { href: "/dashboard/token-saver", label: "Token Saver" },
+          { href: "/dashboard/prompt-injection", label: "Prompt Injection" },
+          { href: "/dashboard/cli-tools", label: "CLI Tools" },
+          { href: "/dashboard/basic-chat", label: "Basic Chat" }
+        ]
+      },
+      {
+        label: "Media Providers",
+        items: [
+          { href: "/dashboard/media-providers/embedding", label: "Embedding", sub: true },
+          { href: "/dashboard/media-providers/image", label: "Image", sub: true },
+          { href: "/dashboard/media-providers/video", label: "Video", sub: true },
+          { href: "/dashboard/media-providers/tts", label: "TTS", sub: true },
+          { href: "/dashboard/media-providers/stt", label: "STT", sub: true },
+          { href: "/dashboard/media-providers/systemone", label: "SystemOne", sub: true },
+          { href: "/dashboard/media-providers/web", label: "Web Fetch & Search", sub: true }
+        ]
+      },
+      {
+        label: "System",
+        items: [
+          { href: "/dashboard/proxy-pools", label: "Proxy Pools" },
+          { href: "/dashboard/mitm", label: "MITM" },
+          { href: "/dashboard/pxpipe", label: "PxPipe" },
+          { href: "/dashboard/automation", label: "Automation" },
+          { href: "/dashboard/skills", label: "Skills" },
+          { href: "/dashboard/console-log", label: "Console Log" },
+          { href: "/dashboard/translator", label: "Translator" },
+          { href: "/dashboard/profile", label: "Profile & Settings" }
+        ]
+      }
+    ];
+    var navHtml = '<div class="brand"><span class="brand-mark" aria-hidden="true">9</span><span>9Router</span></div>' +
+      '<nav aria-label="Main navigation">';
+    groups.forEach(function (g) {
+      if (g.label) navHtml += '<div class="nav-section">' + escapeHtml(g.label) + '</div>';
+      navHtml += '<ul class="nav-list">';
+      g.items.forEach(function (it) {
+        var cur = isActive(it.href) ? ' aria-current="page"' : "";
+        var cls = "nav-link" + (it.sub ? " nav-link-sub" : "");
+        navHtml += '<li><a class="' + cls + '" href="' + it.href + '"' + cur + ">" + escapeHtml(it.label) + "</a></li>";
+      });
+      navHtml += "</ul>";
+    });
+    navHtml += '</nav><div class="sidebar-footer"><button id="logout-btn" type="button" class="btn" style="width:100%">Sign out</button></div>';
+    aside.innerHTML = navHtml;
+  }
+
+  function fmtNum(n) {
+    var num = Number(n);
+    if (!isFinite(num)) return "0";
+    return num.toLocaleString();
+  }
+
+  function fmtDate(v) {
+    if (!v) return "-";
+    try {
+      var d = new Date(v);
+      if (isNaN(d.getTime())) return String(v);
+      return d.toLocaleString();
+    } catch (e) {
+      return String(v);
+    }
+  }
+
+  function pathSegment(indexFromEnd) {
+    var parts = (window.location.pathname || "").split("/").filter(Boolean);
+    var idx = parts.length - 1 - (indexFromEnd || 0);
+    return idx >= 0 ? decodeURIComponent(parts[idx]) : "";
+  }
+
+  window.__NR = {
+    showBanner: showBanner,
+    clearBanner: clearBanner,
+    escapeHtml: escapeHtml,
+    copyText: copyText,
+    apiFetch: apiFetch,
+    fmtNum: fmtNum,
+    fmtDate: fmtDate,
+    pathSegment: pathSegment,
+    pages: {}
+  };
+
   function bindLogout() {
     var btn = document.getElementById("logout-btn");
     if (!btn) return;
@@ -371,12 +472,16 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    bindLogout();
     var page = document.body.getAttribute("data-page");
+    if (page !== "login") renderSidebar();
+    bindLogout();
     if (page === "login") initLogin();
     else if (page === "overview") initOverview();
     else if (page === "endpoint") initEndpoint();
     else if (page === "providers") initProviders();
     else if (page === "combos") initCombos();
+    else if (page && typeof window.__NR.pages[page] === "function") {
+      window.__NR.pages[page]();
+    }
   });
 })();

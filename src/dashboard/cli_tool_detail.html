@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CLI Tool Detail — 9Router</title>
+  <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body data-page="cli-tool-detail">
+  <div class="layout">
+    <aside class="sidebar"></aside>
+    <main class="main">
+      <div id="error-banner" class="banner banner-error hidden" role="alert" aria-live="polite"></div>
+      <header class="page-header">
+        <div>
+          <a href="/dashboard/cli-tools" class="muted text-sm">&larr; Back to CLI Tools</a>
+          <h1 id="ctd-title" class="page-title mt-12">CLI Tool</h1>
+          <p class="page-subtitle">Apply or reset local tool configuration</p>
+        </div>
+        <button id="ctd-refresh" type="button" class="btn">Refresh</button>
+      </header>
+
+      <section class="card" style="max-width:640px">
+        <div class="field">
+          <label for="ctd-endpoint">Endpoint URL</label>
+          <input id="ctd-endpoint" type="text" readonly class="mono">
+        </div>
+        <div class="field">
+          <label for="ctd-key">API Key</label>
+          <select id="ctd-key"></select>
+        </div>
+        <div class="field">
+          <label for="ctd-model">Default Model / Combo</label>
+          <input id="ctd-model" type="text" placeholder="e.g. claude-sonnet-4-5 or gpt-4o">
+        </div>
+        <div class="row">
+          <button id="ctd-apply" type="button" class="btn btn-primary">Apply Config</button>
+          <button id="ctd-reset" type="button" class="btn btn-danger">Reset Config</button>
+        </div>
+      </section>
+
+      <section class="card mt-12">
+        <h2 class="card-title">Current Tool Config</h2>
+        <pre id="ctd-raw" class="log-box">Loading...</pre>
+      </section>
+    </main>
+  </div>
+  <script src="/dashboard/app.js"></script>
+  <script>
+    window.__NR.pages["cli-tool-detail"] = async function () {
+      var nr = window.__NR;
+      var toolId = nr.pathSegment(0);
+      document.getElementById("ctd-title").textContent = "Configure: " + (toolId || "-");
+      document.getElementById("ctd-endpoint").value = window.location.origin + "/v1";
+
+      var keySel = document.getElementById("ctd-key");
+      var modelEl = document.getElementById("ctd-model");
+      var rawEl = document.getElementById("ctd-raw");
+
+      async function load() {
+        try {
+          var keys = await nr.apiFetch("/api/keys");
+          var list = Array.isArray(keys.keys) ? keys.keys : [];
+          keySel.innerHTML = "";
+          if (list.length === 0) {
+            var opt = document.createElement("option");
+            opt.value = "";
+            opt.textContent = "(no keys found)";
+            keySel.appendChild(opt);
+          } else {
+            list.forEach(function (k) {
+              var opt = document.createElement("option");
+              opt.value = k.key || k.id;
+              opt.textContent = (k.name || "Key") + " (" + (k.key ? k.key.slice(0, 10) + "..." : k.id) + ")";
+              keySel.appendChild(opt);
+            });
+          }
+        } catch (e) {}
+
+        try {
+          var cfg = await nr.apiFetch("/api/cli-tools/" + encodeURIComponent(toolId) + "-settings");
+          rawEl.textContent = JSON.stringify(cfg, null, 2);
+          if (cfg.model) modelEl.value = cfg.model;
+        } catch (err) {
+          rawEl.textContent = "Tool settings endpoint unavailable (" + err.message + ").";
+        }
+      }
+
+      document.getElementById("ctd-apply").addEventListener("click", async function () {
+        try {
+          await nr.apiFetch("/api/cli-tools/" + encodeURIComponent(toolId) + "-settings", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              baseUrl: document.getElementById("ctd-endpoint").value,
+              apiKey: keySel.value,
+              model: modelEl.value.trim()
+            })
+          });
+          nr.showBanner("Configuration applied.", "success");
+          load();
+        } catch (err) {
+          nr.showBanner("Apply failed: " + err.message, "error");
+        }
+      });
+
+      document.getElementById("ctd-reset").addEventListener("click", async function () {
+        try {
+          await nr.apiFetch("/api/cli-tools/" + encodeURIComponent(toolId) + "-settings", { method: "DELETE" });
+          nr.showBanner("Configuration reset.", "success");
+          load();
+        } catch (err) {
+          nr.showBanner("Reset failed: " + err.message, "error");
+        }
+      });
+
+      document.getElementById("ctd-refresh").addEventListener("click", load);
+      await load();
+    };
+  </script>
+</body>
+</html>

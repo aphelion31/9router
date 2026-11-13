@@ -11,7 +11,28 @@ const LOGIN_HTML: &str = include_str!("login.html");
 const OVERVIEW_HTML: &str = include_str!("overview.html");
 const ENDPOINT_HTML: &str = include_str!("endpoint.html");
 const PROVIDERS_HTML: &str = include_str!("providers.html");
+const PROVIDERS_NEW_HTML: &str = include_str!("providers_new.html");
+const PROVIDER_DETAIL_HTML: &str = include_str!("provider_detail.html");
 const COMBOS_HTML: &str = include_str!("combos.html");
+const USAGE_HTML: &str = include_str!("usage.html");
+const QUOTA_HTML: &str = include_str!("quota.html");
+const TOKEN_SAVER_HTML: &str = include_str!("token_saver.html");
+const PROMPT_INJECTION_HTML: &str = include_str!("prompt_injection.html");
+const PROFILE_HTML: &str = include_str!("profile.html");
+const SKILLS_HTML: &str = include_str!("skills.html");
+const PXPIPE_HTML: &str = include_str!("pxpipe.html");
+const PROXY_POOLS_HTML: &str = include_str!("proxy_pools.html");
+const MITM_HTML: &str = include_str!("mitm.html");
+const AUTOMATION_HTML: &str = include_str!("automation.html");
+const CLI_TOOLS_HTML: &str = include_str!("cli_tools.html");
+const CLI_TOOL_DETAIL_HTML: &str = include_str!("cli_tool_detail.html");
+const BASIC_CHAT_HTML: &str = include_str!("basic_chat.html");
+const CONSOLE_LOG_HTML: &str = include_str!("console_log.html");
+const TRANSLATOR_HTML: &str = include_str!("translator.html");
+const MEDIA_WEB_HTML: &str = include_str!("media_web.html");
+const MEDIA_KIND_HTML: &str = include_str!("media_kind.html");
+const MEDIA_DETAIL_HTML: &str = include_str!("media_detail.html");
+const MEDIA_COMBO_DETAIL_HTML: &str = include_str!("media_combo_detail.html");
 const STYLE_CSS: &str = include_str!("style.css");
 const APP_JS: &str = include_str!("app.js");
 
@@ -31,8 +52,92 @@ pub async fn providers_page() -> Html<&'static str> {
     Html(PROVIDERS_HTML)
 }
 
+pub async fn providers_new_page() -> Html<&'static str> {
+    Html(PROVIDERS_NEW_HTML)
+}
+
+pub async fn provider_detail_page() -> Html<&'static str> {
+    Html(PROVIDER_DETAIL_HTML)
+}
+
 pub async fn combos_page() -> Html<&'static str> {
     Html(COMBOS_HTML)
+}
+
+pub async fn usage_page() -> Html<&'static str> {
+    Html(USAGE_HTML)
+}
+
+pub async fn quota_page() -> Html<&'static str> {
+    Html(QUOTA_HTML)
+}
+
+pub async fn token_saver_page() -> Html<&'static str> {
+    Html(TOKEN_SAVER_HTML)
+}
+
+pub async fn prompt_injection_page() -> Html<&'static str> {
+    Html(PROMPT_INJECTION_HTML)
+}
+
+pub async fn profile_page() -> Html<&'static str> {
+    Html(PROFILE_HTML)
+}
+
+pub async fn skills_page() -> Html<&'static str> {
+    Html(SKILLS_HTML)
+}
+
+pub async fn pxpipe_page() -> Html<&'static str> {
+    Html(PXPIPE_HTML)
+}
+
+pub async fn proxy_pools_page() -> Html<&'static str> {
+    Html(PROXY_POOLS_HTML)
+}
+
+pub async fn mitm_page() -> Html<&'static str> {
+    Html(MITM_HTML)
+}
+
+pub async fn automation_page() -> Html<&'static str> {
+    Html(AUTOMATION_HTML)
+}
+
+pub async fn cli_tools_page() -> Html<&'static str> {
+    Html(CLI_TOOLS_HTML)
+}
+
+pub async fn cli_tool_detail_page() -> Html<&'static str> {
+    Html(CLI_TOOL_DETAIL_HTML)
+}
+
+pub async fn basic_chat_page() -> Html<&'static str> {
+    Html(BASIC_CHAT_HTML)
+}
+
+pub async fn console_log_page() -> Html<&'static str> {
+    Html(CONSOLE_LOG_HTML)
+}
+
+pub async fn translator_page() -> Html<&'static str> {
+    Html(TRANSLATOR_HTML)
+}
+
+pub async fn media_web_page() -> Html<&'static str> {
+    Html(MEDIA_WEB_HTML)
+}
+
+pub async fn media_kind_page() -> Html<&'static str> {
+    Html(MEDIA_KIND_HTML)
+}
+
+pub async fn media_detail_page() -> Html<&'static str> {
+    Html(MEDIA_DETAIL_HTML)
+}
+
+pub async fn media_combo_detail_page() -> Html<&'static str> {
+    Html(MEDIA_COMBO_DETAIL_HTML)
 }
 
 pub async fn style_css() -> Response {

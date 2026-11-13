@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Token Saver — 9Router</title>
+  <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body data-page="token-saver">
+  <div class="layout">
+    <aside class="sidebar"></aside>
+    <main class="main">
+      <div id="error-banner" class="banner banner-error hidden" role="alert" aria-live="polite"></div>
+      <header class="page-header">
+        <div>
+          <h1 class="page-title">Token Saver</h1>
+          <p class="page-subtitle">Prompt compression, headroom status, and savings metrics</p>
+        </div>
+        <button id="ts-refresh" type="button" class="btn">Refresh</button>
+      </header>
+
+      <div class="grid">
+        <div class="card"><div class="stat-label">Tokens Saved (14d)</div><div id="ts-saved" class="stat-value">-</div></div>
+        <div class="card"><div class="stat-label">Requests Compressed</div><div id="ts-reqs" class="stat-value">-</div></div>
+        <div class="card"><div class="stat-label">Headroom Service</div><div id="ts-headroom" class="stat-value">-</div></div>
+      </div>
+
+      <section class="card" aria-labelledby="ts-cfg-heading">
+        <h2 id="ts-cfg-heading" class="card-title">Compression Settings</h2>
+        <div class="toggle-row mb-12">
+          <label for="ts-enabled">Enable Token Saver</label>
+          <input id="ts-enabled" type="checkbox">
+        </div>
+        <div class="toggle-row mb-12">
+          <label for="ts-headroom-chk">Enable Headroom Proxy Compression</label>
+          <input id="ts-headroom-chk" type="checkbox">
+        </div>
+        <div class="field" style="max-width:280px">
+          <label for="ts-level">Compression Level</label>
+          <select id="ts-level">
+            <option value="light">Light (safe)</option>
+            <option value="balanced">Balanced</option>
+            <option value="aggressive">Aggressive</option>
+          </select>
+        </div>
+        <button id="ts-save" type="button" class="btn btn-primary">Save Settings</button>
+      </section>
+
+      <section class="card" aria-labelledby="ts-test-heading">
+        <h2 id="ts-test-heading" class="card-title">Test Compression</h2>
+        <div class="field">
+          <label for="ts-input">Sample Prompt Text</label>
+          <textarea id="ts-input" rows="4" placeholder="Paste a long prompt to preview token savings..."></textarea>
+        </div>
+        <button id="ts-test-btn" type="button" class="btn">Run Test</button>
+        <pre id="ts-test-out" class="log-box mt-12 hidden"></pre>
+      </section>
+    </main>
+  </div>
+  <script src="/dashboard/app.js"></script>
+  <script>
+    window.__NR.pages["token-saver"] = async function () {
+      var nr = window.__NR;
+      var enabledChk = document.getElementById("ts-enabled");
+      var headroomChk = document.getElementById("ts-headroom-chk");
+      var levelSel = document.getElementById("ts-level");
+
+      async function load() {
+        try {
+          var s = await nr.apiFetch("/api/settings");
+          enabledChk.checked = !!s.tokenSaverEnabled;
+          headroomChk.checked = !!s.headroomEnabled;
+          if (s.tokenSaverLevel) levelSel.value = s.tokenSaverLevel;
+        } catch (e) {}
+
+        try {
+          var st = await nr.apiFetch("/api/token-saver/stats?days=14");
+          document.getElementById("ts-saved").textContent = nr.fmtNum(st.tokensSaved || st.savedTokens || 0);
+          document.getElementById("ts-reqs").textContent = nr.fmtNum(st.compressedRequests || st.requests || 0);
+        } catch (e) {
+          document.getElementById("ts-saved").textContent = "0";
+          document.getElementById("ts-reqs").textContent = "0";
+        }
+
+        try {
+          var hr = await nr.apiFetch("/api/headroom/status");
+          document.getElementById("ts-headroom").textContent = hr.running || hr.available ? "Online" : "Offline";
+        } catch (e) {
+          document.getElementById("ts-headroom").textContent = "Offline";
+        }
+      }
+
+      document.getElementById("ts-save").addEventListener("click", async function () {
+        try {
+          await nr.apiFetch("/api/settings", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              tokenSaverEnabled: !!enabledChk.checked,
+              headroomEnabled: !!headroomChk.checked,
+              tokenSaverLevel: levelSel.value
+            })
+          });
+          nr.showBanner("Token Saver settings saved.", "success");
+        } catch (err) {
+          nr.showBanner("Save failed: " + err.message, "error");
+        }
+      });
+
+      document.getElementById("ts-test-btn").addEventListener("click", async function () {
+        var text = document.getElementById("ts-input").value.trim();
+        var out = document.getElementById("ts-test-out");
+        if (!text) return;
+        out.classList.remove("hidden");
+        out.textContent = "Testing...";
+        try {
+          var res = await nr.apiFetch("/api/token-saver/test", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: text, level: levelSel.value })
+          });
+          out.textContent = JSON.stringify(res, null, 2);
+        } catch (err) {
+          out.textContent = "Test endpoint unavailable: " + err.message;
+        }
+      });
+
+      document.getElementById("ts-refresh").addEventListener("click", load);
+      await load();
+    };
+  </script>
+</body>
+</html>

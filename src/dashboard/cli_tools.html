@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CLI Tools — 9Router</title>
+  <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body data-page="cli-tools">
+  <div class="layout">
+    <aside class="sidebar"></aside>
+    <main class="main">
+      <div id="error-banner" class="banner banner-error hidden" role="alert" aria-live="polite"></div>
+      <header class="page-header">
+        <div>
+          <h1 class="page-title">CLI Tools</h1>
+          <p class="page-subtitle">One-click configuration for coding agents and IDE extensions</p>
+        </div>
+        <button id="ct-refresh" type="button" class="btn">Refresh</button>
+      </header>
+      <section id="ct-grid" class="grid"></section>
+    </main>
+  </div>
+  <script src="/dashboard/app.js"></script>
+  <script>
+    window.__NR.pages["cli-tools"] = async function () {
+      var nr = window.__NR;
+      var grid = document.getElementById("ct-grid");
+      var TOOLS = [
+        { id: "claude", name: "Claude Code", desc: "Anthropic Claude CLI" },
+        { id: "codex", name: "Codex CLI", desc: "OpenAI Codex CLI" },
+        { id: "cline", name: "Cline", desc: "VS Code autonomous coding agent" },
+        { id: "roo", name: "Roo Code", desc: "VS Code AI assistant" },
+        { id: "kilo", name: "Kilo Code", desc: "VS Code AI coding extension" },
+        { id: "opencode", name: "OpenCode", desc: "Terminal AI coding agent" },
+        { id: "copilot", name: "GitHub Copilot", desc: "Copilot custom endpoint" },
+        { id: "cursor", name: "Cursor", desc: "Cursor IDE custom OpenAI base URL" },
+        { id: "droid", name: "Factory Droid", desc: "Droid CLI configuration" },
+        { id: "openclaw", name: "OpenClaw", desc: "OpenClaw agent config" },
+        { id: "antigravity", name: "Antigravity", desc: "Antigravity MITM alias config" }
+      ];
+
+      async function load() {
+        var statuses = {};
+        try {
+          var res = await nr.apiFetch("/api/cli-tools/statuses");
+          statuses = res.statuses || res || {};
+        } catch (e) {}
+
+        grid.innerHTML = "";
+        TOOLS.forEach(function (t) {
+          var st = statuses[t.id] || {};
+          var configured = !!(st.configured || st.active || st.enabled);
+          var card = document.createElement("div");
+          card.className = "card";
+          card.innerHTML =
+            '<div class="row-between mb-12">' +
+              "<strong>" + nr.escapeHtml(t.name) + "</strong>" +
+              '<span class="badge ' + (configured ? "badge-ok" : "badge-off") + '">' + (configured ? "Configured" : "Not configured") + "</span>" +
+            "</div>" +
+            '<p class="muted text-sm mb-12">' + nr.escapeHtml(t.desc) + "</p>" +
+            '<a class="btn btn-sm btn-primary" href="/dashboard/cli-tools/' + encodeURIComponent(t.id) + '">Configure</a>';
+          grid.appendChild(card);
+        });
+      }
+
+      document.getElementById("ct-refresh").addEventListener("click", load);
+      await load();
+    };
+  </script>
+</body>
+</html>

@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Add Provider — 9Router</title>
+  <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body data-page="providers-new">
+  <div class="layout">
+    <aside class="sidebar"></aside>
+    <main class="main">
+      <div id="error-banner" class="banner banner-error hidden" role="alert" aria-live="polite"></div>
+      <header class="page-header">
+        <div>
+          <a href="/dashboard/providers" class="muted text-sm">&larr; Back to Providers</a>
+          <h1 class="page-title mt-12">Add New Provider</h1>
+          <p class="page-subtitle">Configure a new AI provider connection</p>
+        </div>
+      </header>
+      <section class="card" style="max-width:620px">
+        <form id="new-provider-form">
+          <div class="field">
+            <label for="np-provider">Provider</label>
+            <select id="np-provider" required>
+              <option value="">Select a provider...</option>
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic</option>
+              <option value="gemini">Google Gemini</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="groq">Groq</option>
+              <option value="mistral">Mistral</option>
+              <option value="xai">xAI (Grok)</option>
+              <option value="codex">Codex (OAuth)</option>
+              <option value="claude">Claude (OAuth)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="np-auth">Authentication Method</label>
+            <select id="np-auth">
+              <option value="api_key">API Key</option>
+              <option value="oauth">OAuth</option>
+            </select>
+          </div>
+          <div class="field" id="np-apikey-wrap">
+            <label for="np-apikey">API Key</label>
+            <input id="np-apikey" type="password" placeholder="sk-..." autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="np-name">Display Name (optional)</label>
+            <input id="np-name" type="text" placeholder="e.g. Primary OpenAI">
+          </div>
+          <div class="toggle-row mb-12">
+            <label for="np-active">Active</label>
+            <input id="np-active" type="checkbox" checked>
+          </div>
+          <div class="row">
+            <button id="np-submit" type="submit" class="btn btn-primary">Create Provider</button>
+            <a class="btn" href="/dashboard/providers">Cancel</a>
+          </div>
+        </form>
+      </section>
+    </main>
+  </div>
+  <script src="/dashboard/app.js"></script>
+  <script>
+    window.__NR.pages["providers-new"] = async function () {
+      var nr = window.__NR;
+      var form = document.getElementById("new-provider-form");
+      var providerSel = document.getElementById("np-provider");
+      var authSel = document.getElementById("np-auth");
+      var apiKeyWrap = document.getElementById("np-apikey-wrap");
+      var apiKeyInput = document.getElementById("np-apikey");
+      var nameInput = document.getElementById("np-name");
+      var activeChk = document.getElementById("np-active");
+      var submitBtn = document.getElementById("np-submit");
+
+      try {
+        var nodes = await nr.apiFetch("/api/provider-nodes");
+        var list = Array.isArray(nodes.nodes) ? nodes.nodes : (Array.isArray(nodes) ? nodes : []);
+        list.forEach(function (n) {
+          if (n && n.id && !providerSel.querySelector('option[value="' + n.id + '"]')) {
+            var opt = document.createElement("option");
+            opt.value = n.id;
+            opt.textContent = n.name || n.id;
+            providerSel.appendChild(opt);
+          }
+        });
+      } catch (e) {}
+
+      authSel.addEventListener("change", function () {
+        apiKeyWrap.classList.toggle("hidden", authSel.value !== "api_key");
+      });
+
+      form.addEventListener("submit", async function (e) {
+        e.preventDefault();
+        nr.clearBanner();
+        var provider = providerSel.value.trim();
+        var authMethod = authSel.value;
+        var apiKey = apiKeyInput.value.trim();
+        if (!provider) {
+          nr.showBanner("Please select a provider.", "error");
+          return;
+        }
+        if (authMethod === "api_key" && !apiKey) {
+          nr.showBanner("API Key is required.", "error");
+          return;
+        }
+        submitBtn.disabled = true;
+        try {
+          await nr.apiFetch("/api/providers", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              provider: provider,
+              authMethod: authMethod,
+              apiKey: apiKey || undefined,
+              displayName: nameInput.value.trim() || undefined,
+              isActive: !!activeChk.checked
+            })
+          });
+          window.location.assign("/dashboard/providers");
+        } catch (err) {
+          nr.showBanner("Failed to create provider: " + err.message, "error");
+          submitBtn.disabled = false;
+        }
+      });
+    };
+  </script>
+</body>
+</html>

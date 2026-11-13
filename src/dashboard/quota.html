@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Provider Quota — 9Router</title>
+  <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body data-page="quota">
+  <div class="layout">
+    <aside class="sidebar"></aside>
+    <main class="main">
+      <div id="error-banner" class="banner banner-error hidden" role="alert" aria-live="polite"></div>
+      <header class="page-header">
+        <div>
+          <h1 class="page-title">Provider Quota &amp; Limits</h1>
+          <p class="page-subtitle">Connection health, rate-limit windows, and credit reset</p>
+        </div>
+        <button id="quota-refresh" type="button" class="btn">Refresh</button>
+      </header>
+      <section class="card">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Provider</th><th>Account</th><th>Status</th><th>Quota Used</th><th>Actions</th></tr>
+            </thead>
+            <tbody id="quota-tbody">
+              <tr><td colspan="5" class="mono">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="/dashboard/app.js"></script>
+  <script>
+    window.__NR.pages["quota"] = async function () {
+      var nr = window.__NR;
+      var tbody = document.getElementById("quota-tbody");
+
+      async function load() {
+        tbody.innerHTML = '<tr><td colspan="5" class="mono">Loading...</td></tr>';
+        try {
+          var provData = await nr.apiFetch("/api/providers");
+          var list = Array.isArray(provData.connections) ? provData.connections : [];
+          if (list.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5">No provider connections configured.</td></tr>';
+            return;
+          }
+          tbody.innerHTML = "";
+          list.forEach(function (c) {
+            var tr = document.createElement("tr");
+            var pct = Math.min(100, Math.max(0, Number(c.quotaUsedPercent || 0)));
+            var active = c.isActive !== false;
+            var statusLabel = c.rateLimitedUntil ? "Cooldown" : (active ? "Healthy" : "Paused");
+            var statusCls = c.rateLimitedUntil ? "badge-warn" : (active ? "badge-ok" : "badge-off");
+            tr.innerHTML =
+              '<td class="mono">' + nr.escapeHtml(c.provider || "-") + "</td>" +
+              "<td>" + nr.escapeHtml(c.name || c.id || "-") + "</td>" +
+              '<td><span class="badge ' + statusCls + '">' + statusLabel + "</span></td>" +
+              '<td style="min-width:160px"><div class="progress-track"><div class="progress-fill" style="width:' + pct + '%"></div></div><div class="muted text-sm">' + pct + "%</div></td>" +
+              '<td class="row"><button type="button" class="btn btn-sm reset-btn">Reset Quota</button></td>';
+            tr.querySelector(".reset-btn").addEventListener("click", async function () {
+              try {
+                var endpoint = c.provider === "claude"
+                  ? "/api/usage/" + encodeURIComponent(c.id) + "/claude-reset"
+                  : "/api/usage/" + encodeURIComponent(c.id) + "/codex-reset-credits";
+                await nr.apiFetch(endpoint, { method: "POST" });
+                nr.showBanner("Quota reset requested.", "success");
+                load();
+              } catch (err) {
+                nr.showBanner("Reset failed: " + err.message, "error");
+              }
+            });
+            tbody.appendChild(tr);
+          });
+        } catch (err) {
+          tbody.innerHTML = '<tr><td colspan="5">Unable to load quota data.</td></tr>';
+          nr.showBanner("Failed to load quota: " + err.message, "error");
+        }
+      }
+
+      document.getElementById("quota-refresh").addEventListener("click", load);
+      await load();
+    };
+  </script>
+</body>
+</html>
