@@ -44,7 +44,7 @@ Status is deliberately conservative: partial means the upstream executor has beh
 | uc-web.js | pending | |
 | veoaifree-web.js | pending | |
 | vertex.js | partial | API key, service account and ADC supported. Token caching, project discovery and connection settings missing. |
-| windsurf.js | pending | |
+| windsurf.js | ported | `src/executors/windsurf.rs` (gRPC-web protobuf request/response framing, model aliases, SSE/non-stream decoders) |
 | xiaomi-mimo.js | pending | |
 | xiaomi-tokenplan.js | pending | |
 | zed.js | pending | |

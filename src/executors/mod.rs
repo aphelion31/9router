@@ -15,6 +15,7 @@ mod iflow;
 mod muse_web;
 pub(crate) mod trae;
 mod vertex;
+pub(crate) mod windsurf;
 
 #[derive(Debug, Clone, Default)]
 pub struct ExecutorRequest {
@@ -37,6 +38,9 @@ pub async fn execute(
 ) -> anyhow::Result<reqwest::Response> {
     if request.provider == "trae" {
         return trae::execute(client, &request).await;
+    }
+    if request.provider == "windsurf" {
+        return windsurf::execute(client, &request).await;
     }
     let provider = crate::providers::lookup(&request.provider)
         .with_context(|| format!("unknown provider: {}", request.provider))?;
@@ -916,6 +920,97 @@ mod tests {
         assert_eq!(body["reasoning"]["effort"], "high");
         assert!(body.get("max_tokens").is_none());
         assert_eq!(body["tools"][0]["name"], "read");
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn windsurf_mock_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://{addr}/GetChatMessage");
+        let app = Router::new().route(
+            "/GetChatMessage",
+            post(|headers: HeaderMap, body: Bytes| async move {
+                assert_eq!(
+                    headers.get("content-type").and_then(|v| v.to_str().ok()),
+                    Some("application/grpc-web+proto")
+                );
+                assert_eq!(
+                    headers.get("x-grpc-web").and_then(|v| v.to_str().ok()),
+                    Some("1")
+                );
+                // 5-byte gRPC-web frame header + protobuf payload containing resolved model name
+                assert!(body.len() > 5);
+                assert_eq!(body[0], 0x00);
+                let payload_str = String::from_utf8_lossy(&body[5..]);
+                assert!(payload_str.contains("claude-sonnet-4-6"));
+                assert!(payload_str.contains("ws-key"));
+
+                // Encode two CompletionChunk frames: ContentChunk("Hi ") and DoneChunk(10, 4)
+                fn varint(mut v: u64, out: &mut Vec<u8>) {
+                    while v > 0x7f {
+                        out.push(((v & 0x7f) as u8) | 0x80);
+                        v >>= 7;
+                    }
+                    out.push(v as u8);
+                }
+                let mut content_inner = Vec::new();
+                content_inner.push((1 << 3) | 2);
+                varint(3, &mut content_inner);
+                content_inner.extend_from_slice(b"Hi ");
+                let mut chunk1 = Vec::new();
+                chunk1.push((1 << 3) | 2);
+                varint(content_inner.len() as u64, &mut chunk1);
+                chunk1.extend_from_slice(&content_inner);
+
+                let mut usage = Vec::new();
+                usage.push(1 << 3);
+                varint(10, &mut usage);
+                usage.push(2 << 3);
+                varint(4, &mut usage);
+                let mut done_inner = Vec::new();
+                done_inner.push((1 << 3) | 2);
+                varint(usage.len() as u64, &mut done_inner);
+                done_inner.extend_from_slice(&usage);
+                let mut chunk2 = Vec::new();
+                chunk2.push((3 << 3) | 2);
+                varint(done_inner.len() as u64, &mut chunk2);
+                chunk2.extend_from_slice(&done_inner);
+
+                let mut out = windsurf::grpc_web_frame(&chunk1);
+                out.extend_from_slice(&windsurf::grpc_web_frame(&chunk2));
+                (StatusCode::OK, out)
+            }),
+        );
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let response = execute(
+            &reqwest::Client::new(),
+            ExecutorRequest {
+                provider: "windsurf".into(),
+                model: "claude-sonnet-4.6".into(),
+                body: json!({"messages": [{"role": "user", "content": "hello"}]}),
+                stream: true,
+                access_token: Some("ws-key".into()),
+                base_url: Some(base),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let raw = response.bytes().await.unwrap();
+        let mut decoder = windsurf::Decoder::new("claude-sonnet-4.6");
+        let mut sse = String::from_utf8(decoder.push(&raw).unwrap()).unwrap();
+        sse.push_str(&String::from_utf8(decoder.finish()).unwrap());
+        assert!(sse.contains("\"content\":\"Hi \""));
+        assert!(sse.contains("\"total_tokens\":14"));
+        assert!(sse.contains("data: [DONE]"));
+
+        let non_stream: Value =
+            serde_json::from_slice(&windsurf::decode_non_stream(&raw, "claude-sonnet-4.6"))
+                .unwrap();
+        assert_eq!(non_stream["choices"][0]["message"]["content"], "Hi ");
+        assert_eq!(non_stream["usage"]["total_tokens"], 14);
         task.abort();
     }
 }
