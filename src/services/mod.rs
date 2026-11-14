@@ -1,3 +1,4 @@
+#[cfg(test)]
 pub mod antigravity_ide_version;
 pub mod antigravity_quota;
 pub mod auto_routing;
