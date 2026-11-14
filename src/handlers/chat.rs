@@ -534,7 +534,9 @@ pub async fn handle_chat(
                         tokio::time::sleep(overload_delay(overload_attempts)).await;
                         continue;
                     }
-                    if !hooks.on_account_error(&conn_id, status, &message).await {
+                    // Upstream auth.js markAccountUnavailable: noauth never falls back or cools down,
+                    // otherwise one upstream blip locks every free-provider request.
+                    if conn_id == "noauth" || !hooks.on_account_error(&conn_id, status, &message).await {
                         return upstream_error_response(status, &message, &last_headers);
                     }
                     match verdict {
@@ -673,6 +675,19 @@ mod tests {
         let hooks: Arc<dyn ChatHooks> = Arc::new(SingleCredHooks { credentials: test_creds("native-test") });
         let response = handle_chat(json!({"model":"claude/test","stream":false,"custom_native_field":"preserved","messages":[{"role":"user","content":"hello"}]}), &headers, Some("/v1/messages"), &executor, hooks).await;
         assert_eq!(response.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn noauth_failure_is_returned_without_cooldown() {
+        // auth.js markAccountUnavailable: "noauth" never falls back or cools down.
+        let executor = FakeExecutor::new(|_, _| {
+            Ok(ExecutorResponse { status: 502, headers: vec![], body: ExecutorBody::Json(json!({"error":{"message":"proxy down"}})), url: None, response_format: None })
+        });
+        for _ in 0..2 {
+            let hooks: Arc<dyn ChatHooks> = Arc::new(SingleCredHooks { credentials: test_creds("noauth") });
+            let response = handle_chat(json!({"model":"openai/m","stream":false,"messages":[{"role":"user","content":"hi"}]}), &HeaderMap::new(), Some("/v1/chat/completions"), &executor, hooks).await;
+            assert_eq!(response.status(), 502, "second call must not be locked out by a cooldown");
+        }
     }
 
     #[tokio::test]
