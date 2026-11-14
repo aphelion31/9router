@@ -16,6 +16,7 @@ pub mod grok_cli_models;
 pub mod kimchi_models;
 pub mod key_rate_limiter;
 pub mod key_access;
+pub mod models_list_cache;
 pub mod kiro_models;
 pub mod latency_stats;
 pub mod minimax_code_lease;
