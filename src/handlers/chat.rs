@@ -153,6 +153,9 @@ async fn probe_flaky_response(response: Response) -> (Response, bool) {
 
 /// Hooks for credential lookup, persistence, and account failover in `handle_chat`.
 pub trait ChatHooks: Send + Sync {
+    fn filter_adapter_models<'a>(&'a self, augmented: Vec<String>, _original: &'a [String]) -> BoxFuture<'a, Vec<String>> {
+        Box::pin(async move { augmented })
+    }
     fn settings<'a>(&'a self) -> BoxFuture<'a, Value> {
         Box::pin(async { json!({}) })
     }
@@ -322,6 +325,7 @@ async fn handle_chat_inner(
     let mut names = crate::services::capacity_adapter::augment_models_with_capacity_adapter(
         &original, &required, &settings, satisfies,
     );
+    names = hooks.filter_adapter_models(names, &original).await;
     let adapters: HashSet<String> = names.iter().filter(|n| !original.contains(n)).filter_map(|n| parse_model_target(n)).map(|t| format!("{}/{}", t.provider, t.model)).collect();
     let strategy = if is_combo {
         settings["comboStrategies"][&model_str]["fallbackStrategy"].as_str()
