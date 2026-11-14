@@ -421,6 +421,23 @@ async fn models(State(state): State<AppState>, access: Option<axum::extract::Ext
     }
     Json(json!({"object":"list","data":data}))
 }
+/// Sticky-random current key per provider+model (upstream sticky-random). In-memory; dropped when the key locks.
+static STICKY_CURRENT: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, String>>> = std::sync::LazyLock::new(Default::default);
+
+fn sticky_forget(provider: &str, model: &str, connection_id: &str) {
+    if let Ok(mut map) = STICKY_CURRENT.lock() {
+        let key = format!("{provider}:{model}");
+        if map.get(&key).is_some_and(|id| id == connection_id) { map.remove(&key); }
+    }
+}
+
+fn rand_index(n: usize) -> usize {
+    use ring::rand::SecureRandom;
+    let mut b = [0u8; 8];
+    let _ = ring::rand::SystemRandom::new().fill(&mut b);
+    (u64::from_le_bytes(b) as usize) % n.max(1)
+}
+
 /// Per-request chat hooks. `api_key_id` is the `apiKeys.id` of the caller, if known.
 struct Hooks {
     state: AppState,
@@ -651,6 +668,16 @@ impl ChatHooks for Hooks {
                     if excluded.contains(&row.0) { return false; }
                     if provider == "antigravity" && crate::services::antigravity_quota::blocked(&row.0, model) { return false; }
                     let Some(data) = crate::crypto::parse_data(&row.2) else { return false };
+                    // Upstream auth.js: auto-quarantined accounts never serve until re-enabled by hand.
+                    if data["quarantinedAt"].is_string() { return false; }
+                    // Upstream auth.js: Kiro accounts with an unresolved profileArn are skipped for OAuth/social auth.
+                    if provider == "kiro" {
+                        let psd = &data["providerSpecificData"];
+                        let account_bound = matches!(psd["authMethod"].as_str(), Some("api_key" | "idc" | "external_idp"));
+                        if !account_bound && psd["profileArnUnresolved"] == true && psd["profileArn"].as_str().is_none_or(str::is_empty) { return false; }
+                    }
+                    // Upstream auth.js: Codex accounts with an enabledModels list only serve those models.
+                    if provider == "codex" && let Some(enabled) = data["providerSpecificData"]["enabledModels"].as_array().filter(|a| !a.is_empty()) && !model.is_empty() && !enabled.iter().any(|m| m.as_str() == Some(model)) { return false; }
                     [format!("modelLock_{model}"), "modelLock___all".into()].iter().all(|key| {
                         data[key].as_str().is_none_or(|expiry| db.query_row("SELECT julianday(?1) > julianday('now')", [expiry], |r| r.get::<_, Option<bool>>(0)).ok().flatten() != Some(true))
                     })
@@ -664,11 +691,56 @@ impl ChatHooks for Hooks {
                     });
                 }
                 candidates.sort_by_key(|row| preferred != Some(row.0.as_str()));
+                // Upstream: a pinned connection beats the strategy; only unpinned picks rotate.
+                let pinned = preferred.is_some_and(|id| candidates.iter().any(|c| c.0 == id));
+                let now_sql = |db: &rusqlite::Connection| db.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')", [], |r| r.get::<_, String>(0)).ok();
+                if !pinned && strategy == "round-robin" && !candidates.is_empty() {
+                    // Upstream round-robin: stay on the most recent account while it has served fewer than
+                    // stickyRoundRobinLimit requests in a row; otherwise rotate to the least recently used.
+                    let limit = settings["providerStrategies"][provider]["stickyRoundRobinLimit"].as_u64().or_else(|| settings["stickyRoundRobinLimit"].as_u64()).unwrap_or(3).max(1);
+                    let parsed: Vec<Value> = candidates.iter().map(|r| crate::crypto::parse_data(&r.2).unwrap_or_default()).collect();
+                    let last = |i: usize| parsed[i]["lastUsedAt"].as_str().unwrap_or("").to_owned();
+                    let uses = |i: usize| parsed[i]["consecutiveUseCount"].as_u64().unwrap_or(0);
+                    let any_used = (0..candidates.len()).any(|i| !last(i).is_empty());
+                    // Most recent use is current; equal ms timestamps fall back to the longer streak, then priority order.
+                    let current = (0..candidates.len()).max_by(|&a, &b| last(a).cmp(&last(b)).then(uses(a).cmp(&uses(b))).then(b.cmp(&a))).unwrap_or(0);
+                    // Least recently used, excluding the current account when another candidate exists.
+                    let rotate = || (0..candidates.len()).filter(|&i| candidates.len() == 1 || i != current).min_by(|&a, &b| last(a).cmp(&last(b)).then(a.cmp(&b))).unwrap_or(current);
+                    let (chosen, count) = if !any_used { (0, 1) } else if !last(current).is_empty() && uses(current) < limit { (current, uses(current) + 1) } else { (rotate(), 1) };
+                    if let Some(now) = now_sql(&db) {
+                        let mut data = parsed[chosen].clone();
+                        data["lastUsedAt"] = json!(now);
+                        data["consecutiveUseCount"] = json!(count);
+                        let mut stored = data.clone();
+                        crate::crypto::encrypt_fields(&mut stored);
+                        if db.execute("UPDATE providerConnections SET data=?1 WHERE id=?2 AND data=?3", rusqlite::params![stored.to_string(), candidates[chosen].0, candidates[chosen].2]).ok() == Some(1) { candidates[chosen].2 = stored.to_string(); }
+                    }
+                    candidates.swap(0, chosen);
+                } else if !pinned && strategy == "sticky-random" && !candidates.is_empty() {
+                    // Upstream sticky-random: keep the current key while it succeeds; re-roll once it locks (sticky_forget).
+                    let key = format!("{provider}:{model}");
+                    let sticky_id = STICKY_CURRENT.lock().ok().and_then(|m| m.get(&key).cloned());
+                    let idx = sticky_id.as_deref().and_then(|id| candidates.iter().position(|r| r.0 == id)).unwrap_or_else(|| rand_index(candidates.len()));
+                    let fresh = sticky_id.as_deref() != Some(candidates[idx].0.as_str());
+                    if let Some(now) = now_sql(&db) {
+                        let mut data: Value = crate::crypto::parse_data(&candidates[idx].2).unwrap_or_default();
+                        let prev = data["consecutiveUseCount"].as_u64().unwrap_or(0);
+                        data["lastUsedAt"] = json!(now);
+                        data["consecutiveUseCount"] = json!(if fresh { 1 } else { prev + 1 });
+                        let mut stored = data.clone();
+                        crate::crypto::encrypt_fields(&mut stored);
+                        if db.execute("UPDATE providerConnections SET data=?1 WHERE id=?2 AND data=?3", rusqlite::params![stored.to_string(), candidates[idx].0, candidates[idx].2]).ok() == Some(1) { candidates[idx].2 = stored.to_string(); }
+                    }
+                    candidates.swap(0, idx);
+                    if let Ok(mut m) = STICKY_CURRENT.lock() { m.insert(key, candidates[0].0.clone()); }
+                }
                 if preferred.is_none_or(|id| !candidates.iter().any(|c| c.0 == id)) && strategy == "balanced" && let Some(row) = candidates.first_mut() {
                     if let Ok(mut data) = serde_json::from_str::<Value>(&row.2) {
                         if let Ok(now) = db.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')", [], |r| r.get::<_, String>(0)) {
                             data["lastUsedAt"] = json!(now);
-                            if db.execute("UPDATE providerConnections SET data=?1 WHERE id=?2 AND data=?3", rusqlite::params![data.to_string(), row.0, row.2]).ok() == Some(1) { row.2 = data.to_string(); }
+                            let mut stored = data.clone();
+                            crate::crypto::encrypt_fields(&mut stored);
+                            if db.execute("UPDATE providerConnections SET data=?1 WHERE id=?2 AND data=?3", rusqlite::params![stored.to_string(), row.0, row.2]).ok() == Some(1) { row.2 = stored.to_string(); }
                         }
                     }
                 }
@@ -731,6 +803,7 @@ impl ChatHooks for Hooks {
             if fallback && let Ok(db) = self.state.db.lock() {
                 let result = (|| -> rusqlite::Result<()> {
                     let (raw, provider): (String, String) = db.query_row("SELECT data,provider FROM providerConnections WHERE id=?1", [connection_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                    sticky_forget(&provider, model, connection_id);
                     let mut data: Value = serde_json::from_str(&raw).map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?;
                     let level = data["backoffLevel"].as_u64().unwrap_or(0).min(15);
                     let verdict = crate::routing::classify::classify(&provider, status, message, crate::routing::classify::now_ms());
@@ -770,7 +843,9 @@ impl ChatHooks for Hooks {
                             }
                         }
                     }
-                    db.execute("UPDATE providerConnections SET data=?1, isActive=CASE WHEN ?4 THEN 0 ELSE isActive END WHERE id=?2 AND data=?3", rusqlite::params![data.to_string(), connection_id, raw, quarantine])?;
+                    let mut stored = data.clone();
+                    crate::crypto::encrypt_fields(&mut stored);
+                    db.execute("UPDATE providerConnections SET data=?1, isActive=CASE WHEN ?4 THEN 0 ELSE isActive END WHERE id=?2 AND data=?3", rusqlite::params![stored.to_string(), connection_id, raw, quarantine])?;
                     Ok(())
                 })();
                 if let Err(e) = result { tracing::warn!("account lock persistence failed: {e}"); }
@@ -794,7 +869,9 @@ impl ChatHooks for Hooks {
                         }
                         obj.insert("consecutiveAuthFailures".into(), json!(0));
                     }
-                    db.execute("UPDATE providerConnections SET data=?1 WHERE id=?2 AND data=?3", rusqlite::params![data.to_string(), connection_id, raw])?;
+                    let mut stored = data.clone();
+                    crate::crypto::encrypt_fields(&mut stored);
+                    db.execute("UPDATE providerConnections SET data=?1 WHERE id=?2 AND data=?3", rusqlite::params![stored.to_string(), connection_id, raw])?;
                     Ok(())
                 })();
                 if let Err(e) = result { tracing::warn!("account success persistence failed: {e}"); }
@@ -992,6 +1069,120 @@ mod tests {
         let (active, raw): (bool, String) = db.query_row("SELECT isActive,data FROM providerConnections WHERE id='failure'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         let data: Value = serde_json::from_str(&raw).unwrap(); assert!(!active); assert_eq!(data["consecutiveAuthFailures"], 5); assert_eq!(data["testStatus"], "unavailable");
     }
+    /// Builds a Hooks over an in-memory DB with connections `(id, priority, extra data)` for provider "test".
+    fn selection_hooks(rows: &[(&str, i64, Value)], strategy: Option<&str>) -> Hooks {
+        let db = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&db).unwrap();
+        for (id, priority, extra) in rows {
+            let mut data = json!({"apiKey": "secret"});
+            if let (Some(base), Some(add)) = (data.as_object_mut(), extra.as_object()) { base.extend(add.clone()); }
+            db.execute("INSERT INTO providerConnections(id,provider,authType,isActive,priority,data,createdAt,updatedAt) VALUES(?1,'test','apikey',1,?2,?3,'now','now')", params![id, priority, data.to_string()]).unwrap();
+        }
+        if let Some(s) = strategy {
+            crate::db::settings_put(&db, &json!({"fallbackStrategy": s})).unwrap();
+        }
+        Hooks { state: AppState { db: Arc::new(Mutex::new(db)), executor: Arc::new(HttpExecutor(reqwest::Client::new())), jwt_secret: None }, api_key_id: None }
+    }
+
+    // upstream: sse/services/auth.js getProviderCredentials, strategy "round-robin" (stick up to stickyRoundRobinLimit, then rotate to least recently used)
+    #[tokio::test]
+    async fn round_robin_sticks_then_rotates_to_least_recent() {
+        let hooks = selection_hooks(&[("a", 1, json!({})), ("b", 2, json!({}))], Some("round-robin"));
+        let none = HashSet::new();
+        let mut picks = Vec::new();
+        for _ in 0..5 { picks.push(hooks.get_credentials("test", "m", &none).await.unwrap().connection_id); }
+        assert_eq!(picks, ["a", "a", "a", "b", "b"], "limit 3 default: 3 in a row on a, then rotate");
+    }
+
+    // upstream: sse/services/auth.js getProviderCredentials, strategy "sticky-random" (keep current key until it locks)
+    #[tokio::test]
+    async fn sticky_random_keeps_key_until_it_locks() {
+        let hooks = selection_hooks(&[("a", 1, json!({})), ("b", 2, json!({}))], Some("sticky-random"));
+        let none = HashSet::new();
+        let first = hooks.get_credentials("test", "sticky-model", &none).await.unwrap().connection_id;
+        for _ in 0..4 { assert_eq!(hooks.get_credentials("test", "sticky-model", &none).await.unwrap().connection_id, first); }
+        hooks.on_account_error(&first, "sticky-model", 429, "limited").await;
+        let mut excluded = HashSet::new(); excluded.insert(first.clone());
+        let next = hooks.get_credentials("test", "sticky-model", &excluded).await.unwrap().connection_id;
+        assert_ne!(next, first, "a locked sticky key must be re-rolled");
+    }
+
+    // upstream: sse/services/auth.js getProviderCredentials, priority order (lower priority number wins under fill-first)
+    #[tokio::test]
+    async fn priority_order_wins_under_fill_first() {
+        let hooks = selection_hooks(&[("low", 5, json!({})), ("top", 1, json!({}))], Some("fill-first"));
+        assert_eq!(hooks.get_credentials("test", "m", &HashSet::new()).await.unwrap().connection_id, "top");
+    }
+
+    // upstream: sse/services/auth.js getProviderCredentials, preferredConnectionId pins over strategy
+    #[tokio::test]
+    async fn preferred_pin_beats_round_robin() {
+        let hooks = selection_hooks(&[("a", 1, json!({})), ("b", 2, json!({}))], Some("round-robin"));
+        let none = HashSet::new();
+        for _ in 0..3 { assert_eq!(hooks.get_credentials_preferred("test", "m", &none, Some("b")).await.unwrap().connection_id, "b"); }
+    }
+
+    // upstream: sse/services/auth.js isAvailable (kiro profileArnUnresolved skip for social/OAuth auth)
+    #[tokio::test]
+    async fn kiro_unresolved_arn_is_skipped_but_idc_is_not() {
+        let unresolved = json!({"providerSpecificData": {"authMethod": "social", "profileArnUnresolved": true}});
+        let idc = json!({"providerSpecificData": {"authMethod": "idc", "profileArnUnresolved": true}});
+        let hooks = selection_hooks(&[("bad", 1, unresolved), ("good", 2, idc)], None);
+        let db_provider = "kiro";
+        {
+            let db = hooks.state.db.lock().unwrap();
+            db.execute("UPDATE providerConnections SET provider=?1", [db_provider]).unwrap();
+        }
+        assert_eq!(hooks.get_credentials(db_provider, "m", &HashSet::new()).await.unwrap().connection_id, "good");
+    }
+
+    // upstream: sse/services/auth.js isAvailable (codex enabledModels gates model routing)
+    #[tokio::test]
+    async fn codex_enabled_models_gate_the_account() {
+        let enabled = json!({"providerSpecificData": {"enabledModels": ["gpt-5"]}});
+        let hooks = selection_hooks(&[("only-5", 1, enabled)], None);
+        {
+            let db = hooks.state.db.lock().unwrap();
+            db.execute("UPDATE providerConnections SET provider='codex'", []).unwrap();
+        }
+        assert!(hooks.get_credentials("codex", "gpt-4o", &HashSet::new()).await.is_none());
+        assert_eq!(hooks.get_credentials("codex", "gpt-5", &HashSet::new()).await.unwrap().connection_id, "only-5");
+    }
+
+    // upstream: sse/services/auth.js auto-quarantine: quarantined accounts never serve
+    #[tokio::test]
+    async fn quarantined_account_is_skipped() {
+        let hooks = selection_hooks(&[("q", 1, json!({"quarantinedAt": "2026-01-01T00:00:00Z"})), ("ok", 2, json!({}))], None);
+        assert_eq!(hooks.get_credentials("test", "m", &HashSet::new()).await.unwrap().connection_id, "ok");
+    }
+
+    // upstream: sse/services/auth.js encryption contract; lock write-back must not persist plaintext tokens
+    #[tokio::test]
+    async fn lock_write_back_keeps_tokens_encrypted() {
+        const CHILD: &str = "NINEROUTER_LOCK_ENCRYPT_TEST";
+        if std::env::var_os(CHILD).is_none() {
+            // encrypt_fields is a no-op without a key, so run the body in a child process with one set.
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "server::tests::lock_write_back_keeps_tokens_encrypted", "--nocapture"])
+                .env(CHILD, "1").env("PRO_CREDENTIAL_KEY", "0707070707070707070707070707070707070707070707070707070707070707")
+                .status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let hooks = selection_hooks(&[("enc", 1, json!({"accessToken": "plain-access-value", "refreshToken": "plain-refresh-value"}))], None);
+        {
+            let db = hooks.state.db.lock().unwrap();
+            let mut data = json!({"accessToken": "plain-access-value", "refreshToken": "plain-refresh-value"});
+            crate::crypto::encrypt_fields(&mut data);
+            db.execute("UPDATE providerConnections SET data=?1 WHERE id='enc'", [data.to_string()]).unwrap();
+        }
+        hooks.on_account_error("enc", "m", 429, "limited").await;
+        let db = hooks.state.db.lock().unwrap();
+        let raw: String = db.query_row("SELECT data FROM providerConnections WHERE id='enc'", [], |r| r.get(0)).unwrap();
+        assert!(!raw.contains("plain-access-value") && !raw.contains("plain-refresh-value"), "tokens must stay encrypted at rest");
+        assert_eq!(crate::crypto::parse_data(&raw).unwrap()["accessToken"], "plain-access-value");
+    }
+
     #[tokio::test]
     async fn preferred_connection_respects_locks_and_exclusions() {
         let db = Connection::open_in_memory().unwrap(); crate::db::migrate(&db).unwrap();

@@ -476,6 +476,7 @@ async fn refresh_with_config(mut conn: Connection, config: &Config, force: bool)
     drop(db);
     let new = match conn.provider.as_str() {
         "kiro" => refresh_kiro(config, &old_refresh, &conn.data["providerSpecificData"]).await?,
+        "codex" | "claude" => refresh_json(config, &old_refresh).await?,
         "kimi" | "kimi-coding" => {
             let device = conn.data["providerSpecificData"]["deviceId"].as_str().filter(|s| !s.is_empty()).unwrap_or("9router");
             let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(std::time::Duration::from_secs(30)).default_headers({
@@ -524,6 +525,7 @@ async fn refresh_with_config(mut conn: Connection, config: &Config, force: bool)
     }
     data["accessToken"] = json!(new.access_token);
     data["refreshToken"] = json!(new.refresh_token.as_deref().unwrap_or(&old_refresh));
+    if let Some(id_token) = new.id_token.as_deref().filter(|s| !s.is_empty()) { data["idToken"] = json!(id_token); }
     data["expiresAt"] = match new.expires_in {
         Some(s) => json!(db.query_row(
             "SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now', printf('+%d seconds', ?1))",
@@ -562,6 +564,17 @@ async fn refresh_kiro(config: &Config, refresh: &str, specific: &Value) -> Resul
     let bytes = response.bytes().await.map_err(|_| anyhow::anyhow!("invalid Kiro response"))?;
     let value: Value = serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("invalid Kiro response"))?;
     Ok(Tokens { access_token: value["accessToken"].as_str().filter(|s| !s.is_empty()).context("Kiro token missing")?.into(), refresh_token: value["refreshToken"].as_str().map(str::to_owned), expires_in: value["expiresIn"].as_i64(), token_type: None, scope: None, id_token: None })
+}
+
+/// JSON refresh body (`client_id`, `grant_type`, `refresh_token`). Upstream: codex and claude REFRESH_PROFILES use JSON.
+async fn refresh_json(config: &Config, refresh: &str) -> Result<Tokens> {
+    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(std::time::Duration::from_secs(30)).build()?;
+    let body = json!({"client_id": config.client_id, "grant_type": "refresh_token", "refresh_token": refresh});
+    let response = client.post(&config.token_url).header("Accept", "application/json").header("Content-Type", "application/json").body(body.to_string()).send().await.map_err(|_| anyhow::anyhow!("OAuth request failed"))?;
+    ensure!(response.status().is_success(), "OAuth endpoint returned HTTP {}", response.status());
+    let bytes = response.bytes().await.map_err(|_| anyhow::anyhow!("invalid OAuth response"))?;
+    let value: Value = serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("invalid OAuth response"))?;
+    tokens(value)
 }
 
 async fn refresh_custom(provider: &str, config: &Config, refresh: &str) -> Result<Tokens> {
@@ -709,8 +722,7 @@ mod tests {
             "/token",
             route_post(move |body: String| async move {
                 observed.fetch_add(1, Ordering::SeqCst);
-                assert!(body.contains("grant_type=refresh_token"));
-                assert!(body.contains("refresh_token=old"));
+                assert!(body.contains("\"grant_type\":\"refresh_token\"") && body.contains("\"refresh_token\":\"old\""));
                 (
                     [("content-type", "application/json")],
                     r#"{"access_token":"new","refresh_token":"rotated","expires_in":3600}"#,
@@ -749,6 +761,178 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 2);
         server.abort();
         let _ = std::fs::remove_file(path);
+    }
+
+    /// Spins a one-route mock token server; returns its URL and the captured request (headers, body).
+    async fn mock_token(status: u16, body: &'static str) -> (String, std::sync::Arc<std::sync::Mutex<Option<(axum::http::HeaderMap, String)>>>) {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = seen.clone();
+        let app = Router::new().route("/token", route_post(move |headers: axum::http::HeaderMap, body_in: String| {
+            let sink = sink.clone();
+            async move {
+                *sink.lock().unwrap() = Some((headers, body_in));
+                (axum::http::StatusCode::from_u16(status).unwrap(), [("content-type", "application/json")], body)
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/token", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (url, seen)
+    }
+
+    // upstream: tokenRefresh/providers.js refreshCodexToken (JSON body, client_id, id_token mapping)
+    #[tokio::test]
+    async fn codex_refresh_is_json_and_maps_id_token() {
+        let (url, seen) = mock_token(200, r#"{"access_token":"new","refresh_token":"rot","id_token":"idt","expires_in":3600}"#).await;
+        let mut config = provider("codex").unwrap(); config.token_url = url;
+        let t = refresh_json(&config, "old").await.unwrap();
+        assert_eq!((t.access_token.as_str(), t.refresh_token.as_deref(), t.id_token.as_deref()), ("new", Some("rot"), Some("idt")));
+        let (headers, body) = seen.lock().unwrap().clone().unwrap();
+        assert_eq!(headers["content-type"], "application/json");
+        let body: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(body, json!({"client_id":"app_EMoamEEZ73f0CkXaXp7hrann","grant_type":"refresh_token","refresh_token":"old"}));
+    }
+
+    // upstream: tokenRefresh/providers.js refreshAccessToken profile "iflow" (Basic auth from client id+secret)
+    #[tokio::test]
+    async fn iflow_refresh_uses_basic_auth_and_form_body() {
+        let (url, seen) = mock_token(200, r#"{"access_token":"new","expires_in":60}"#).await;
+        let mut config = provider("codex").unwrap(); config.client_id = "10009311001".into(); config.client_secret = Some("sec".into()); config.token_url = url;
+        assert_eq!(refresh_token(&config, "old").await.unwrap().access_token, "new");
+        let (headers, body) = seen.lock().unwrap().clone().unwrap();
+        assert!(headers["authorization"].to_str().unwrap().starts_with("Basic "));
+        assert!(body.contains("grant_type=refresh_token") && body.contains("refresh_token=old"));
+    }
+
+    // upstream: tokenRefresh/providers.js refreshGitHubToken / profile "github" (client_secret optional)
+    #[tokio::test]
+    async fn github_refresh_is_form_without_secret_when_unset() {
+        let (url, seen) = mock_token(200, r#"{"access_token":"gho_new"}"#).await;
+        let mut config = provider("github").unwrap(); config.token_url = url;
+        assert_eq!(refresh_token(&config, "old").await.unwrap().access_token, "gho_new");
+        let (_, body) = seen.lock().unwrap().clone().unwrap();
+        assert!(!body.contains("client_secret"));
+    }
+
+    // upstream: tokenRefresh/providers.js refreshGoogleToken (client_id + client_secret in form)
+    #[tokio::test]
+    async fn google_variants_send_client_credentials_in_form() {
+        let (url, seen) = mock_token(200, r#"{"access_token":"ya29","expires_in":3599}"#).await;
+        let mut config = provider("codex").unwrap(); config.client_id = "gid".into(); config.client_secret = Some("gsec".into()); config.token_url = url;
+        assert_eq!(refresh_token(&config, "old").await.unwrap().access_token, "ya29");
+        let (_, body) = seen.lock().unwrap().clone().unwrap();
+        assert!(body.contains("client_id=gid") && body.contains("client_secret=gsec"));
+    }
+
+    // upstream: tokenRefresh/providers.js refreshKiroToken (social JSON body + kiro-cli UA)
+    #[tokio::test]
+    async fn kiro_social_refresh_sends_json_refresh_token() {
+        let (url, seen) = mock_token(200, r#"{"accessToken":"k","refreshToken":"kr","expiresIn":1200}"#).await;
+        let mut config = provider("kiro").unwrap(); config.token_url = url;
+        let t = refresh_kiro(&config, "old", &json!({})).await.unwrap();
+        assert_eq!((t.access_token.as_str(), t.refresh_token.as_deref(), t.expires_in), ("k", Some("kr"), Some(1200)));
+        let (_, body) = seen.lock().unwrap().clone().unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&body).unwrap(), json!({"refreshToken":"old"}));
+    }
+
+    // upstream: tokenRefresh/providers.js refreshCodebuddyToken (X-Refresh-Token header, code===0 envelope)
+    #[tokio::test]
+    async fn codebuddy_refresh_uses_header_and_data_envelope() {
+        let (url, seen) = mock_token(200, r#"{"code":0,"data":{"accessToken":"cb","refreshToken":"cbr","expiresIn":7200}}"#).await;
+        let mut config = provider("codebuddy-cn").unwrap(); config.token_url = url;
+        let t = refresh_custom("codebuddy-cn", &config, "old").await.unwrap();
+        assert_eq!((t.access_token.as_str(), t.refresh_token.as_deref(), t.expires_in), ("cb", Some("cbr"), Some(7200)));
+        let (headers, body) = seen.lock().unwrap().clone().unwrap();
+        assert_eq!(headers["x-refresh-token"], "old");
+        assert_eq!(body, "{}");
+    }
+
+    // upstream: tokenRefresh/providers.js refreshCodebuddyToken: code !== 0 is a rejection
+    #[tokio::test]
+    async fn codebuddy_nonzero_code_is_rejected() {
+        let (url, _) = mock_token(200, r#"{"code":10001,"msg":"expired"}"#).await;
+        let mut config = provider("codebuddy-intl").unwrap(); config.token_url = url;
+        assert!(refresh_custom("codebuddy-intl", &config, "old").await.is_err());
+    }
+
+    // upstream: tokenRefresh/providers.js refreshClineToken (clientType extension, data envelope)
+    #[tokio::test]
+    async fn cline_refresh_sends_extension_client_type() {
+        let (url, seen) = mock_token(200, r#"{"data":{"accessToken":"cl","refreshToken":"clr","expiresIn":900}}"#).await;
+        let mut config = provider("cline").unwrap(); config.token_url = url;
+        let t = refresh_custom("cline", &config, "old").await.unwrap();
+        assert_eq!((t.access_token.as_str(), t.refresh_token.as_deref(), t.expires_in), ("cl", Some("clr"), Some(900)));
+        let (_, body) = seen.lock().unwrap().clone().unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&body).unwrap(), json!({"refreshToken":"old","grantType":"refresh_token","clientType":"extension"}));
+    }
+
+    // upstream: tokenRefresh/providers.js refreshTraeToken (ClientID/RefreshToken body, Result envelope, UA)
+    #[tokio::test]
+    async fn trae_refresh_uses_result_envelope_and_exchange_body() {
+        let (url, seen) = mock_token(200, r#"{"Result":{"AccessToken":"tr","RefreshToken":"trr","ExpiresAt":4102444800}}"#).await;
+        let mut config = provider("trae").unwrap(); config.token_url = url;
+        let t = refresh_custom("trae", &config, "old").await.unwrap();
+        assert_eq!((t.access_token.as_str(), t.refresh_token.as_deref()), ("tr", Some("trr")));
+        let (headers, body) = seen.lock().unwrap().clone().unwrap();
+        assert_eq!(headers["user-agent"], "Trae/1.0.0 antigravity-cockpit-tools");
+        let body: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(body["ClientID"], "ono9krqynydwx5");
+        assert_eq!(body["RefreshToken"], "old");
+    }
+
+    // upstream: tokenRefresh/providers.js refreshMiniMaxCodeToken (form with scope + audience; invalid_grant classified)
+    #[tokio::test]
+    async fn minimax_refresh_sends_scope_and_audience() {
+        let (url, seen) = mock_token(200, r#"{"access_token":"mm","refresh_token":"mmr","expires_in":3600}"#).await;
+        let mut config = provider("minimax-code").unwrap(); config.token_url = url;
+        let t = refresh_with_config_for_test(&config, "old", vec![("scope", "agent.default"), ("audience", "agent-backend")]).await.unwrap();
+        assert_eq!(t.access_token, "mm");
+        let (_, body) = seen.lock().unwrap().clone().unwrap();
+        assert!(body.contains("scope=agent.default") && body.contains("audience=agent-backend"));
+    }
+
+    /// Same form contract as the minimax branch in refresh_with_config (which needs a DB row); the extra fields are the point under test.
+    async fn refresh_with_config_for_test(config: &Config, refresh: &str, extra: Vec<(&str, &str)>) -> Result<Tokens> {
+        let mut fields = vec![("grant_type", "refresh_token"), ("refresh_token", refresh)];
+        fields.extend(extra);
+        tokens(post(config, &config.token_url, fields).await?)
+    }
+
+    // upstream: tokenRefresh/providers.js (invalid_grant is permanent: the grant is rejected, not retried)
+    #[test]
+    fn invalid_grant_is_rejected_not_accepted() {
+        assert!(tokens(json!({"error":"invalid_grant"})).is_err());
+        assert!(tokens(json!({"access_token":""})).is_err());
+    }
+
+    // upstream: tokenRefresh/providers.js REFRESH_PROFILES.claude (JSON, no client_secret), REFRESH_PROFILES.kimi (form + X-Msh-* headers), refreshCodexToken (JSON)
+    // Drives the real dispatch in refresh_with_config so provider routing is covered, not only the helpers.
+    #[tokio::test]
+    async fn dispatch_wire_format_per_provider() {
+        for (id, want_json, header) in [("claude", true, None), ("codex", true, None), ("kimi", false, Some("x-msh-platform"))] {
+            let (url, seen) = mock_token(200, r#"{"access_token":"new","refresh_token":"rot","expires_in":3600}"#).await;
+            let path = std::env::temp_dir().join(format!("ninerouter-dispatch-{id}-{}-{}.sqlite", std::process::id(), listener_id()));
+            let db = crate::db::open(&path).unwrap();
+            let data = json!({"accessToken":"old-access","refreshToken":"old","expiresAt":"2000-01-01T00:00:00Z"}).to_string();
+            db.execute("INSERT INTO providerConnections(id,provider,authType,data,createdAt,updatedAt) VALUES('d',?1,'oauth',?2,'now','now')", params![id, data]).unwrap();
+            drop(db);
+            let conn = load(path.clone(), "d").unwrap().unwrap();
+            let mut config = provider(id).unwrap();
+            config.token_url = url;
+            refresh_with_config(conn, &config, true).await.unwrap();
+            let (headers, body) = seen.lock().unwrap().clone().unwrap();
+            if want_json {
+                assert_eq!(headers["content-type"], "application/json", "{id}");
+                let body: Value = serde_json::from_str(&body).unwrap();
+                assert_eq!(body["refresh_token"], "old", "{id}");
+                assert!(body.get("client_secret").is_none(), "{id} must not send client_secret");
+            } else {
+                assert_eq!(headers["content-type"], "application/x-www-form-urlencoded", "{id}");
+                assert!(body.contains("refresh_token=old"), "{id}");
+            }
+            if let Some(h) = header { assert!(headers.get(h).is_some(), "{id} missing {h}"); }
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     fn listener_id() -> u128 {
