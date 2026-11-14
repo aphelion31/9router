@@ -350,7 +350,6 @@ pub async fn execute(
             url.query_pairs_mut().append_pair("alt", "sse");
         }
     }
-    let generation_url = url.to_string();
     let mut codex_headers: Vec<(&'static str, String)> = Vec::new();
     if provider.id == "codex" {
         codex_headers = codex::prepare(&mut request.body, request.provider_specific_data.as_ref())?;
@@ -426,20 +425,12 @@ pub async fn execute(
         builder = builder.header("anthropic-version", "2023-06-01");
     }
     if provider.id == "antigravity" {
-        for (name, mut value) in antigravity::prepare(
+        for (name, value) in antigravity::prepare(
             &request.model,
             &mut request.body,
             request.stream,
             request.provider_specific_data.as_ref(),
         )? {
-            if name.eq_ignore_ascii_case("user-agent") {
-                let body = serde_json::to_vec(&request.body)?;
-                let (rewritten, ua, _) = crate::services::antigravity_ide_version::apply_antigravity_ide_version_override(
-                    &body, Some(&value), &generation_url,
-                );
-                request.body = serde_json::from_slice(&rewritten)?;
-                value = ua.unwrap_or(value);
-            }
             builder = builder.header(name, value);
         }
     }
@@ -1687,6 +1678,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn antigravity_production_transport_parity() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            axum::serve(listener, Router::new().route("/relay", post(mock))).await.unwrap()
+        });
+        for (stream, path) in [(false, "/v1internal:generateContent"), (true, "/v1internal:streamGenerateContent?alt=sse")] {
+            let response = execute(&reqwest::Client::new(), ExecutorRequest {
+                provider: "antigravity".into(), model: "gemini-4-hydrogen-high".into(), stream,
+                access_token: Some("test-token".into()),
+                body: json!({"request":{"contents":[{"role":"user","parts":[{"text":"ping"}]}],"generationConfig":{"maxOutputTokens":20},"sessionId":"123"}}),
+                provider_specific_data: Some(json!({"projectId":"aicode-consumers", "vercelRelayUrl":format!("http://{addr}/relay")})),
+                ..Default::default()
+            }).await.unwrap();
+            let echo: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+            let h = &echo["headers"];
+            assert_eq!(h["x-relay-target"], "https://daily-cloudcode-pa.googleapis.com");
+            assert_eq!(h["x-relay-path"], path);
+            assert_eq!(h["authorization"], "Bearer test-token");
+            assert_eq!(h["content-type"], "application/json");
+            assert_eq!(h["user-agent"], "antigravity/hub/2.24.0 darwin/arm64");
+            assert_eq!(h["accept"], if stream { "text/event-stream" } else { "*/*" });
+            let body = &echo["body"];
+            assert_eq!(body["project"], "aicode-consumers");
+            assert_eq!(body["model"], "gemini-4-hydrogen-high");
+            assert_eq!(body["userAgent"], "antigravity");
+            assert!(body["requestId"].as_str().unwrap().starts_with("agent/"));
+            assert!(body.get("requestType").is_none());
+            assert_eq!(body["request"], json!({"contents":[{"role":"user","parts":[{"text":"ping"}]}],"generationConfig":{"maxOutputTokens":20},"sessionId":"123"}));
+        }
+        task.abort();
+    }
+
+    #[tokio::test]
     async fn antigravity_mock_request() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1727,7 +1752,7 @@ mod tests {
         .unwrap();
         let echo: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
         assert_eq!(echo["uri"], "/v1internal:streamGenerateContent?alt=sse");
-        assert!(echo["headers"]["user-agent"].as_str().unwrap().starts_with("antigravity/2.24.0 "));
+        assert_eq!(echo["headers"]["user-agent"], "antigravity/hub/2.24.0 darwin/arm64");
         let body = &echo["body"];
         assert_eq!(body["project"], "proj-1");
         assert_eq!(body["userAgent"], "antigravity");
