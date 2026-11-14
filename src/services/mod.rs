@@ -1,4 +1,5 @@
 pub mod antigravity_ide_version;
+pub mod auto_routing;
 pub mod aws_event_stream;
 pub mod capacity_adapter;
 pub mod claude_signature;
@@ -13,6 +14,7 @@ pub mod gemini_cookies;
 pub mod grok_cli_models;
 pub mod kimchi_models;
 pub mod key_rate_limiter;
+pub mod key_access;
 pub mod kiro_models;
 pub mod latency_stats;
 pub mod minimax_code_lease;

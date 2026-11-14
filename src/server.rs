@@ -246,7 +246,7 @@ fn quota_verdict(db: &Connection, key_id: &str, key: &str) -> Option<Value> {
 
 async fn api_auth(
     State(s): State<AppState>,
-    request: axum::extract::Request,
+    mut request: axum::extract::Request,
     next: Next,
 ) -> Response {
     let headers = request.headers();
@@ -260,12 +260,30 @@ async fn api_auth(
                 .or_else(|| headers.get("x-goog-api-key"))
                 .and_then(|v| v.to_str().ok())
         });
-    // Restricted keys fail closed until model access policies are enforced.
-    let Some(key_id) = key.and_then(|key| s.db.lock().ok().and_then(|db| db.query_row("SELECT id FROM apiKeys WHERE key=?1 AND isActive=1 AND (expiresAt IS NULL OR expiresAt > strftime('%Y-%m-%dT%H:%M:%fZ','now')) AND COALESCE(accessRestricted,0)=0", [key], |r| r.get::<_, String>(0)).optional().ok().flatten())) else {
+    let Some((key_id, restricted, allow)) = key.and_then(|key| s.db.lock().ok().and_then(|db| db.query_row("SELECT id, COALESCE(accessRestricted,0), accessAllow FROM apiKeys WHERE key=?1 AND isActive=1 AND (expiresAt IS NULL OR expiresAt > strftime('%Y-%m-%dT%H:%M:%fZ','now'))", [key], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, Option<String>>(2)?))).optional().ok().flatten())) else {
         return unauthorized();
     };
+    let raw_key = key.unwrap_or("").to_owned();
+    if restricted != 0 {
+        let access = match s.db.lock() { Ok(db) => crate::services::key_access::KeyAccess::load(&db, allow), Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
+        let path = request.uri().path().to_owned();
+        if request.method() == axum::http::Method::POST {
+            let (parts, body) = request.into_parts();
+            let bytes = match axum::body::to_bytes(body, 2 * 1024 * 1024).await { Ok(b) => b, Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response() };
+            let value: Value = serde_json::from_slice(&bytes).unwrap_or_default();
+            let requested = if path.starts_with("/v1beta/models/") { path.strip_prefix("/v1beta/models/").and_then(|v| v.strip_suffix(":generateContent")).unwrap_or("") } else if path == "/v1/search" || path == "/v1/web/fetch" { value["provider"].as_str().or_else(|| value["model"].as_str()).unwrap_or("") } else { value["model"].as_str().unwrap_or("") };
+            let auto = path == "/v1/chat/completions" && crate::services::auto_routing::parse_auto_target(requested).is_some();
+            let target = crate::handlers::chat::strip_model_context_marker(requested);
+            let allowed = auto || s.db.lock().ok().is_some_and(|db| if path == "/v1/search" || path == "/v1/web/fetch" { access.allows_provider(&db, requested) } else { access.allows(&db, target) });
+            if !allowed { return crate::handlers::chat::error_response(403, &format!("This API key is not allowed to use model \"{requested}\"")); }
+            request = axum::http::Request::from_parts(parts, axum::body::Body::from(bytes));
+        } else if path != "/v1/models" {
+            return crate::handlers::chat::error_response(403, "This API key is not allowed to use model \"\"");
+        }
+        request.extensions_mut().insert(access);
+    }
     let has_quota = s.db.lock().ok().and_then(|db| crate::db::kv_get(&db, "keyQuotas", &key_id).ok().flatten()).and_then(|raw| serde_json::from_str::<Value>(&raw).ok()).is_some_and(|q| q["enabled"] != false && q["limit"].as_i64().is_some_and(|n| n > 0));
-    let quota = s.db.lock().ok().and_then(|db| quota_verdict(&db, &key_id, key.unwrap_or("")));
+    let quota = s.db.lock().ok().and_then(|db| quota_verdict(&db, &key_id, &raw_key));
     if let Some(quota) = quota {
         crate::services::notify::emit(s.db.clone(), "quota", quota);
         return (StatusCode::TOO_MANY_REQUESTS, Json(json!({"error":"API key quota exceeded"}))).into_response();
@@ -313,7 +331,6 @@ async fn api_auth(
         }
         None => None,
     };
-    let raw_key = key.unwrap_or("").to_owned();
     let response = next.run(request).await;
     let (parts, body) = response.into_parts();
     struct GuardedBody {
@@ -365,7 +382,7 @@ async fn usage(State(s): State<AppState>, Query(q): Query<HashMap<String, String
         None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
-async fn models(State(state): State<AppState>) -> Json<Value> {
+async fn models(State(state): State<AppState>, access: Option<axum::extract::Extension<crate::services::key_access::KeyAccess>>) -> Json<Value> {
     let connections: Vec<(String, Value)> = state.db.lock().ok().and_then(|db| {
         let mut stmt = db.prepare("SELECT id,provider,data FROM providerConnections WHERE isActive=1 ORDER BY priority ASC").ok()?;
         let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))).ok()?;
@@ -391,6 +408,16 @@ async fn models(State(state): State<AppState>) -> Json<Value> {
         } else {
             data.extend(p.models.iter().map(|m| json!({"id":format!("{}/{}",p.id,m.id),"object":"model","owned_by":p.id})));
         }
+    }
+    if let Ok(db) = state.db.lock() {
+        if let Ok(mut stmt) = db.prepare("SELECT name FROM combos ORDER BY name") {
+            if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+                data.extend(rows.flatten().map(|name| json!({"id":name,"object":"model","owned_by":"combo"})));
+            }
+        }
+    }
+    if let Some(axum::extract::Extension(access)) = access {
+        if let Ok(db) = state.db.lock() { data.retain(|entry| access.allows_entry(&db, entry)); } else { data.clear(); }
     }
     Json(json!({"object":"list","data":data}))
 }
@@ -439,6 +466,21 @@ impl ChatHooks for Hooks {
                 }
             }
             self.get_credentials(provider, model, excluded).await
+        })
+    }
+    fn filter_adapter_models<'a>(&'a self, augmented: Vec<String>, original: &'a [String]) -> BoxFuture<'a, Vec<String>> {
+        Box::pin(async move {
+            let Ok(db) = self.state.db.lock() else { return original.to_vec(); };
+            let Some(id) = &self.api_key_id else { return augmented; };
+            let record = db.query_row("SELECT COALESCE(accessRestricted,0),accessAllow FROM apiKeys WHERE id=?1", [id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))).optional();
+            match record {
+                Ok(Some((0, _))) => augmented,
+                Ok(Some((_, allow))) => {
+                    let access = crate::services::key_access::KeyAccess::load(&db, allow);
+                    augmented.into_iter().filter(|m| original.contains(m) || access.allows(&db, m)).collect()
+                }
+                _ => original.to_vec(),
+            }
         })
     }
     fn settings<'a>(&'a self) -> BoxFuture<'a, Value> {
@@ -683,6 +725,16 @@ impl ChatHooks for Hooks {
     fn get_combo_models<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Option<Vec<String>>> {
         Box::pin(async move {
             let db = self.state.db.lock().ok()?;
+            if let Some(intent) = crate::services::auto_routing::parse_auto_target(name) {
+                let mut candidates = crate::services::auto_routing::build_auto_candidates(&db, intent);
+                if let Some(id) = &self.api_key_id {
+                    let record = db.query_row("SELECT COALESCE(accessRestricted,0),accessAllow FROM apiKeys WHERE id=?1", [id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))).optional().ok()?;
+                    if let Some((restricted, allow)) = record {
+                        if restricted != 0 { let access = crate::services::key_access::KeyAccess::load(&db, allow); candidates.retain(|m| access.allows(&db, m)); }
+                    } else { candidates.clear(); }
+                }
+                return Some(candidates);
+            }
             let models: String = db
                 .query_row("SELECT models FROM combos WHERE name=?1", [name], |r| {
                     r.get(0)
@@ -780,6 +832,35 @@ mod tests {
     use super::*;
     use axum::{body::{Body, to_bytes}, http::Request};
     use rusqlite::params;
+
+    #[tokio::test]
+    async fn restricted_access_denies_combo_alias_and_prefix_bypasses() {
+        use tower::ServiceExt;
+        let db = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&db).unwrap();
+        db.execute("INSERT INTO apiKeys(id,key,createdAt,accessRestricted,accessAllow) VALUES('r','restricted','now',1,?1)", [json!(["openai/gpt-4o"]).to_string()]).unwrap();
+        db.execute("INSERT INTO combos(id,name,models,createdAt,updatedAt) VALUES('c','Mixed',?1,'now','now')", [json!(["openai/gpt-4o","openai/secret"]).to_string()]).unwrap();
+        crate::db::kv_set(&db, "modelAliases", "bad", &json!("openai/secret").to_string()).unwrap();
+        let app = make_router(db, None);
+        for model in ["Mixed", "bad", "openai/gpt-4o-extra", "openai/secret"] {
+            let response = app.clone().oneshot(Request::post("/v1/chat/completions").header("authorization", "Bearer restricted").header("content-type", "application/json").body(Body::from(json!({"model":model,"messages":[]}).to_string())).unwrap()).await.unwrap();
+            assert_eq!(response.status(), 403, "{model}");
+            let body = to_bytes(response.into_body(), 8192).await.unwrap();
+            let json: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["error"]["message"], format!("This API key is not allowed to use model \"{model}\""));
+        }
+        let response = app.oneshot(Request::get("/v1/models").header("authorization", "Bearer restricted").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+        let list: Value = serde_json::from_slice(&body).unwrap();
+        assert!(list["data"].as_array().unwrap().iter().all(|m| m["id"] == "openai/gpt-4o"));
+    }
+
+    #[test]
+    fn auto_target_parses_supported_intents() {
+        assert_eq!(crate::services::auto_routing::parse_auto_target(" AUTO:Coding "), Some("coding"));
+        assert_eq!(crate::services::auto_routing::parse_auto_target("auto:unknown"), None);
+    }
     use tower::ServiceExt;
     fn test_router() -> Router {
         let db = Connection::open_in_memory().unwrap();
@@ -980,6 +1061,22 @@ mod tests {
         )
         .unwrap();
         make_router_with_db(Arc::new(Mutex::new(db)), Some(b"test-secret".to_vec()))
+    }
+
+    #[tokio::test]
+    async fn restricted_allowed_model_and_auto_route() {
+        let upstream = mock_upstream().await;
+        let (app, db) = e2e_router(&upstream);
+        let seed = crate::providers::lookup("openai").unwrap().models.first().unwrap().id.clone();
+        {
+            let db = db.lock().unwrap();
+            db.execute("UPDATE apiKeys SET accessRestricted=1,accessAllow=?1 WHERE id='k1'", [json!([format!("openai/{seed}")]).to_string()]).unwrap();
+            db.execute("UPDATE providerConnections SET data=?1 WHERE id='c1'", [json!({"apiKey":"upstream-key","providerSpecificData":{"baseUrl":upstream,"enabledModels":[seed]}}).to_string()]).unwrap();
+        }
+        for model in [format!("openai/{seed}"), "auto:coding".to_owned()] {
+            let response = app.clone().oneshot(Request::post("/v1/chat/completions").header("authorization", "Bearer sk-test-key").header("content-type", "application/json").body(Body::from(json!({"model":model,"messages":[{"role":"user","content":"hi"}]}).to_string())).unwrap()).await.unwrap();
+            assert_eq!(response.status(), 200, "{model}");
+        }
     }
 
     async fn mock_webhooks() -> (String, tokio::sync::mpsc::UnboundedReceiver<Value>) {
