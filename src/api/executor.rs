@@ -288,15 +288,19 @@ impl Executor for HttpExecutor {
                 return Ok(None);
             }
             let path = crate::db::data_file().map_err(|e| e.to_string())?;
-            let conn = crate::oauth::force_refresh(path, &credentials.connection_id)
+            let mut conn = crate::oauth::force_refresh(path, &credentials.connection_id)
                 .await
                 .map_err(|e| e.to_string())?;
+            if conn.provider == "github" {
+                conn = crate::oauth::refresh_copilot(conn, "https://api.github.com/copilot_internal/v2/token").await.map_err(|e| e.to_string())?;
+            }
             let s = |k: &str| conn.data[k].as_str().map(str::to_owned);
+            let copilot = conn.data["providerSpecificData"]["copilotToken"].as_str().map(str::to_owned);
             Ok(Some(crate::handlers::RefreshedCredentials {
-                access_token: s("accessToken"),
+                access_token: copilot.clone().or_else(|| s("accessToken")),
                 refresh_token: s("refreshToken"),
                 expires_at: s("expiresAt"),
-                copilot_token: None,
+                copilot_token: copilot,
             }))
         })
     }

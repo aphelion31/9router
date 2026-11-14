@@ -92,7 +92,9 @@ async fn serve() -> anyhow::Result<()> {
         )
         .init();
 
-    let _conn = db::open(&db::data_file()?)?;
+    let path = db::data_file()?;
+    let _conn = db::open(&path)?;
+    oauth::start_background_refresh(path);
 
     let listener = tokio::net::TcpListener::bind((config::host().as_str(), config::port())).await?;
     tracing::info!("listening on {}", listener.local_addr()?);
