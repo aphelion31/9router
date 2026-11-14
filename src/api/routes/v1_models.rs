@@ -12,6 +12,7 @@ use axum::{
 use serde_json::{Value, json};
 
 use crate::{providers, server::AppState};
+use axum::extract::State;
 
 // URL slug -> registry kinds. `web` covers webSearch and webFetch, as in JS.
 fn kinds_for_slug(slug: &str) -> Option<&'static [&'static str]> {
@@ -34,8 +35,16 @@ pub fn router() -> Router<AppState> {
     Router::new().route("/v1/models/{*model}", get(by_path))
 }
 
-async fn by_path(Path(model): Path<String>) -> Response {
+async fn by_path(
+    State(state): State<AppState>,
+    access: Option<axum::extract::Extension<crate::services::key_access::KeyAccess>>,
+    Path(model): Path<String>,
+) -> Response {
     let model = model.trim_matches('/').to_string();
+    let visible = |entry: &Value| match &access {
+        Some(axum::extract::Extension(a)) => state.db.lock().map(|db| a.allows_entry(&db, entry)).unwrap_or(false),
+        None => true,
+    };
     if let Some(kinds) = kinds_for_slug(&model) {
         let data: Vec<Value> = providers::all()
             .iter()
@@ -53,6 +62,7 @@ async fn by_path(Path(model): Path<String>) -> Response {
                 })
             })
             .collect();
+        let data: Vec<Value> = data.into_iter().filter(|e| visible(e)).collect();
         return Json(json!({"object":"list","data":data})).into_response();
     }
     let found = model.split_once('/').and_then(|(alias, id)| {
@@ -64,7 +74,7 @@ async fn by_path(Path(model): Path<String>) -> Response {
             "owned_by": p.id,
         }))
     });
-    match found {
+    match found.filter(|v| visible(v)) {
         Some(v) => Json(v).into_response(),
         None => (
             StatusCode::NOT_FOUND,

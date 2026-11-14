@@ -10,6 +10,8 @@ pub struct KeyAccess {
 }
 
 fn provider(id: &str) -> String {
+    // Upstream LOCAL_PROVIDER_ALIASES, applied on top of the registry.
+    if id == "xmtp" { return "xiaomi-tokenplan".to_owned(); }
     crate::providers::lookup(id).map(|p| p.id.as_str()).unwrap_or(id).to_lowercase()
 }
 
@@ -27,12 +29,27 @@ pub fn resolve_model(db: &Connection, requested: &str) -> Option<String> {
     };
     let (prefix, model) = resolved.split_once('/')?;
     if prefix.is_empty() || model.is_empty() { return None; }
-    let id = if crate::providers::lookup(prefix).is_some() { provider(prefix) } else {
-        let mut stmt = db.prepare("SELECT id,data FROM providerNodes").ok()?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).ok()?;
-        rows.flatten().find_map(|(id, data)| serde_json::from_str::<Value>(&data).ok().filter(|v| v["prefix"].as_str() == Some(prefix)).map(|_| id.to_lowercase())).unwrap_or_else(|| provider(prefix))
-    };
+    // Upstream getModelInfo: reserved provider ids/aliases never consult user nodes.
+    let id = if is_reserved_prefix(prefix) { provider(prefix) } else { node_for_prefix(db, prefix).unwrap_or_else(|| provider(prefix)) };
     Some(format!("{id}/{}", model.to_lowercase()))
+}
+
+/// Built-in provider ids/aliases, plus the local alias overrides. Mirrors RESERVED_PROVIDER_PREFIXES.
+fn is_reserved_prefix(prefix: &str) -> bool {
+    matches!(prefix, "xmtp" | "xiaomi-tokenplan") || crate::providers::lookup(prefix).is_some()
+}
+
+/// First provider node whose prefix matches, in upstream rank order:
+/// openai-compatible, then anthropic-compatible, then custom-embedding.
+fn node_for_prefix(db: &Connection, prefix: &str) -> Option<String> {
+    let mut stmt = db.prepare("SELECT id,type,data FROM providerNodes ORDER BY createdAt").ok()?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?))).ok()?;
+    rows.flatten().filter_map(|(id, kind, data)| {
+        let data: Value = serde_json::from_str(data.as_deref().unwrap_or("{}")).ok()?;
+        if data["prefix"].as_str() != Some(prefix) { return None; }
+        let rank = match kind.as_deref() { Some("openai-compatible") => 0, Some("anthropic-compatible") => 1, Some("custom-embedding") => 2, _ => return None };
+        Some((rank, id.to_lowercase()))
+    }).min_by_key(|(rank, _)| *rank).map(|(_, id)| id)
 }
 
 fn combo_exists(db: &Connection, name: &str) -> bool {
@@ -69,4 +86,30 @@ impl KeyAccess {
         }
         resolve_model(db, id).is_some_and(|m| self.models.contains(&m))
     }
+}
+
+/// Target a request will route to, as the handler itself derives it. `None` means
+/// the target cannot be read (e.g. multipart videos), which a restricted key must
+/// be denied on, matching upstream `enforceKeyAccessResolved`.
+pub fn request_target(path: &str, value: &Value, multipart_model: Option<String>) -> Option<String> {
+    if let Some(name) = path.strip_prefix("/v1beta/models/") {
+        return name.strip_suffix(":generateContent").filter(|m| !m.is_empty()).map(str::to_owned);
+    }
+    if path == "/v1/search" || path == "/v1/web/fetch" {
+        return value["provider"].as_str().or_else(|| value["model"].as_str()).filter(|s| !s.is_empty()).map(str::to_owned);
+    }
+    if path == "/v1/audio/transcriptions" {
+        return multipart_model.filter(|s| !s.is_empty());
+    }
+    if path.starts_with("/v1/videos/") {
+        // Upstream reads only the body model; a missing one is denied for restricted keys.
+        return value["model"].as_str().filter(|s| !s.is_empty()).map(str::to_owned);
+    }
+    value["model"].as_str().filter(|s| !s.is_empty()).map(str::to_owned)
+}
+
+/// Text field of a multipart body, read with the same parser the handler uses.
+pub fn multipart_text_field(headers: &axum::http::HeaderMap, body: &[u8], name: &str) -> Option<String> {
+    let boundary = crate::handlers::media::multipart::extract_boundary(headers)?;
+    crate::handlers::media::multipart::parse_multipart(body, &boundary).ok()?.get_text(name)
 }

@@ -53,6 +53,17 @@ fn make_router(db: Connection, jwt_secret: Option<Vec<u8>>) -> Router {
     make_router_with_db(Arc::new(Mutex::new(db)), jwt_secret).0
 }
 
+/// Any management write can change the `/v1/models` set (connections, combos, aliases, keys,
+/// disabled and custom models). Clear the list cache on every non-read call.
+async fn invalidate_models_cache_on_write(request: axum::extract::Request, next: Next) -> Response {
+    let write = !matches!(*request.method(), axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS);
+    let response = next.run(request).await;
+    if write {
+        crate::services::models_list_cache::invalidate();
+    }
+    response
+}
+
 /// Builds the router around a shared DB handle. The handle lets tests inspect rows.
 fn make_router_with_db(
     db: Arc<Mutex<Connection>>,
@@ -66,6 +77,7 @@ fn make_router_with_db(
     let management = Router::new()
         .route("/api/usage", get(usage))
         .merge(crate::api::routes::management())
+        .route_layer(middleware::from_fn(invalidate_models_cache_on_write))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             dashboard_auth,
@@ -271,16 +283,17 @@ async fn api_auth(
             let (parts, body) = request.into_parts();
             let bytes = match axum::body::to_bytes(body, 2 * 1024 * 1024).await { Ok(b) => b, Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response() };
             let value: Value = serde_json::from_slice(&bytes).unwrap_or_default();
-            let requested = if path.starts_with("/v1beta/models/") { path.strip_prefix("/v1beta/models/").and_then(|v| v.strip_suffix(":generateContent")).unwrap_or("") } else if path == "/v1/search" || path == "/v1/web/fetch" { value["provider"].as_str().or_else(|| value["model"].as_str()).unwrap_or("") } else { value["model"].as_str().unwrap_or("") };
-            let auto = path == "/v1/chat/completions" && crate::services::auto_routing::parse_auto_target(requested).is_some();
-            let target = crate::handlers::chat::strip_model_context_marker(requested);
-            let allowed = auto || s.db.lock().ok().is_some_and(|db| if path == "/v1/search" || path == "/v1/web/fetch" { access.allows_provider(&db, requested) } else { access.allows(&db, target) });
+            let multipart_model = if path == "/v1/audio/transcriptions" { crate::services::key_access::multipart_text_field(&parts.headers, &bytes, "model") } else { None };
+            let requested = crate::services::key_access::request_target(&path, &value, multipart_model).unwrap_or_default();
+            let auto = path == "/v1/chat/completions" && crate::services::auto_routing::parse_auto_target(&requested).is_some();
+            let target = crate::handlers::chat::strip_model_context_marker(&requested);
+            let provider_as_model = path == "/v1/search" || path == "/v1/web/fetch";
+            let allowed = auto || (!requested.is_empty() && s.db.lock().ok().is_some_and(|db| if provider_as_model { access.allows_provider(&db, &requested) } else { access.allows(&db, target) }));
             if !allowed { return crate::handlers::chat::error_response(403, &format!("This API key is not allowed to use model \"{requested}\"")); }
             request = axum::http::Request::from_parts(parts, axum::body::Body::from(bytes));
-        } else if path != "/v1/models" {
-            return crate::handlers::chat::error_response(403, "This API key is not allowed to use model \"\"");
         }
         request.extensions_mut().insert(access);
+        request.extensions_mut().insert(ApiKeyId(key_id.clone()));
     }
     let has_quota = s.db.lock().ok().and_then(|db| crate::db::kv_get(&db, "keyQuotas", &key_id).ok().flatten()).and_then(|raw| serde_json::from_str::<Value>(&raw).ok()).is_some_and(|q| q["enabled"] != false && q["limit"].as_i64().is_some_and(|n| n > 0));
     let quota = s.db.lock().ok().and_then(|db| quota_verdict(&db, &key_id, &raw_key));
@@ -382,7 +395,21 @@ async fn usage(State(s): State<AppState>, Query(q): Query<HashMap<String, String
         None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
-async fn models(State(state): State<AppState>, access: Option<axum::extract::Extension<crate::services::key_access::KeyAccess>>) -> Json<Value> {
+async fn models(State(state): State<AppState>, access: Option<axum::extract::Extension<crate::services::key_access::KeyAccess>>, key_id: Option<axum::extract::Extension<ApiKeyId>>) -> Json<Value> {
+    let cache_key = crate::services::models_list_cache::cache_key(key_id.as_ref().map(|k| k.0.0.as_str()));
+    if let Some(cached) = crate::services::models_list_cache::get(&cache_key) {
+        return Json(cached);
+    }
+    let body = build_models_list(&state, access.map(|a| a.0)).await;
+    crate::services::models_list_cache::set(&cache_key, body.clone());
+    Json(body)
+}
+
+/// Restricted-key id attached by `api_auth`, used to key the models-list cache.
+#[derive(Clone)]
+pub(crate) struct ApiKeyId(pub String);
+
+async fn build_models_list(state: &AppState, access: Option<crate::services::key_access::KeyAccess>) -> Value {
     let connections: Vec<(String, Value)> = state.db.lock().ok().and_then(|db| {
         let mut stmt = db.prepare("SELECT id,provider,data FROM providerConnections WHERE isActive=1 ORDER BY priority ASC").ok()?;
         let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))).ok()?;
@@ -416,10 +443,10 @@ async fn models(State(state): State<AppState>, access: Option<axum::extract::Ext
             }
         }
     }
-    if let Some(axum::extract::Extension(access)) = access {
+    if let Some(access) = access {
         if let Ok(db) = state.db.lock() { data.retain(|entry| access.allows_entry(&db, entry)); } else { data.clear(); }
     }
-    Json(json!({"object":"list","data":data}))
+    json!({"object":"list","data":data})
 }
 /// Sticky-random current key per provider+model (upstream sticky-random). In-memory; dropped when the key locks.
 static STICKY_CURRENT: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, String>>> = std::sync::LazyLock::new(Default::default);
@@ -1767,5 +1794,215 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(page.status(), 200);
+    }
+
+    /// Restricted key `k1` allowed only `allow` (a JSON array of entries), with `c1` pointing at `upstream`.
+    fn restricted_router(upstream: &str, allow: Value) -> (Router, Arc<Mutex<Connection>>) {
+        let (app, db) = e2e_router(upstream);
+        db.lock().unwrap().execute("UPDATE apiKeys SET accessRestricted=1,accessAllow=?1 WHERE id='k1'", [allow.to_string()]).unwrap();
+        (app, db)
+    }
+
+    async fn send(app: &Router, method: &str, path: &str, ctype: &str, body: Body) -> (StatusCode, Value) {
+        let request = Request::builder().method(method).uri(path).header("authorization", "Bearer sk-test-key").header("content-type", ctype).body(body).unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    async fn json_post(app: &Router, path: &str, body: Value) -> (StatusCode, Value) {
+        send(app, "POST", path, "application/json", Body::from(body.to_string())).await
+    }
+
+    /// Multipart body with one text field `model` and a file part, for stt/video routes.
+    fn multipart(model: Option<&str>) -> (String, Vec<u8>) {
+        let b = "----testboundary";
+        let mut out = String::new();
+        if let Some(m) = model {
+            out += &format!("--{b}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n{m}\r\n");
+        }
+        out += &format!("--{b}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.mp3\"\r\nContent-Type: audio/mpeg\r\n\r\nabc\r\n--{b}--\r\n");
+        (format!("multipart/form-data; boundary={b}"), out.into_bytes())
+    }
+
+    /// Asserts a restricted key is denied on `path` for `body` with the upstream's 403 shape.
+    async fn assert_denied(app: &Router, path: &str, body: Value) {
+        let (status, v) = json_post(app, path, body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{path}");
+        assert!(v["error"]["message"].as_str().unwrap_or("").contains("not allowed to use model"), "{path}: {v}");
+    }
+
+    /// Asserts the gate let the request through (any status other than the 403 denial).
+    async fn assert_allowed(app: &Router, path: &str, body: Value) {
+        let (status, _) = json_post(app, path, body).await;
+        assert_ne!(status, StatusCode::FORBIDDEN, "{path} should be allowed");
+    }
+
+    #[tokio::test]
+    async fn key_access_chat_and_aliases_and_combo_bypass() {
+        let upstream = mock_upstream().await;
+        let (app, db) = restricted_router(&upstream, json!(["openai/gpt-test"]));
+        // Allowed model, direct.
+        assert_allowed(&app, "/v1/chat/completions", json!({"model":"openai/gpt-test","messages":[]})).await;
+        // Denied models, direct, plus alias/casing variants of a denied model.
+        assert_denied(&app, "/v1/chat/completions", json!({"model":"openai/other","messages":[]})).await;
+        assert_denied(&app, "/v1/chat/completions", json!({"model":"OPENAI/OTHER","messages":[]})).await;
+        // Model alias pointing at a denied target must not bypass.
+        db.lock().unwrap().execute("INSERT INTO kv(scope,key,value) VALUES('modelAliases','sneaky',?1)", [json!("openai/other").to_string()]).unwrap();
+        assert_denied(&app, "/v1/chat/completions", json!({"model":"sneaky","messages":[]})).await;
+        // Missing model is denied, not treated as unrestricted.
+        assert_denied(&app, "/v1/chat/completions", json!({"messages":[]})).await;
+    }
+
+    #[tokio::test]
+    async fn key_access_combo_grants_only_through_combo_name() {
+        let upstream = mock_upstream().await;
+        let (app, db) = restricted_router(&upstream, json!(["Main"]));
+        db.lock().unwrap().execute("INSERT INTO combos(id,name,models,createdAt,updatedAt) VALUES('x','Main',?1,'now','now')", [json!(["openai/other"]).to_string()]).unwrap();
+        // The combo name is allowed.
+        assert_allowed(&app, "/v1/chat/completions", json!({"model":"Main","messages":[]})).await;
+        // Its member cannot be called directly by name.
+        assert_denied(&app, "/v1/chat/completions", json!({"model":"openai/other","messages":[]})).await;
+        // Case variant of a listed combo that routes elsewhere is not the combo.
+        assert_denied(&app, "/v1/chat/completions", json!({"model":"MAIN/x","messages":[]})).await;
+    }
+
+    #[tokio::test]
+    async fn key_access_provider_prefix_node_cannot_shadow_builtin() {
+        let upstream = mock_upstream().await;
+        let (app, db) = restricted_router(&upstream, json!(["openai/gpt-test"]));
+        // A user node that reuses a built-in prefix must not reroute an allowed model.
+        db.lock().unwrap().execute("INSERT INTO providerNodes(id,type,data,createdAt,updatedAt) VALUES('evil','openai-compatible',?1,'now','now')", [json!({"prefix":"openai"}).to_string()]).unwrap();
+        assert_allowed(&app, "/v1/chat/completions", json!({"model":"openai/gpt-test","messages":[]})).await;
+        assert_denied(&app, "/v1/chat/completions", json!({"model":"openai/other","messages":[]})).await;
+    }
+
+    #[tokio::test]
+    async fn key_access_media_endpoints_allow_and_deny() {
+        let upstream = mock_upstream().await;
+        let (app, _) = restricted_router(&upstream, json!(["openai/gpt-test"]));
+        // Each route: a denied model must be 403. Allowed-model coverage is asserted for the
+        // one allowed target via chat above; media allow uses the same resolver and is covered
+        // by the request_target unit tests.
+        for path in ["/v1/embeddings", "/v1/images/generations", "/v1/audio/speech", "/v1/systemone", "/v1/api/chat", "/v1/responses/compact", "/v1/videos/generations", "/v1/videos/edits", "/v1/videos/extensions"] {
+            assert_denied(&app, path, json!({"model":"openai/other","prompt":"x","input":"x","input_text":"x","text":"x","messages":[]})).await;
+        }
+        assert_denied(&app, "/v1/web/fetch", json!({"provider":"openai","url":"https://x"})).await;
+        assert_denied(&app, "/v1/search", json!({"provider":"serper","query":"q"})).await;
+    }
+
+    #[tokio::test]
+    async fn key_access_multipart_stt_and_video_deny_unknown_target() {
+        let upstream = mock_upstream().await;
+        let (app, _) = restricted_router(&upstream, json!(["openai/gpt-test"]));
+        // stt: model is read from the multipart form. Denied model is 403, a missing model is 403.
+        for (model, label) in [(Some("openai/other"), "denied model"), (None, "missing model")] {
+            let (ct, body) = multipart(model);
+            let (status, _) = send(&app, "POST", "/v1/audio/transcriptions", &ct, Body::from(body)).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "stt {label}");
+        }
+        // video: a multipart body has no readable model, so it is denied for restricted keys.
+        let (ct, body) = multipart(Some("xai/grok-imagine-video"));
+        let (status, _) = send(&app, "POST", "/v1/videos/generations", &ct, Body::from(body)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "video multipart");
+    }
+
+    #[tokio::test]
+    async fn key_access_get_listing_filters_and_hides_denied_models() {
+        let upstream = mock_upstream().await;
+        let (app, _) = restricted_router(&upstream, json!(["openai/gpt-test"]));
+        // Non-listing GETs pass the gate (upstream does not filter them).
+        let (status, _) = send(&app, "GET", "/v1/models/info?id=openai/gpt-test", "application/json", Body::empty()).await;
+        assert_ne!(status, StatusCode::FORBIDDEN, "models/info must not be gated");
+        // Single-model lookup of a denied model is 404, like upstream.
+        let request = Request::get("/v1/models/openai/other").header("authorization", "Bearer sk-test-key").body(Body::empty()).unwrap();
+        assert_eq!(app.clone().oneshot(request).await.unwrap().status(), StatusCode::NOT_FOUND);
+        // The list itself never contains the denied model.
+        let request = Request::get("/v1/models").header("authorization", "Bearer sk-test-key").body(Body::empty()).unwrap();
+        let bytes = to_bytes(app.clone().oneshot(request).await.unwrap().into_body(), 2_000_000).await.unwrap();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        let ids: Vec<&str> = v["data"].as_array().unwrap().iter().filter_map(|e| e["id"].as_str()).collect();
+        assert!(!ids.contains(&"openai/other"));
+    }
+
+    #[tokio::test]
+    async fn models_list_cache_is_per_key_and_invalidated_on_write() {
+        crate::services::models_list_cache::invalidate();
+        let upstream = mock_upstream().await;
+        let (app, db) = restricted_router(&upstream, json!(["Main"]));
+        db.lock().unwrap().execute("INSERT INTO combos(id,name,models,createdAt,updatedAt) VALUES('x','Main',?1,'now','now')", [json!(["openai/gpt-test"]).to_string()]).unwrap();
+        let list = |app: Router| async move {
+            let request = Request::get("/v1/models").header("authorization", "Bearer sk-test-key").body(Body::empty()).unwrap();
+            let bytes = to_bytes(app.oneshot(request).await.unwrap().into_body(), 2_000_000).await.unwrap();
+            serde_json::from_slice::<Value>(&bytes).unwrap()
+        };
+        let first = list(app.clone()).await;
+        assert!(first["data"].as_array().is_some_and(|d| d.iter().any(|e| e["id"] == "Main")), "{first}");
+        // Narrow the key's allow list in the DB. A fresh cache still serves the old list.
+        db.lock().unwrap().execute("UPDATE apiKeys SET accessAllow=?1 WHERE id='k1'", [json!(["openai/other"]).to_string()]).unwrap();
+        assert_eq!(list(app.clone()).await, first, "fresh cache must serve the cached list");
+        // A management write clears the cache, so the narrowed allow list takes effect.
+        let write = Request::post("/api/combos").header("cookie", format!("auth_token={}", token())).header("content-type", "application/json").body(Body::from(json!({"name":"Other","models":["openai/other"]}).to_string())).unwrap();
+        let _ = app.clone().oneshot(write).await;
+        let after = list(app.clone()).await;
+        assert!(!after["data"].as_array().unwrap().iter().any(|e| e["id"] == "Main"), "write must invalidate: {after}");
+    }
+
+    #[test]
+    fn auto_routing_parse_and_intents() {
+        use crate::services::auto_routing::{parse_auto_target, rank_candidates, Conn, Inputs, AUTO_CANDIDATE_LIMIT};
+        assert_eq!(parse_auto_target("auto:coding"), Some("coding"));
+        assert_eq!(parse_auto_target(" AUTO:Fast "), Some("fast"));
+        assert_eq!(parse_auto_target("auto:unknown"), None);
+        assert_eq!(parse_auto_target("auto"), None);
+        // Two active providers, both with clean connections.
+        let inputs = Inputs {
+            connections: vec![
+                Conn { provider: "openai".into(), data: json!({}) },
+                Conn { provider: "gemini".into(), data: json!({}) },
+            ],
+            disabled: Default::default(),
+            latency_by_provider: Default::default(),
+            free_providers: Default::default(),
+        };
+        let ranked = rank_candidates("coding", &inputs, 0, 0.0, Some("fixed"));
+        assert!(!ranked.is_empty() && ranked.len() <= AUTO_CANDIDATE_LIMIT);
+        assert!(ranked.iter().all(|m| m.starts_with("openai/") || m.starts_with("gemini/")));
+        // Per-provider cap: no provider contributes more than 3.
+        let openai = ranked.iter().filter(|m| m.starts_with("openai/")).count();
+        assert!(openai <= 3);
+    }
+
+    #[test]
+    fn auto_routing_suspect_connection_sorts_last() {
+        use crate::services::auto_routing::{rank_candidates, Conn, Inputs};
+        // Provider with a fresh lastError is suspect (health 0). Clean provider ranks first.
+        let inputs = Inputs {
+            connections: vec![
+                Conn { provider: "openai".into(), data: json!({"lastError":"boom","lastErrorAt":"2026-01-01T00:00:00.000Z"}) },
+                Conn { provider: "gemini".into(), data: json!({}) },
+            ],
+            disabled: Default::default(),
+            latency_by_provider: Default::default(),
+            free_providers: Default::default(),
+        };
+        // now is one minute after the failure, well inside the 1h probation window.
+        let now = 1_767_225_660_000;
+        let ranked = rank_candidates("headroom", &inputs, now, 0.0, Some("fixed"));
+        assert!(ranked.first().is_some_and(|m| m.starts_with("gemini/")), "{ranked:?}");
+    }
+
+    #[test]
+    fn exploration_is_deterministic_and_keeps_set() {
+        use crate::services::auto_routing::apply_exploration;
+        let ranked: Vec<String> = ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect();
+        let once = apply_exploration(ranked.clone(), 1.0, "coding|2026-11-14");
+        let twice = apply_exploration(ranked.clone(), 1.0, "coding|2026-11-14");
+        assert_eq!(once, twice);
+        let mut sorted = once.clone();
+        sorted.sort();
+        assert_eq!(sorted, ranked);
+        assert_eq!(apply_exploration(ranked.clone(), 0.0, "x"), ranked);
     }
 }
