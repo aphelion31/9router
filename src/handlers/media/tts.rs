@@ -12,8 +12,8 @@ use serde_json::{Value, json};
 
 use crate::handlers::Credentials;
 use crate::handlers::media::common::{
-    RequestJsonExt, http_client, media_error, read_json, resolve_credentials, split_provider_model,
-    url_encode,
+    AttemptOutcome, RequestJsonExt, for_each_account, http_client, media_error, read_json,
+    split_provider_model, url_encode,
 };
 use crate::handlers::media::config::get_tts_voices_for_model;
 use crate::server::AppState;
@@ -69,8 +69,8 @@ fn detect_audio_format(ct: &str, default_fmt: &str) -> String {
     }
 }
 
-async fn upstream_err_msg(res: reqwest::Response) -> String {
-    let status = res.status().as_u16();
+async fn upstream_err(res: reqwest::Response) -> (StatusCode, String) {
+    let status = StatusCode::from_u16(res.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let txt = res.text().await.unwrap_or_default();
     if let Ok(j) = serde_json::from_str::<Value>(&txt)
         && let Some(m) = j["error"]["message"]
@@ -79,13 +79,14 @@ async fn upstream_err_msg(res: reqwest::Response) -> String {
             .or_else(|| j["detail"]["message"].as_str())
             .or_else(|| j["detail"].as_str())
     {
-        return m.to_owned();
+        return (status, m.to_owned());
     }
-    if txt.is_empty() {
-        format!("Upstream error ({status})")
+    let msg = if txt.is_empty() {
+        format!("Upstream error ({})", status.as_u16())
     } else {
         txt
-    }
+    };
+    (status, msg)
 }
 
 pub async fn synthesize_tts(
@@ -125,7 +126,7 @@ pub async fn synthesize_tts(
                 .await
                 .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
             if !res.status().is_success() {
-                return Err((StatusCode::BAD_GATEWAY, upstream_err_msg(res).await));
+                return Err(upstream_err(res).await);
             }
             let fmt = detect_audio_format(
                 res.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or(""),
@@ -163,7 +164,7 @@ pub async fn synthesize_tts(
                 .await
                 .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
             if !res.status().is_success() {
-                return Err((StatusCode::BAD_GATEWAY, upstream_err_msg(res).await));
+                return Err(upstream_err(res).await);
             }
             let body = res.text().await.map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
             let mut b64 = String::new();
@@ -206,7 +207,7 @@ pub async fn synthesize_tts(
                 .await
                 .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
             if !res.status().is_success() {
-                return Err((StatusCode::BAD_GATEWAY, upstream_err_msg(res).await));
+                return Err(upstream_err(res).await);
             }
             let bytes = res.bytes().await.map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?.to_vec();
             Ok(TtsAudio { bytes, format: "mp3".into() })
@@ -241,7 +242,7 @@ pub async fn synthesize_tts(
                 .await
                 .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
             if !res.status().is_success() {
-                return Err((StatusCode::BAD_GATEWAY, upstream_err_msg(res).await));
+                return Err(upstream_err(res).await);
             }
             let data: Value = read_json(res).await.map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
             let b64 = data["candidates"][0]["content"]["parts"]
@@ -286,7 +287,7 @@ pub async fn synthesize_tts(
                 .await
                 .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
             if !res.status().is_success() {
-                return Err((StatusCode::BAD_GATEWAY, upstream_err_msg(res).await));
+                return Err(upstream_err(res).await);
             }
             let data: Value = read_json(res).await.map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
             let b64 = data["choices"][0]["message"]["audio"]["data"]
@@ -334,7 +335,7 @@ pub async fn synthesize_tts(
                 .await
                 .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
             if !res.status().is_success() {
-                return Err((StatusCode::BAD_GATEWAY, upstream_err_msg(res).await));
+                return Err(upstream_err(res).await);
             }
             let fmt = detect_audio_format(
                 res.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or(""),
@@ -355,7 +356,7 @@ pub async fn synthesize_tts(
                 .await
                 .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
             if !res.status().is_success() {
-                return Err((StatusCode::BAD_GATEWAY, upstream_err_msg(res).await));
+                return Err(upstream_err(res).await);
             }
             let bytes = res.bytes().await.map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?.to_vec();
             Ok(TtsAudio { bytes, format: "mp3".into() })
@@ -381,7 +382,7 @@ pub async fn synthesize_tts(
                 .await
                 .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
             if !res.status().is_success() {
-                return Err((StatusCode::BAD_GATEWAY, upstream_err_msg(res).await));
+                return Err(upstream_err(res).await);
             }
             let bytes = res.bytes().await.map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?.to_vec();
             Ok(TtsAudio { bytes, format: "mp3".into() })
@@ -403,7 +404,7 @@ pub async fn synthesize_tts(
                 .await
                 .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
             if !res.status().is_success() {
-                return Err((StatusCode::BAD_GATEWAY, upstream_err_msg(res).await));
+                return Err(upstream_err(res).await);
             }
             let data: Value = read_json(res).await.map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
             let b64 = data["audioContent"].as_str().ok_or((StatusCode::BAD_GATEWAY, "Inworld TTS returned no audio".into()))?;
@@ -447,7 +448,8 @@ pub async fn synthesize_tts(
                 .await
                 .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
             if !res.status().is_success() {
-                return Err((StatusCode::BAD_GATEWAY, format!("Google TTS failed: {}", res.status())));
+                let st = StatusCode::from_u16(res.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+                return Err((st, format!("Google TTS failed: {}", res.status())));
             }
             let body = res.text().await.map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
             let line4 = body.lines().nth(3).ok_or((StatusCode::BAD_GATEWAY, "Google TTS invalid response".into()))?;
@@ -518,38 +520,78 @@ pub async fn audio_speech(State(state): State<AppState>, request_headers: Header
     let response_format = body["response_format"].as_str().unwrap_or("mp3");
     let language = body["language"].as_str();
     let style = body["style"].as_str();
-    let creds = resolve_credentials(&state, &provider);
+    let allow_noauth = matches!(
+        provider.as_str(),
+        "selfhosted-tts" | "ollama-local" | "google-tts" | "edge-tts" | "local-device"
+    );
 
-    match synthesize_tts(
+    for_each_account(
+        &state,
         &provider,
         &model,
-        input,
-        voice,
-        response_format,
-        language,
-        style,
-        creds.as_ref(),
+        allow_noauth,
+        || {
+            media_error(
+                StatusCode::UNAUTHORIZED,
+                format!("No credentials for TTS provider: {provider}"),
+            )
+        },
+        |creds| {
+            let state = &state;
+            let request_headers = &request_headers;
+            let provider = &provider;
+            let model = &model;
+            async move {
+                match synthesize_tts(
+                    provider,
+                    model,
+                    input,
+                    voice,
+                    response_format,
+                    language,
+                    style,
+                    creds.as_ref(),
+                )
+                .await
+                {
+                    Ok(audio) => {
+                        crate::services::modality_usage::record_modality_usage(
+                            state,
+                            provider,
+                            model,
+                            creds.as_ref().map(|c| c.connection_id.as_str()),
+                            crate::server::api_key_id(state, request_headers).as_deref(),
+                            "/v1/audio/speech",
+                            crate::services::modality_usage::estimate_tokens_from_text(input),
+                            0,
+                            "estimated",
+                        );
+                        if response_format == "json" {
+                            let b64 = base64::engine::general_purpose::STANDARD.encode(&audio.bytes);
+                            return AttemptOutcome::Success(
+                                (
+                                    StatusCode::OK,
+                                    [("Access-Control-Allow-Origin", "*")],
+                                    Json(json!({ "audio": b64, "format": audio.format })),
+                                )
+                                    .into_response(),
+                            );
+                        }
+                        let mut headers = HeaderMap::new();
+                        headers.insert("Content-Type", format!("audio/{}", audio.format).parse().unwrap());
+                        headers.insert("Access-Control-Allow-Origin", "*".parse().unwrap());
+                        AttemptOutcome::Success((StatusCode::OK, headers, audio.bytes).into_response())
+                    }
+                    Err((status, msg)) => AttemptOutcome::Failure {
+                        status,
+                        message: msg.clone(),
+                        response: media_error(status, msg),
+                    },
+                }
+            }
+        },
     )
     .await
-    {
-        Ok(audio) => {
-            crate::services::modality_usage::record_modality_usage(&state, &provider, &model, creds.as_ref().map(|c| c.connection_id.as_str()), crate::server::api_key_id(&state, &request_headers).as_deref(), "/v1/audio/speech", crate::services::modality_usage::estimate_tokens_from_text(input), 0, "estimated");
-            if response_format == "json" {
-                let b64 = base64::engine::general_purpose::STANDARD.encode(&audio.bytes);
-                return (
-                    StatusCode::OK,
-                    [("Access-Control-Allow-Origin", "*")],
-                    Json(json!({ "audio": b64, "format": audio.format })),
-                )
-                    .into_response();
-            }
-            let mut headers = HeaderMap::new();
-            headers.insert("Content-Type", format!("audio/{}", audio.format).parse().unwrap());
-            headers.insert("Access-Control-Allow-Origin", "*".parse().unwrap());
-            (StatusCode::OK, headers, audio.bytes).into_response()
-        }
-        Err((status, msg)) => media_error(status, msg),
-    }
 }
 
 pub async fn audio_voices(
