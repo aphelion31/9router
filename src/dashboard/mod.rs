@@ -140,13 +140,17 @@ pub async fn media_combo_detail_page() -> Html<&'static str> {
     Html(MEDIA_COMBO_DETAIL_HTML)
 }
 
+// Revalidate every load: the Cloudflare edge kept serving stale app.js after deploys.
+const NO_CACHE: (header::HeaderName, HeaderValue) =
+    (header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+
 pub async fn style_css() -> Response {
     (
         StatusCode::OK,
         [(
             header::CONTENT_TYPE,
             HeaderValue::from_static("text/css; charset=utf-8"),
-        )],
+        ), NO_CACHE],
         STYLE_CSS,
     )
         .into_response()
@@ -158,7 +162,7 @@ pub async fn app_js() -> Response {
         [(
             header::CONTENT_TYPE,
             HeaderValue::from_static("application/javascript; charset=utf-8"),
-        )],
+        ), NO_CACHE],
         APP_JS,
     )
         .into_response()
