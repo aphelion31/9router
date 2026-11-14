@@ -351,7 +351,7 @@ async fn monitoring(State(state): State<AppState>) -> impl IntoResponse {
         "mostUsedKey": most_used_key,
         "mostKeys": most_keys,
         "providerNames": provider_names,
-        "health": { "db": if db_ok { "ok" } else { "error" }, "breakersOpen": 0 },
+        "health": { "db": if db_ok { "ok" } else { "error" }, "breakersOpen": crate::services::provider_breaker::global().lock().map(|mut b| b.snapshot(crate::routing::classify::now_ms()).as_object().map(|m| m.values().filter(|v| v["state"] == "open").count()).unwrap_or(0)).unwrap_or(0) },
     });
 
     if let Ok(mut guard) = cache.lock() {

@@ -126,7 +126,11 @@ async fn list_connections(
             Ok(stats)
         })();
         return match result {
-            Ok(stats) => Json(json!({ "stats": stats, "breakers": {} })).into_response(),
+            Ok(stats) => {
+                let mut breakers = crate::services::provider_breaker::global().lock().map(|mut b| b.snapshot(crate::routing::classify::now_ms())).unwrap_or_default();
+                if let Some(map) = breakers.as_object_mut() { for b in map.values_mut() { b["preTrip"] = json!(b["state"] == "closed" && b["failuresInWindow"].as_u64().unwrap_or(0) > 0); } }
+                Json(json!({ "stats": stats, "breakers": breakers })).into_response()
+            },
             Err(_) => err(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to fetch provider summary",

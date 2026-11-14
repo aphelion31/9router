@@ -702,7 +702,7 @@ impl ChatHooks for Hooks {
     }
 }
 /// Resolves the request's API key to its `apiKeys.id` for usage attribution.
-fn api_key_id(s: &AppState, headers: &HeaderMap) -> Option<String> {
+pub(crate) fn api_key_id(s: &AppState, headers: &HeaderMap) -> Option<String> {
     let key = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())

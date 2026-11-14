@@ -97,7 +97,7 @@ fn normalize_openai_shape(data: Value, _prompt: &str) -> Value {
     data
 }
 
-pub async fn image_generations(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
+pub async fn image_generations(State(state): State<AppState>, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
     let prompt = body["prompt"].as_str().unwrap_or("");
     if prompt.trim().is_empty() {
         return media_error(StatusCode::BAD_REQUEST, "Missing required field: prompt");
@@ -210,6 +210,7 @@ pub async fn image_generations(State(state): State<AppState>, Json(body): Json<V
                 .to_owned();
             if ct.starts_with("image/") {
                 let bytes = res.bytes().await.unwrap_or_default();
+                crate::services::modality_usage::record_modality_usage(&state, &provider, &model, creds.as_ref().map(|c| c.connection_id.as_str()), crate::server::api_key_id(&state, &headers).as_deref(), "/v1/images/generations", 0, 0, "request-only");
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
                 let created = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -224,6 +225,8 @@ pub async fn image_generations(State(state): State<AppState>, Json(body): Json<V
             }
             match read_json(res).await {
                 Ok(data) => {
+                    let (prompt_tokens, completion_tokens) = crate::services::modality_usage::reported_tokens(&data["usage"]);
+                    crate::services::modality_usage::record_modality_usage(&state, &provider, &model, creds.as_ref().map(|c| c.connection_id.as_str()), crate::server::api_key_id(&state, &headers).as_deref(), "/v1/images/generations", prompt_tokens, completion_tokens, if data["usage"].is_object() { "reported" } else { "request-only" });
                     let normalized = normalize_openai_shape(data, prompt);
                     (
                         StatusCode::OK,

@@ -146,7 +146,7 @@ async fn audio_voices(Query(q): Query<HashMap<String, String>>) -> Response {
     Json(json!({ "object": "list", "data": voices })).into_response()
 }
 
-async fn web_search(State(s): State<AppState>, Json(body): Json<Value>) -> Response {
+async fn web_search(State(s): State<AppState>, headers: HeaderMap, Json(body): Json<Value>) -> Response {
     let provider_input = body["provider"]
         .as_str()
         .or_else(|| body["model"].as_str())
@@ -174,7 +174,14 @@ async fn web_search(State(s): State<AppState>, Json(body): Json<Value>) -> Respo
         "serper" => "https://google.serper.dev/search".to_string(),
         _ => format!("{}/search", provider_base_url(provider, base_override)),
     };
-    forward_json(&s, reqwest::Method::POST, &url, &token, Some(body)).await
+    let provider = provider.to_owned();
+    let response = forward_json(&s, reqwest::Method::POST, &url, &token, Some(body)).await;
+    if response.status().is_success() {
+        let cost = match provider.as_str() { "exa" => Some(0.007), "serper" => Some(0.001), "tavily" => Some(0.008), "brave-search" | "google-pse" | "linkup" | "youcom" => Some(0.005), "searxng" | "tinyfish" => Some(0.0), _ => None };
+        let connection_id = crate::handlers::media::common::resolve_credentials(&s, &provider).map(|c| c.connection_id);
+        crate::services::modality_usage::record_search_usage(&s, &provider, connection_id.as_deref(), crate::server::api_key_id(&s, &headers).as_deref(), cost);
+    }
+    response
 }
 
 async fn web_fetch(State(s): State<AppState>, Json(body): Json<Value>) -> Response {
@@ -278,6 +285,32 @@ mod tests {
         http::{Method, Request, StatusCode},
     };
     use serde_json::json;
+
+    #[tokio::test]
+    async fn embeddings_records_reported_usage() {
+        let (app, db) = app();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0; 8192];
+            let _ = stream.read(&mut buf).await;
+            let body = r#"{"object":"list","data":[],"usage":{"prompt_tokens":9,"total_tokens":9}}"#;
+            stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).as_bytes()).await.unwrap();
+        });
+        {
+            let conn = db.lock().unwrap();
+            let data = json!({"apiKey":"test","providerSpecificData":{"baseUrl":format!("http://{addr}")}}).to_string();
+            conn.execute("INSERT INTO providerConnections(id,provider,authType,name,isActive,priority,data,createdAt,updatedAt) VALUES('embed-test','openai','apikey','test',1,1,?1,'now','now')", [data]).unwrap();
+        }
+        let (status, _) = call(app, Request::post("/v1/embeddings").header("content-type", "application/json").body(Body::from(r#"{"model":"openai/test","input":"hello"}"#)).unwrap()).await;
+        assert_eq!(status, StatusCode::OK);
+        let conn = db.lock().unwrap();
+        let (tokens, meta): (i64, String) = conn.query_row("SELECT promptTokens,meta FROM usageHistory WHERE connectionId='embed-test' AND endpoint='/v1/embeddings'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(tokens, 9);
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&meta).unwrap()["accrual"], "reported");
+    }
 
     #[tokio::test]
     async fn v1_media_routes_validate_and_dispatch() {
