@@ -6,7 +6,9 @@ use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const DEFAULT_BASE_URL: &str = "https://daily-cloudcode-pa.sandbox.googleapis.com";
+// Upstream ANTIGRAVITY_IDE_BASE_URL (production). The sandbox host answers the
+// Hub client with a 403 "disabled for violation of Terms of Service" block.
+const DEFAULT_BASE_URL: &str = "https://daily-cloudcode-pa.googleapis.com";
 const ANTIGRAVITY_UA: &str = "antigravity/hub/2.24.0 darwin/arm64";
 const MAX_ANTIGRAVITY_OUTPUT_TOKENS: i64 = 64_000;
 
@@ -445,4 +447,17 @@ pub(super) fn prepare(
     object.insert("request".into(), Value::Object(inner));
 
     Ok(vec![("user-agent", ANTIGRAVITY_UA.to_string())])
+}
+
+#[cfg(test)]
+mod endpoint_tests {
+    use super::*;
+
+    // Upstream ANTIGRAVITY_IDE_BASE_URL: the default must be the production host, never the sandbox.
+    #[test]
+    fn default_endpoint_is_production_not_sandbox() {
+        assert_eq!(default_endpoint(), "https://daily-cloudcode-pa.googleapis.com");
+        let url = url(default_endpoint(), "gemini-4-hydrogen-high", true).unwrap();
+        assert_eq!(url.as_str(), "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse");
+    }
 }
