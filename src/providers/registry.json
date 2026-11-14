@@ -34,7 +34,10 @@
         "id": "glm-4.7",
         "name": "GLM 4.7"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "alicode-intl",
+    "noAuthFree": false
   },
   {
     "id": "alicode",
@@ -75,7 +78,10 @@
         "id": "glm-4.7",
         "name": "GLM 4.7"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "alicode",
+    "noAuthFree": false
   },
   {
     "id": "anthropic",
@@ -96,7 +102,10 @@
         "id": "claude-3-5-sonnet-20241022",
         "name": "Claude 3.5 Sonnet"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "anthropic",
+    "noAuthFree": false
   },
   {
     "id": "antigravity",
@@ -246,7 +255,10 @@
           "textToImage"
         ]
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "ag",
+    "noAuthFree": false
   },
   {
     "id": "assemblyai",
@@ -281,7 +293,12 @@
         "name": "Nano (Fast)",
         "kind": "stt"
       }
-    ]
+    ],
+    "aliases": [
+      "aai"
+    ],
+    "uiAlias": "aai",
+    "noAuthFree": false
   },
   {
     "id": "aws-polly",
@@ -289,7 +306,10 @@
     "base_url": null,
     "format": null,
     "auth_type": "apikey",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "polly",
+    "noAuthFree": false
   },
   {
     "id": "azure",
@@ -297,7 +317,10 @@
     "base_url": "",
     "format": "openai",
     "auth_type": "apikey",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "azure",
+    "noAuthFree": false
   },
   {
     "id": "black-forest-labs",
@@ -363,7 +386,12 @@
         ],
         "kind": "image"
       }
-    ]
+    ],
+    "aliases": [
+      "bfl"
+    ],
+    "uiAlias": "bfl",
+    "noAuthFree": false
   },
   {
     "id": "blackbox",
@@ -422,7 +450,12 @@
         "name": "Grok 4.3",
         "upstreamModelId": "blackboxai/x-ai/grok-4.3"
       }
-    ]
+    ],
+    "aliases": [
+      "bb"
+    ],
+    "uiAlias": "bb",
+    "noAuthFree": false
   },
   {
     "id": "brave-search",
@@ -430,7 +463,10 @@
     "base_url": null,
     "format": null,
     "auth_type": "apikey",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "brave",
+    "noAuthFree": false
   },
   {
     "id": "byteplus",
@@ -467,7 +503,12 @@
         "id": "gpt-oss-120b-250805",
         "name": "GPT-OSS-120B"
       }
-    ]
+    ],
+    "aliases": [
+      "bpm"
+    ],
+    "uiAlias": "bpm",
+    "noAuthFree": false
   },
   {
     "id": "cartesia",
@@ -475,7 +516,10 @@
     "base_url": null,
     "format": null,
     "auth_type": "apikey",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "cartesia",
+    "noAuthFree": false
   },
   {
     "id": "cerebras",
@@ -508,7 +552,10 @@
         "id": "qwen-3-32b",
         "name": "Qwen3 32B"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "cerebras",
+    "noAuthFree": false
   },
   {
     "id": "chutes",
@@ -516,7 +563,12 @@
     "base_url": "https://llm.chutes.ai/v1/chat/completions",
     "format": "openai",
     "auth_type": "apikey",
-    "models": []
+    "models": [],
+    "aliases": [
+      "ch"
+    ],
+    "uiAlias": "ch",
+    "noAuthFree": false
   },
   {
     "id": "claude",
@@ -553,7 +605,10 @@
         "id": "claude-haiku-4-5-20251001",
         "name": "Claude 4.5 Haiku"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "cc",
+    "noAuthFree": false
   },
   {
     "id": "cline",
@@ -594,7 +649,10 @@
         "id": "kwaipilot/kat-coder-pro",
         "name": "KAT Coder Pro"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "cl",
+    "noAuthFree": false
   },
   {
     "id": "clinepass",
@@ -643,7 +701,10 @@
         "id": "cline-pass/qwen3.7-plus",
         "name": "Qwen3.7 Plus (ClinePass)"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "clinepass",
+    "noAuthFree": false
   },
   {
     "id": "cloudflare-ai",
@@ -805,7 +866,12 @@
         ],
         "kind": "image"
       }
-    ]
+    ],
+    "aliases": [
+      "cf"
+    ],
+    "uiAlias": "cf",
+    "noAuthFree": false
   },
   {
     "id": "codebuddy-cn",
@@ -858,7 +924,10 @@
         "id": "deepseek-v4.1-flash",
         "name": "DeepSeek-V4.1-Flash"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "cbcn",
+    "noAuthFree": false
   },
   {
     "id": "codex",
@@ -1170,7 +1239,10 @@
           "text"
         ]
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "cx",
+    "noAuthFree": false
   },
   {
     "id": "cohere",
@@ -1191,7 +1263,10 @@
         "id": "command-a-03-2025",
         "name": "Command A (Mar 2025)"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "cohere",
+    "noAuthFree": false
   },
   {
     "id": "comfyui",
@@ -1218,7 +1293,10 @@
         ],
         "kind": "image"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "comfyui",
+    "noAuthFree": false
   },
   {
     "id": "commandcode",
@@ -1319,7 +1397,12 @@
         "id": "nvidia/nemotron-3-ultra-550b-a55b",
         "name": "Nemotron 3 Ultra"
       }
-    ]
+    ],
+    "aliases": [
+      "cmc"
+    ],
+    "uiAlias": "cmc",
+    "noAuthFree": false
   },
   {
     "id": "coqui",
@@ -1327,7 +1410,10 @@
     "base_url": null,
     "format": null,
     "auth_type": "freeTier",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "coqui",
+    "noAuthFree": false
   },
   {
     "id": "cursor",
@@ -1392,7 +1478,10 @@
         "id": "gpt-5.3-codex",
         "name": "GPT 5.3 Codex"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "cu",
+    "noAuthFree": false
   },
   {
     "id": "deepgram",
@@ -1430,7 +1519,12 @@
         "name": "Nova",
         "kind": "stt"
       }
-    ]
+    ],
+    "aliases": [
+      "dg"
+    ],
+    "uiAlias": "dg",
+    "noAuthFree": false
   },
   {
     "id": "deepseek",
@@ -1474,7 +1568,12 @@
         "id": "deepseek-reasoner",
         "name": "DeepSeek V3.2 Reasoner"
       }
-    ]
+    ],
+    "aliases": [
+      "ds"
+    ],
+    "uiAlias": "ds",
+    "noAuthFree": false
   },
   {
     "id": "edge-tts",
@@ -1482,7 +1581,10 @@
     "base_url": null,
     "format": null,
     "auth_type": "freeTier",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "edge-tts",
+    "noAuthFree": false
   },
   {
     "id": "elevenlabs",
@@ -1517,7 +1619,10 @@
         ],
         "kind": "stt"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "el",
+    "noAuthFree": false
   },
   {
     "id": "exa",
@@ -1525,7 +1630,10 @@
     "base_url": null,
     "format": null,
     "auth_type": "apikey",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "exa",
+    "noAuthFree": false
   },
   {
     "id": "fal-ai",
@@ -1599,7 +1707,12 @@
         ],
         "kind": "image"
       }
-    ]
+    ],
+    "aliases": [
+      "fal"
+    ],
+    "uiAlias": "fal",
+    "noAuthFree": false
   },
   {
     "id": "featherless",
@@ -1636,7 +1749,12 @@
         "id": "moonshotai/Kimi-K2.5",
         "name": "Kimi K2.5"
       }
-    ]
+    ],
+    "aliases": [
+      "fl"
+    ],
+    "uiAlias": "fl",
+    "noAuthFree": false
   },
   {
     "id": "firecrawl",
@@ -1644,7 +1762,10 @@
     "base_url": null,
     "format": null,
     "auth_type": "apikey",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "firecrawl",
+    "noAuthFree": false
   },
   {
     "id": "fireworks",
@@ -1670,7 +1791,10 @@
         "name": "Nomic Embed Text v1.5",
         "kind": "embedding"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "fireworks",
+    "noAuthFree": false
   },
   {
     "id": "gemini-cli",
@@ -1707,7 +1831,10 @@
         "id": "gemini-2.5-flash-lite",
         "name": "Gemini 2.5 Flash Lite"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "gc",
+    "noAuthFree": false
   },
   {
     "id": "gemini",
@@ -1872,7 +1999,10 @@
         "dimensions": 768,
         "kind": "embedding"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "gemini",
+    "noAuthFree": false
   },
   {
     "id": "github",
@@ -2003,7 +2133,10 @@
         "name": "Text Embedding Ada 002 (GitHub)",
         "kind": "embedding"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "gh",
+    "noAuthFree": false
   },
   {
     "id": "gitlab",
@@ -2011,7 +2144,10 @@
     "base_url": "https://gitlab.com/api/v4/chat/completions",
     "format": "openai",
     "auth_type": "oauth",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "gitlab",
+    "noAuthFree": false
   },
   {
     "id": "glm-cn",
@@ -2060,7 +2196,10 @@
         "id": "glm-4.5-air",
         "name": "GLM-4.5-Air"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "glm-cn",
+    "noAuthFree": false
   },
   {
     "id": "glm",
@@ -2101,7 +2240,10 @@
         "id": "glm-4.6v",
         "name": "GLM 4.6V (Vision)"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "glm",
+    "noAuthFree": false
   },
   {
     "id": "google-pse",
@@ -2109,7 +2251,10 @@
     "base_url": null,
     "format": null,
     "auth_type": "apikey",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "gpse",
+    "noAuthFree": false
   },
   {
     "id": "google-tts",
@@ -2117,7 +2262,10 @@
     "base_url": null,
     "format": null,
     "auth_type": "freeTier",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "google-tts",
+    "noAuthFree": false
   },
   {
     "id": "grok-cli",
@@ -2155,7 +2303,13 @@
         "name": "Grok 4.5 (Low)",
         "upstreamModelId": "grok-4.5"
       }
-    ]
+    ],
+    "aliases": [
+      "grok-build",
+      "gb"
+    ],
+    "uiAlias": "gcli",
+    "noAuthFree": false
   },
   {
     "id": "grok-web",
@@ -2230,7 +2384,12 @@
         "id": "grok-4.2",
         "name": "Grok 4.2 (4.20 Beta)"
       }
-    ]
+    ],
+    "aliases": [
+      "gw"
+    ],
+    "uiAlias": "gw",
+    "noAuthFree": false
   },
   {
     "id": "groq",
@@ -2288,7 +2447,10 @@
         ],
         "kind": "stt"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "groq",
+    "noAuthFree": false
   },
   {
     "id": "huggingface",
@@ -2474,7 +2636,12 @@
         "params": [],
         "kind": "stt"
       }
-    ]
+    ],
+    "aliases": [
+      "hf"
+    ],
+    "uiAlias": "hf",
+    "noAuthFree": false
   },
   {
     "id": "hyperbolic",
@@ -2515,7 +2682,12 @@
         "id": "NousResearch/Hermes-3-Llama-3.1-70B",
         "name": "Hermes 3 70B"
       }
-    ]
+    ],
+    "aliases": [
+      "hyp"
+    ],
+    "uiAlias": "hyp",
+    "noAuthFree": false
   },
   {
     "id": "iflow",
@@ -2584,7 +2756,10 @@
         "id": "iflow-rome-30ba3b",
         "name": "iFlow ROME"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "if",
+    "noAuthFree": false
   },
   {
     "id": "inworld",
@@ -2592,7 +2767,10 @@
     "base_url": null,
     "format": null,
     "auth_type": "apikey",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "inworld",
+    "noAuthFree": false
   },
   {
     "id": "jina-ai",
@@ -2600,7 +2778,10 @@
     "base_url": null,
     "format": null,
     "auth_type": "apikey",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "jina",
+    "noAuthFree": false
   },
   {
     "id": "jina-reader",
@@ -2608,7 +2789,10 @@
     "base_url": null,
     "format": null,
     "auth_type": "apikey",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "jina-reader",
+    "noAuthFree": false
   },
   {
     "id": "kilocode",
@@ -2649,7 +2833,10 @@
         "id": "deepseek/deepseek-reasoner",
         "name": "DeepSeek Reasoner"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "kc",
+    "noAuthFree": false
   },
   {
     "id": "kimchi",
@@ -2690,7 +2877,10 @@
         "id": "claude-sonnet-4-6",
         "name": "Claude Sonnet 4.6"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "kimchi",
+    "noAuthFree": false
   },
   {
     "id": "kimi",
@@ -2739,7 +2929,13 @@
         "id": "kimi-latest",
         "name": "Kimi Latest"
       }
-    ]
+    ],
+    "aliases": [
+      "kimi-coding",
+      "kmc"
+    ],
+    "uiAlias": "kimi",
+    "noAuthFree": false
   },
   {
     "id": "kiro",
@@ -2996,7 +3192,10 @@
         "upstreamModelId": "gpt-5.6-luna",
         "description": "Experimental preview of OpenAI GPT 5.6 Luna with 272k context window"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "kr",
+    "noAuthFree": false
   },
   {
     "id": "linkup",
@@ -3004,7 +3203,10 @@
     "base_url": null,
     "format": null,
     "auth_type": "apikey",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "linkup",
+    "noAuthFree": false
   },
   {
     "id": "local-device",
@@ -3012,7 +3214,10 @@
     "base_url": null,
     "format": null,
     "auth_type": "freeTier",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "local-device",
+    "noAuthFree": false
   },
   {
     "id": "mimo-free",
@@ -3025,7 +3230,10 @@
         "id": "mimo-auto",
         "name": "MiMo Auto"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "mmf",
+    "noAuthFree": true
   },
   {
     "id": "minimax-cn",
@@ -3091,7 +3299,10 @@
         "name": "Speech 01 Turbo",
         "kind": "tts"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "minimax-cn",
+    "noAuthFree": false
   },
   {
     "id": "minimax",
@@ -3167,7 +3378,10 @@
         "name": "Speech 01 Turbo",
         "kind": "tts"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "minimax",
+    "noAuthFree": false
   },
   {
     "id": "mistral",
@@ -3193,7 +3407,10 @@
         "name": "Mistral Embed",
         "kind": "embedding"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "mistral",
+    "noAuthFree": false
   },
   {
     "id": "mmf",
@@ -3206,7 +3423,10 @@
         "id": "mimo-auto",
         "name": "MiMo Auto"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "mmf",
+    "noAuthFree": false
   },
   {
     "id": "nanobanana",
@@ -3233,7 +3453,12 @@
         ],
         "kind": "image"
       }
-    ]
+    ],
+    "aliases": [
+      "nb"
+    ],
+    "uiAlias": "nb",
+    "noAuthFree": false
   },
   {
     "id": "nebius",
@@ -3251,7 +3476,10 @@
         "name": "Qwen3 Embedding 8B",
         "kind": "embedding"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "nebius",
+    "noAuthFree": false
   },
   {
     "id": "nvidia",
@@ -3311,7 +3539,10 @@
         "name": "Tacotron2",
         "kind": "tts"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "nvidia",
+    "noAuthFree": false
   },
   {
     "id": "ollama-local",
@@ -4629,7 +4860,10 @@
         "kind": "embedding",
         "dimensions": 1024
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "ollama-local",
+    "noAuthFree": false
   },
   {
     "id": "ollama",
@@ -4685,7 +4919,10 @@
         "name": "Clef (Cloud)",
         "kind": "systemone"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "ollama",
+    "noAuthFree": false
   },
   {
     "id": "ollama-search",
@@ -4693,7 +4930,10 @@
     "base_url": null,
     "format": null,
     "auth_type": "apikey",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "ollama-search",
+    "noAuthFree": false
   },
   {
     "id": "qoder-cn",
@@ -4766,7 +5006,10 @@
         "id": "mmodel",
         "name": "MiniMax-M3"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "qdcn",
+    "noAuthFree": false
   },
   {
     "id": "openai",
@@ -4987,7 +5230,10 @@
         ],
         "kind": "image"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "openai",
+    "noAuthFree": false
   },
   {
     "id": "opencode-go",
@@ -5330,7 +5576,12 @@
           "claude"
         ]
       }
-    ]
+    ],
+    "aliases": [
+      "ocg"
+    ],
+    "uiAlias": "ocg",
+    "noAuthFree": false
   },
   {
     "id": "opencode-zen",
@@ -5881,7 +6132,12 @@
         "name": "Jev 1.13 Free",
         "kind": "systemone"
       }
-    ]
+    ],
+    "aliases": [
+      "opencode-zen"
+    ],
+    "uiAlias": "ocz",
+    "noAuthFree": false
   },
   {
     "id": "opencode",
@@ -5914,7 +6170,10 @@
         "id": "nemotron-3-ultra-free",
         "name": "Nemotron 3 Ultra Free"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "oc",
+    "noAuthFree": true
   },
   {
     "id": "openrouter",
@@ -6048,7 +6307,10 @@
         "name": "Jev 1.13",
         "kind": "systemone"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "openrouter",
+    "noAuthFree": false
   },
   {
     "id": "perplexity-web",
@@ -6085,7 +6347,12 @@
         "id": "pplx-nemotron",
         "name": "Nemotron 3 Super (via Perplexity)"
       }
-    ]
+    ],
+    "aliases": [
+      "pw"
+    ],
+    "uiAlias": "pw",
+    "noAuthFree": false
   },
   {
     "id": "perplexity",
@@ -6102,7 +6369,12 @@
         "id": "sonar",
         "name": "Sonar"
       }
-    ]
+    ],
+    "aliases": [
+      "pplx"
+    ],
+    "uiAlias": "pplx",
+    "noAuthFree": false
   },
   {
     "id": "perplexity-agent",
@@ -6155,7 +6427,13 @@
         "id": "nvidia/nemotron-3-super-120b-a12b",
         "name": "Nemotron 3 Super 120B"
       }
-    ]
+    ],
+    "aliases": [
+      "pplx-agent",
+      "pplx-responses"
+    ],
+    "uiAlias": "pa",
+    "noAuthFree": false
   },
   {
     "id": "playht",
@@ -6163,7 +6441,10 @@
     "base_url": null,
     "format": null,
     "auth_type": "apikey",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "playht",
+    "noAuthFree": false
   },
   {
     "id": "qoder",
@@ -6244,7 +6525,10 @@
         "id": "cmodel",
         "name": "Cantus"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "qd",
+    "noAuthFree": false
   },
   {
     "id": "recraft",
@@ -6273,7 +6557,10 @@
         ],
         "kind": "image"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "recraft",
+    "noAuthFree": false
   },
   {
     "id": "runwayml",
@@ -6310,7 +6597,12 @@
         "params": [],
         "kind": "video"
       }
-    ]
+    ],
+    "aliases": [
+      "runway"
+    ],
+    "uiAlias": "runway",
+    "noAuthFree": false
   },
   {
     "id": "sdwebui",
@@ -6337,7 +6629,10 @@
         ],
         "kind": "image"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "sdwebui",
+    "noAuthFree": false
   },
   {
     "id": "searchapi",
@@ -6345,7 +6640,10 @@
     "base_url": null,
     "format": null,
     "auth_type": "apikey",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "searchapi",
+    "noAuthFree": false
   },
   {
     "id": "searxng",
@@ -6353,7 +6651,10 @@
     "base_url": null,
     "format": null,
     "auth_type": "freeTier",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "searxng",
+    "noAuthFree": false
   },
   {
     "id": "serper",
@@ -6361,7 +6662,10 @@
     "base_url": null,
     "format": null,
     "auth_type": "apikey",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "serper",
+    "noAuthFree": false
   },
   {
     "id": "siliconflow",
@@ -6434,7 +6738,10 @@
         "id": "inclusionAI/Ling-flash-2.0",
         "name": "Ling Flash 2.0"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "siliconflow",
+    "noAuthFree": false
   },
   {
     "id": "sensenova",
@@ -6496,7 +6803,10 @@
         "id": "kimi-k3",
         "name": "Kimi K3"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "sensenova",
+    "noAuthFree": false
   },
   {
     "id": "stability-ai",
@@ -6546,7 +6856,12 @@
         ],
         "kind": "image"
       }
-    ]
+    ],
+    "aliases": [
+      "stability"
+    ],
+    "uiAlias": "stability",
+    "noAuthFree": false
   },
   {
     "id": "tavily",
@@ -6554,7 +6869,10 @@
     "base_url": null,
     "format": null,
     "auth_type": "apikey",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "tavily",
+    "noAuthFree": false
   },
   {
     "id": "together",
@@ -6589,7 +6907,10 @@
         "name": "M2 BERT 80M 8K",
         "kind": "embedding"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "together",
+    "noAuthFree": false
   },
   {
     "id": "topaz",
@@ -6597,7 +6918,10 @@
     "base_url": null,
     "format": null,
     "auth_type": "apikey",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "topaz",
+    "noAuthFree": false
   },
   {
     "id": "tortoise",
@@ -6605,7 +6929,10 @@
     "base_url": null,
     "format": null,
     "auth_type": "freeTier",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "tortoise",
+    "noAuthFree": false
   },
   {
     "id": "venice",
@@ -6693,7 +7020,12 @@
         ],
         "kind": "image"
       }
-    ]
+    ],
+    "aliases": [
+      "vn"
+    ],
+    "uiAlias": "venice",
+    "noAuthFree": false
   },
   {
     "id": "vercel-ai-gateway",
@@ -6701,7 +7033,12 @@
     "base_url": "https://ai-gateway.vercel.sh/v1/chat/completions",
     "format": "openai",
     "auth_type": "apikey",
-    "models": []
+    "models": [],
+    "aliases": [
+      "vercel"
+    ],
+    "uiAlias": "vercel",
+    "noAuthFree": false
   },
   {
     "id": "vertex-partner",
@@ -6726,7 +7063,12 @@
         "id": "zai-org/glm-5-maas",
         "name": "GLM-5 (Vertex)"
       }
-    ]
+    ],
+    "aliases": [
+      "vxp"
+    ],
+    "uiAlias": "vxp",
+    "noAuthFree": false
   },
   {
     "id": "vertex",
@@ -6810,7 +7152,12 @@
         ],
         "kind": "video"
       }
-    ]
+    ],
+    "aliases": [
+      "vx"
+    ],
+    "uiAlias": "vx",
+    "noAuthFree": false
   },
   {
     "id": "volcengine-ark",
@@ -6855,7 +7202,12 @@
         "id": "Kimi-K2.6",
         "name": "Kimi-K2.6"
       }
-    ]
+    ],
+    "aliases": [
+      "ark"
+    ],
+    "uiAlias": "ark",
+    "noAuthFree": false
   },
   {
     "id": "voyage-ai",
@@ -6899,7 +7251,10 @@
         "name": "Voyage Multilingual 2",
         "kind": "embedding"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "voyage",
+    "noAuthFree": false
   },
   {
     "id": "xai",
@@ -6955,7 +7310,10 @@
         ],
         "kind": "video"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "xai",
+    "noAuthFree": false
   },
   {
     "id": "xiaomi-mimo",
@@ -7009,7 +7367,14 @@
         "name": "MiMo V2.5 TTS",
         "kind": "tts"
       }
-    ]
+    ],
+    "aliases": [
+      "mimo",
+      "mimo-desktop",
+      "xmd"
+    ],
+    "uiAlias": "mimo",
+    "noAuthFree": false
   },
   {
     "id": "xiaomi-tokenplan",
@@ -7056,7 +7421,12 @@
         "id": "mimo-v2.5-tts-voicedesign",
         "name": "MiMo V2.5 TTS Voice Design"
       }
-    ]
+    ],
+    "aliases": [
+      "xmtp"
+    ],
+    "uiAlias": "xmtp",
+    "noAuthFree": false
   },
   {
     "id": "youcom",
@@ -7064,7 +7434,10 @@
     "base_url": null,
     "format": null,
     "auth_type": "apikey",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "youcom",
+    "noAuthFree": false
   },
   {
     "id": "alims-intl",
@@ -7101,7 +7474,10 @@
         "id": "glm-4.7",
         "name": "GLM 4.7"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "alims-intl",
+    "noAuthFree": false
   },
   {
     "id": "codebuddy-intl",
@@ -7170,7 +7546,10 @@
         "id": "deepseek-v3-2-volc",
         "name": "DeepSeek-V3.2"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "cbai",
+    "noAuthFree": false
   },
   {
     "id": "zed",
@@ -7178,7 +7557,10 @@
     "base_url": "https://cloud.zed.dev/completions",
     "format": "openai",
     "auth_type": "oauth",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "zd",
+    "noAuthFree": false
   },
   {
     "id": "api-airforce",
@@ -7202,7 +7584,12 @@
         "name": "Kimi K2.7 Code (Free)",
         "contextLength": 262144
       }
-    ]
+    ],
+    "aliases": [
+      "airforce"
+    ],
+    "uiAlias": "af",
+    "noAuthFree": false
   },
   {
     "id": "baidu",
@@ -7246,7 +7633,14 @@
         "name": "Qwen 3.5 27B",
         "contextLength": 262144
       }
-    ]
+    ],
+    "aliases": [
+      "qianfan",
+      "ernie",
+      "baidu-qianfan"
+    ],
+    "uiAlias": "qianfan",
+    "noAuthFree": false
   },
   {
     "id": "bazaarlink",
@@ -7374,7 +7768,12 @@
         "name": "Nemotron 3 Super",
         "contextLength": 1000000
       }
-    ]
+    ],
+    "aliases": [
+      "bazaar-link"
+    ],
+    "uiAlias": "bzl",
+    "noAuthFree": false
   },
   {
     "id": "bluesminds",
@@ -7453,7 +7852,12 @@
         "name": "Gemini 2.5 Pro (VIP)",
         "contextLength": 1048576
       }
-    ]
+    ],
+    "aliases": [
+      "blue-sminds"
+    ],
+    "uiAlias": "bm",
+    "noAuthFree": false
   },
   {
     "id": "kilo-gateway",
@@ -7492,7 +7896,13 @@
         "name": "Kilo Auto Balanced",
         "contextLength": 1000000
       }
-    ]
+    ],
+    "aliases": [
+      "kilo-gateway",
+      "kilogateway"
+    ],
+    "uiAlias": "kgw",
+    "noAuthFree": false
   },
   {
     "id": "llm7",
@@ -7526,7 +7936,12 @@
         "name": "Kimi K3 (LLM7)",
         "contextLength": 1000000
       }
-    ]
+    ],
+    "aliases": [
+      "llm-7"
+    ],
+    "uiAlias": "llm7",
+    "noAuthFree": false
   },
   {
     "id": "sambanova",
@@ -7540,7 +7955,12 @@
         "name": "MiniMax M2.7",
         "contextLength": 196608
       }
-    ]
+    ],
+    "aliases": [
+      "sambanova-ai"
+    ],
+    "uiAlias": "samba",
+    "noAuthFree": false
   },
   {
     "id": "tencent",
@@ -7559,7 +7979,13 @@
         "name": "Hunyuan T1 Latest",
         "contextLength": 256000
       }
-    ]
+    ],
+    "aliases": [
+      "hunyuan",
+      "tencent-hunyuan"
+    ],
+    "uiAlias": "hunyuan",
+    "noAuthFree": false
   },
   {
     "id": "morph",
@@ -7596,7 +8022,12 @@
         "name": "DeepSeek V4 Flash (Morph)",
         "contextLength": 1048576
       }
-    ]
+    ],
+    "aliases": [
+      "morphllm"
+    ],
+    "uiAlias": "morph",
+    "noAuthFree": false
   },
   {
     "id": "poolside",
@@ -7613,7 +8044,12 @@
         "id": "poolside/laguna-xs-2.1",
         "name": "Laguna XS 2.1"
       }
-    ]
+    ],
+    "aliases": [
+      "ps"
+    ],
+    "uiAlias": "ps",
+    "noAuthFree": false
   },
   {
     "id": "tokenrouter",
@@ -7710,7 +8146,12 @@
         "id": "x-ai/grok-4.5",
         "name": "Grok 4.5"
       }
-    ]
+    ],
+    "aliases": [
+      "tr"
+    ],
+    "uiAlias": "tokenrouter",
+    "noAuthFree": false
   },
   {
     "id": "selfhosted-stt",
@@ -7730,7 +8171,10 @@
         ],
         "kind": "stt"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "selfhosted-stt",
+    "noAuthFree": false
   },
   {
     "id": "selfhosted-tts",
@@ -7749,7 +8193,10 @@
         ],
         "kind": "tts"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "selfhosted-tts",
+    "noAuthFree": false
   },
   {
     "id": "selfhosted-embedding",
@@ -7763,7 +8210,10 @@
         "name": "Self-hosted embedding model",
         "kind": "embedding"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "selfhosted-embedding",
+    "noAuthFree": false
   },
   {
     "id": "fish-audio",
@@ -7771,7 +8221,10 @@
     "base_url": null,
     "format": null,
     "auth_type": "apikey",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "fish",
+    "noAuthFree": false
   },
   {
     "id": "alitp-intl",
@@ -7804,7 +8257,10 @@
         "id": "deepseek-v4-pro",
         "name": "DeepSeek V4 Pro"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "alitp-intl",
+    "noAuthFree": false
   },
   {
     "id": "xquik",
@@ -7812,7 +8268,10 @@
     "base_url": null,
     "format": null,
     "auth_type": "apikey",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "xquik",
+    "noAuthFree": false
   },
   {
     "id": "tokenharbor",
@@ -7845,7 +8304,13 @@
         "id": "grok-4.7",
         "name": "Grok 4.7"
       }
-    ]
+    ],
+    "aliases": [
+      "th",
+      "thh"
+    ],
+    "uiAlias": "tokenharbor",
+    "noAuthFree": false
   },
   {
     "id": "dahl",
@@ -7866,7 +8331,12 @@
         "id": "MiniMaxAI/MiniMax-M2.7",
         "name": "MiniMax M2.7"
       }
-    ]
+    ],
+    "aliases": [
+      "dahl-inference"
+    ],
+    "uiAlias": "dahl",
+    "noAuthFree": false
   },
   {
     "id": "atria",
@@ -7879,7 +8349,12 @@
         "id": "Atria-Dawn-Preview",
         "name": "Atria Dawn Preview"
       }
-    ]
+    ],
+    "aliases": [
+      "atria-asi"
+    ],
+    "uiAlias": "atria",
+    "noAuthFree": false
   },
   {
     "id": "agnes",
@@ -7904,7 +8379,12 @@
         "id": "agnes-3.0-flash",
         "name": "Agnes 3.0 Flash"
       }
-    ]
+    ],
+    "aliases": [
+      "agnes-ai"
+    ],
+    "uiAlias": "agnes",
+    "noAuthFree": false
   },
   {
     "id": "bai",
@@ -7912,7 +8392,12 @@
     "base_url": "https://api.b.ai/v1/chat/completions",
     "format": "openai",
     "auth_type": "apikey",
-    "models": []
+    "models": [],
+    "aliases": [
+      "b-ai"
+    ],
+    "uiAlias": "bai",
+    "noAuthFree": false
   },
   {
     "id": "tinyfish",
@@ -7920,7 +8405,10 @@
     "base_url": null,
     "format": null,
     "auth_type": "apikey",
-    "models": []
+    "models": [],
+    "aliases": [],
+    "uiAlias": "tinyfish",
+    "noAuthFree": false
   },
   {
     "id": "v1m",
@@ -7939,7 +8427,13 @@
         "name": "v1m Decision Engine",
         "kind": "systemone"
       }
-    ]
+    ],
+    "aliases": [
+      "systemone",
+      "jev"
+    ],
+    "uiAlias": "v1m",
+    "noAuthFree": false
   },
   {
     "id": "muse",
@@ -7988,7 +8482,15 @@
           "openai-responses"
         ]
       }
-    ]
+    ],
+    "aliases": [
+      "muse-ai",
+      "meta-model-api",
+      "muse-code",
+      "muse-subscription"
+    ],
+    "uiAlias": "muse",
+    "noAuthFree": false
   },
   {
     "id": "minimax-code",
@@ -8013,7 +8515,10 @@
         "id": "MiniMax-M2.7-highspeed",
         "name": "MiniMax M2.7 Highspeed"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "mm",
+    "noAuthFree": false
   },
   {
     "id": "minimax-code-global",
@@ -8038,7 +8543,10 @@
         "id": "MiniMax-M2.7-highspeed",
         "name": "MiniMax M2.7 Highspeed"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "mmg",
+    "noAuthFree": false
   },
   {
     "id": "bedrock",
@@ -8091,7 +8599,12 @@
         "id": "us.anthropic.claude-3-haiku-20240307-v1:0",
         "name": "Claude 3 Haiku"
       }
-    ]
+    ],
+    "aliases": [
+      "aws-bedrock"
+    ],
+    "uiAlias": "br",
+    "noAuthFree": false
   },
   {
     "id": "bedrock-xai",
@@ -8108,7 +8621,12 @@
         "id": "global.xai.grok-4.6",
         "name": "Grok 4.6 (global)"
       }
-    ]
+    ],
+    "aliases": [
+      "bedrock-grok"
+    ],
+    "uiAlias": "brx",
+    "noAuthFree": false
   },
   {
     "id": "nous",
@@ -8165,7 +8683,14 @@
         "contextLength": 262144,
         "maxOutputTokens": 131072
       }
-    ]
+    ],
+    "aliases": [
+      "nous-portal",
+      "nous-research",
+      "ns"
+    ],
+    "uiAlias": "nous",
+    "noAuthFree": false
   },
   {
     "id": "deepseek-web",
@@ -8237,7 +8762,12 @@
         "id": "DeepSeek-Search",
         "name": "DeepSeek Search"
       }
-    ]
+    ],
+    "aliases": [
+      "ds-web"
+    ],
+    "uiAlias": "deepseek-web",
+    "noAuthFree": false
   },
   {
     "id": "gemini-web",
@@ -8267,7 +8797,12 @@
         ],
         "kind": "image"
       }
-    ]
+    ],
+    "aliases": [
+      "gweb"
+    ],
+    "uiAlias": "gemini-web",
+    "noAuthFree": false
   },
   {
     "id": "muse-web",
@@ -8299,7 +8834,12 @@
         ],
         "kind": "video"
       }
-    ]
+    ],
+    "aliases": [
+      "mu"
+    ],
+    "uiAlias": "muse-web",
+    "noAuthFree": false
   },
   {
     "id": "chatgpt-web",
@@ -8354,7 +8894,12 @@
         ],
         "kind": "image"
       }
-    ]
+    ],
+    "aliases": [
+      "cg"
+    ],
+    "uiAlias": "chatgpt-web",
+    "noAuthFree": false
   },
   {
     "id": "veoaifree-web",
@@ -8390,7 +8935,10 @@
         ],
         "kind": "image"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "veo-free",
+    "noAuthFree": false
   },
   {
     "id": "uc-web",
@@ -8912,7 +9460,10 @@
         ],
         "kind": "video"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "uc",
+    "noAuthFree": false
   },
   {
     "id": "runcrate",
@@ -8945,7 +9496,12 @@
         "id": "openai/gpt-oss-120b",
         "name": "gpt-oss 120B"
       }
-    ]
+    ],
+    "aliases": [
+      "rc"
+    ],
+    "uiAlias": "rc",
+    "noAuthFree": false
   },
   {
     "id": "nace",
@@ -8964,7 +9520,12 @@
         "name": "Drex 2.0",
         "kind": "systemone"
       }
-    ]
+    ],
+    "aliases": [
+      "drex"
+    ],
+    "uiAlias": "nace",
+    "noAuthFree": false
   },
   {
     "id": "orcarouter",
@@ -8997,7 +9558,12 @@
         "id": "deepseek/deepseek-chat",
         "name": "DeepSeek Chat"
       }
-    ]
+    ],
+    "aliases": [
+      "orca"
+    ],
+    "uiAlias": "orcarouter",
+    "noAuthFree": false
   },
   {
     "id": "totu-ai",
@@ -9018,6 +9584,9 @@
         "id": "google/gemini-3.6-flash",
         "name": "Gemini 3.6 Flash"
       }
-    ]
+    ],
+    "aliases": [],
+    "uiAlias": "totu-ai",
+    "noAuthFree": false
   }
 ]
