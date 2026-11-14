@@ -114,7 +114,7 @@ mod tool_tests {
     }
 }
 
-pub const CLAUDE_CLI_VERSION: &str = "2.1.280";
+pub const CLAUDE_CLI_VERSION: &str = "2.1.322";
 const CC_ENTRYPOINT: &str = "sdk-cli";
 
 pub const CLAUDE_CLI_BETA: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28";
@@ -179,6 +179,17 @@ pub fn cli_beta_header() -> &'static str {
     CLAUDE_CLI_BETA
 }
 
+pub fn selected_beta(model: &str, body: &Value) -> String {
+    let mut flags: Vec<&str> = CLAUDE_CLI_BETA.split(',').filter(|flag| {
+        !matches!(*flag, "advanced-tool-use-2025-11-20" | "effort-2025-11-24")
+            && !(*flag == "redact-thinking-2026-02-12" && body["thinking"]["display"] == "summarized")
+    }).collect();
+    if model.starts_with("claude-opus") || model.starts_with("claude-sonnet") {
+        flags.extend(["advanced-tool-use-2025-11-20", "effort-2025-11-24"]);
+    }
+    flags.join(",")
+}
+
 pub fn cli_user_agent() -> String {
     format!("claude-cli/{CLAUDE_CLI_VERSION} (external, sdk-cli)")
 }
@@ -200,7 +211,7 @@ mod tests {
         let mut body = json!({"model": "claude-haiku-5-5", "system": "be brief", "messages": []});
         apply_cloaking(&mut body, FAKE_OAT, "claude:sess-1");
         let sys = body["system"].as_array().unwrap();
-        assert!(sys[0]["text"].as_str().unwrap().starts_with("x-anthropic-billing-header: cc_version=2.1.280."));
+        assert!(sys[0]["text"].as_str().unwrap().starts_with("x-anthropic-billing-header: cc_version=2.1.322."));
         assert_eq!(sys[1]["text"], "be brief");
         let uid: Value = serde_json::from_str(body["metadata"]["user_id"].as_str().unwrap()).unwrap();
         assert_eq!(uid["session_id"], "sess-1");
@@ -226,6 +237,9 @@ mod tests {
     #[test]
     fn beta_header_matches_cli_fingerprint() {
         assert!(cli_beta_header().starts_with("claude-code-20250219,oauth-2025-04-20,"));
-        assert_eq!(cli_user_agent(), "claude-cli/2.1.280 (external, sdk-cli)");
+        assert_eq!(cli_user_agent(), "claude-cli/2.1.322 (external, sdk-cli)");
+        assert_eq!(selected_beta("claude-haiku-5-5", &json!({})), "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28");
+        assert!(selected_beta("claude-opus-5", &json!({})).ends_with("advanced-tool-use-2025-11-20,effort-2025-11-24"));
+        assert!(!selected_beta("claude-sonnet-5", &json!({"thinking":{"display":"summarized"}})).contains("redact-thinking"));
     }
 }

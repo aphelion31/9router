@@ -312,6 +312,9 @@ pub async fn execute(
     } else {
         reqwest::Url::parse(endpoint).context("invalid upstream URL")?
     };
+    if provider.id == "claude" && url.query().is_none() {
+        url.set_query(Some("beta=true"));
+    }
     let github_claude =
         provider.id == "github" && request.model.to_ascii_lowercase().contains("claude");
     let tokenplan_claude = provider.id == "xiaomi-tokenplan" && request.model.ends_with("-claude");
@@ -426,6 +429,7 @@ pub async fn execute(
         builder = builder.header("anthropic-version", "2023-06-01");
     }
     if provider.id == "antigravity" {
+        builder = builder.header("accept-language", "*").header("sec-fetch-mode", "cors");
         for (name, value) in antigravity::prepare(
             &request.model,
             &mut request.body,
@@ -507,9 +511,20 @@ pub async fn execute(
         // Upstream claude registry: OAuth tokens ride the Claude CLI fingerprint.
         if provider.id == "claude" && request.access_token.as_deref().is_some_and(crate::services::claude_cloak::is_oauth_token) {
             builder = builder
-                .header("anthropic-beta", crate::services::claude_cloak::cli_beta_header())
+                .header("anthropic-beta", crate::services::claude_cloak::selected_beta(&request.model, &request.body))
                 .header("user-agent", crate::services::claude_cloak::cli_user_agent())
                 .header("x-app", "cli")
+                .header("x-stainless-helper-method", "stream")
+                .header("x-stainless-retry-count", "0")
+                .header("x-stainless-runtime-version", "v24.14.0")
+                .header("x-stainless-package-version", "0.80.0")
+                .header("x-stainless-runtime", "node")
+                .header("x-stainless-lang", "js")
+                .header("x-stainless-arch", "arm64")
+                .header("x-stainless-os", "MacOS")
+                .header("x-stainless-timeout", "600")
+                .header("accept-language", "*")
+                .header("sec-fetch-mode", "cors")
                 .header("anthropic-dangerous-direct-browser-access", "true");
         }
     } else if format == "gemini" {
@@ -540,6 +555,13 @@ pub async fn execute(
         let seed = request.body["messages"].as_array().and_then(|m| m.first()).map(Value::to_string).unwrap_or_default();
         let session = crate::services::claude_cloak::session_seed(&seed);
         crate::services::claude_cloak::apply_cloaking(&mut request.body, token, &session);
+    }
+    if provider.id == "claude" && request.access_token.as_deref().is_some_and(crate::services::claude_cloak::is_oauth_token)
+        && let Some(user_id) = request.body["metadata"]["user_id"].as_str()
+        && let Ok(metadata) = serde_json::from_str::<Value>(user_id)
+        && let Some(session) = metadata["session_id"].as_str()
+    {
+        builder = builder.header("x-claude-code-session-id", session);
     }
     let outgoing = builder.body(serde_json::to_vec(&request.body)?).build()?;
     let mut attempts = 0;
@@ -893,6 +915,26 @@ mod tests {
             .unwrap_err();
             assert!(error.to_string().contains("Unsupported"));
         }
+    }
+
+    #[tokio::test]
+    async fn claude_oauth_wire_fingerprint() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1/messages", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move { axum::serve(listener, Router::new().fallback(post(mock))).await.unwrap() });
+        let response = execute(&reqwest::Client::new(), ExecutorRequest {
+            provider: "claude".into(), model: "claude-haiku-5-5".into(),
+            body: json!({"model":"claude-haiku-5-5","messages":[{"role":"user","content":"pong"}]}),
+            access_token: Some("sk-ant-oat01-SYNTHETIC".into()), base_url: Some(url), ..Default::default()
+        }).await.unwrap();
+        let result: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(result["uri"], "/v1/messages?beta=true");
+        let headers = &result["headers"];
+        for (key, value) in [("user-agent", "claude-cli/2.1.322 (external, sdk-cli)"), ("x-stainless-helper-method", "stream"), ("x-stainless-retry-count", "0"), ("x-stainless-runtime-version", "v24.14.0"), ("x-stainless-package-version", "0.80.0"), ("x-stainless-runtime", "node"), ("x-stainless-lang", "js"), ("x-stainless-arch", "arm64"), ("x-stainless-os", "MacOS"), ("x-stainless-timeout", "600"), ("accept-language", "*"), ("sec-fetch-mode", "cors")] { assert_eq!(headers[key], value, "{key}"); }
+        let metadata: Value = serde_json::from_str(result["body"]["metadata"]["user_id"].as_str().unwrap()).unwrap();
+        assert_eq!(headers["x-claude-code-session-id"], metadata["session_id"]);
+        assert_eq!(headers["anthropic-beta"], crate::services::claude_cloak::selected_beta("claude-haiku-5-5", &result["body"]));
+        task.abort();
     }
 
     #[tokio::test]
@@ -1708,7 +1750,7 @@ mod tests {
             assert_eq!(body["userAgent"], "antigravity");
             assert!(body["requestId"].as_str().unwrap().starts_with("agent/"));
             assert!(body.get("requestType").is_none());
-            assert_eq!(body["request"], json!({"contents":[{"role":"user","parts":[{"text":"ping"}]}],"generationConfig":{"maxOutputTokens":20},"sessionId":"123"}));
+            assert_eq!(body["request"], json!({"contents":[{"role":"user","parts":[{"text":"ping"}]}],"generationConfig":{"maxOutputTokens":64000,"thinkingConfig":{"thinkingLevel":"high","includeThoughts":true}},"sessionId":"123"}));
         }
         task.abort();
     }
