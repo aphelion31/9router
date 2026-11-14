@@ -597,13 +597,16 @@ impl ChatHooks for Hooks {
                 status: r.status as i64,
                 latency_ms: r.latency_ms as i64,
                 request_id: uuid_like(),
+                meta: Value::Null,
             };
-            match crate::db::usage_insert(&db, &row) {
+            let tokens = crate::services::pricing::TokenCounts { prompt_tokens: row.prompt_tokens, completion_tokens: row.completion_tokens, cached_tokens: r.cached_tokens as i64, cache_creation_tokens: r.cache_creation_tokens as i64, reasoning_tokens: r.reasoning_tokens as i64 };
+            match crate::db::usage_record(&db, &row, &tokens, None) {
                 Err(err) => tracing::warn!("usage insert failed: {err}"),
-                Ok(()) => crate::services::notify::emit(self.state.db.clone(), "usage", json!({
+                Ok(false) => {}
+                Ok(true) => crate::services::notify::emit(self.state.db.clone(), "usage", json!({
                     "provider": row.provider, "model": row.model, "connectionId": row.connection_id,
                     "apiKeyMasked": null, "endpoint": row.endpoint, "promptTokens": row.prompt_tokens,
-                    "completionTokens": row.completion_tokens, "cost": 0, "status": row.status.to_string(), "requestId": row.request_id
+                    "completionTokens": row.completion_tokens, "cost": crate::services::pricing::cost_for(&db, &row.provider, &row.model, &tokens), "status": row.status.to_string(), "requestId": row.request_id
                 })),
             }
             let settings = crate::db::settings_get(&db).unwrap_or_default();
@@ -1257,6 +1260,24 @@ mod tests {
         let response = make_router(db, None).oneshot(Request::get("/v1/models").header("authorization", "Bearer quota-secret").body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     }
+    // Upstream quota: sums usageHistory.cost per key within windowHours and blocks at costLimit.
+    // A priced modality row (here an embeddings call, the same writer) must move that sum.
+    #[test]
+    fn cost_quota_counts_priced_modality_usage() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&db).unwrap();
+        db.execute("INSERT INTO apiKeys(id,key,name,createdAt) VALUES('cq-key','cq-secret','cost-key','now')", []).unwrap();
+        crate::db::kv_set(&db, "keyQuotas", "cq-key", r#"{"enabled":true,"limit":1000000000,"windowHours":24,"costLimit":0.005}"#).unwrap();
+        assert!(quota_verdict(&db, "cq-key", "cq-secret").is_none(), "no spend yet");
+        // gpt-4o 1000 prompt / 500 completion = $0.0075 upstream, over the $0.005 cap.
+        let row = crate::db::UsageRow { provider: "openai".into(), model: "gpt-4o".into(), api_key: Some("cq-key".into()), endpoint: Some("/v1/embeddings".into()), prompt_tokens: 1000, completion_tokens: 500, status: 200, request_id: "cq-1".into(), ..Default::default() };
+        let tokens = crate::services::pricing::TokenCounts { prompt_tokens: 1000, completion_tokens: 500, ..Default::default() };
+        assert!(crate::db::usage_record(&db, &row, &tokens, None).unwrap());
+        let v = quota_verdict(&db, "cq-key", "cq-secret").expect("cost quota trips");
+        assert_eq!(v["costBlocked"], true);
+        assert!((v["costUsed"].as_f64().unwrap() - 0.0075).abs() < 1e-12);
+    }
+
     #[tokio::test]
     async fn key_limit_blocks_until_response_body_is_dropped() {
         let db = Connection::open_in_memory().unwrap();

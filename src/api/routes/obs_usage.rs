@@ -1366,7 +1366,7 @@ mod tests {
         let (app, db) = test_app();
         {
             let conn = db.lock().unwrap();
-            crate::db::usage_insert(
+            crate::db::usage_record(
                 &conn,
                 &crate::db::UsageRow {
                     provider: "openai".into(),
@@ -1377,6 +1377,8 @@ mod tests {
                     request_id: "r1".into(),
                     ..Default::default()
                 },
+                &crate::services::pricing::TokenCounts { prompt_tokens: 10, completion_tokens: 5, ..Default::default() },
+                None,
             )
             .unwrap();
         }
