@@ -404,14 +404,12 @@ fn claude_body_to_openai(body: &Value) -> Value {
         }]
     });
 
-    if let Some(u) = body.get("usage") {
-        let input_tokens = u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-        let output_tokens = u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-        out["usage"] = json!({
-            "prompt_tokens": input_tokens,
-            "completion_tokens": output_tokens,
-            "total_tokens": input_tokens + output_tokens,
-        });
+    // sseToJsonHandler.js: input_tokens excludes cache on Anthropic, so fold cache
+    // read/creation into prompt_tokens and expose them in prompt_tokens_details.
+    if let Some(u) = body.get("usage")
+        && let Some(usage) = crate::translator::concerns::to_openai_usage(FORMAT_CLAUDE, Some(u))
+    {
+        out["usage"] = usage;
     }
     out
 }
@@ -1386,5 +1384,24 @@ mod header_tests {
         // The Bytes branch must not fall back to last-line parsing (which loses output).
         let last_line = parse_sse_text_to_last_json(sse).unwrap();
         assert!(last_line.get("output").is_none());
+    }
+}
+
+#[cfg(test)]
+mod usage_cache_tests {
+    use super::*;
+
+    #[test]
+    fn claude_non_stream_prompt_tokens_include_cache() {
+        // sseToJsonHandler.js: prompt = input + cache_read + cache_creation.
+        let out = claude_body_to_openai(&json!({
+            "id":"m","type":"message","role":"assistant","content":[{"type":"text","text":"pong"}],
+            "stop_reason":"end_turn",
+            "usage":{"input_tokens":6,"cache_read_input_tokens":2000,"cache_creation_input_tokens":560,"output_tokens":4}
+        }));
+        assert_eq!(out["usage"]["prompt_tokens"], 2566);
+        assert_eq!(out["usage"]["total_tokens"], 2570);
+        assert_eq!(out["usage"]["prompt_tokens_details"]["cached_tokens"], 2000);
+        assert_eq!(out["usage"]["prompt_tokens_details"]["cache_creation_tokens"], 560);
     }
 }
