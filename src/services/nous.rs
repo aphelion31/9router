@@ -1,6 +1,5 @@
 use serde_json::{Value, json};
 
-pub const NOUS_INFERENCE_BASE_URL: &str = "https://inference-api.nousresearch.com/v1";
 pub const NOUS_VALIDATION_MODEL: &str = "poolside/laguna-xs-2.1:free";
 
 fn models(payload: &Value) -> &[Value] {

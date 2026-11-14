@@ -679,26 +679,11 @@ async fn maintenance_run(State(s): State<AppState>) -> Response {
 }
 
 fn read_notify_config(conn: &Connection) -> Value {
-    crate::db::kv_get(conn, "notify", "config")
-        .ok()
-        .flatten()
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .unwrap_or_else(|| {
-            json!({
-                "telegram": { "enabled": false, "botToken": "", "chatId": "" },
-                "webhook": { "enabled": false, "url": "", "secret": "" },
-                "webhookEvents": { "usage": false, "quota": false, "error": false, "maskCredentials": true }
-            })
-        })
+    crate::services::notify::read_config(conn)
 }
 
 fn normalize_webhook_events(raw: &Value) -> Value {
-    json!({
-        "usage": raw["usage"].as_bool().unwrap_or(false),
-        "quota": raw["quota"].as_bool().unwrap_or(false),
-        "error": raw["error"].as_bool().unwrap_or(false),
-        "maskCredentials": raw["maskCredentials"].as_bool().unwrap_or(true),
-    })
+    crate::services::notify::normalize_webhook_events(raw)
 }
 
 fn notify_status(cfg: &Value) -> Value {
@@ -810,41 +795,14 @@ async fn notifications_test(State(s): State<AppState>) -> Response {
         };
         read_notify_config(&db)
     };
-    let mut results = Vec::new();
-    if cfg["telegram"]["enabled"] == true {
-        let tok = cfg["telegram"]["botToken"].as_str().unwrap_or("");
-        let chat = cfg["telegram"]["chatId"].as_str().unwrap_or("");
-        let url = format!("https://api.telegram.org/bot{tok}/sendMessage");
-        let ok = s
-            .executor
-            .0
-            .post(url)
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(
-                json!({ "chat_id": chat, "text": "Test notification from 9Router Pro" })
-                    .to_string(),
-            )
-            .send()
-            .await
-            .is_ok_and(|r| r.status().is_success());
-        results.push(json!({ "channel": "telegram", "ok": ok }));
-    }
-    if cfg["webhook"]["enabled"] == true {
-        let url = cfg["webhook"]["url"].as_str().unwrap_or("");
-        let ok = s
-            .executor
-            .0
-            .post(url)
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(
-                json!({ "event": "test", "title": "Test notification from 9Router Pro" })
-                    .to_string(),
-            )
-            .send()
-            .await
-            .is_ok_and(|r| r.status().is_success());
-        results.push(json!({ "channel": "webhook", "ok": ok }));
-    }
+    let results = json!({
+        "telegram": if cfg["telegram"]["enabled"] == true { "queued" } else { "skipped" },
+        "webhook": if cfg["webhook"]["enabled"] == true { "queued" } else { "skipped" },
+    });
+    let client = s.executor.0.clone();
+    tokio::spawn(async move {
+        let _ = crate::services::notify::send_notification(&client, &cfg, "test", json!({"title":"Test notification from 9Router Pro"})).await;
+    });
     Json(json!({ "results": results })).into_response()
 }
 

@@ -767,6 +767,12 @@ pub(crate) async fn live_models(provider: &str, conn: &Value, force: bool) -> Op
     let api_key = conn["apiKey"].as_str().filter(|s| !s.is_empty()).unwrap_or("");
     let token = if access.is_empty() { api_key } else { access };
     match provider {
+        "nous" => {
+            let response = client.get(crate::services::nous::NOUS_MODELS_URL).send().await.ok()?;
+            if !response.status().is_success() { return None; }
+            let payload = serde_json::from_str::<Value>(&response.text().await.ok()?).ok()?;
+            Some(crate::services::nous::normalize_nous_models(&payload))
+        }
         "qoder" | "qoder-cn" => {
             let catalog = qoder_models::resolve_qoder_models(conn, force, Some(qoder_models::qoder_region_of(Some(provider)))).await?;
             Some(if force { catalog.models } else { qoder_models::routable_qoder_models_from_catalog(&catalog) })
@@ -932,6 +938,15 @@ async fn run_connection_test(conn: &Value, model_override: Option<&str>) -> (boo
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .unwrap_or_default();
+    if provider == "nous" && model_override.is_none() {
+        let key = api_key.as_deref().filter(|s| !s.is_empty()).or(access_token.as_deref()).unwrap_or("");
+        let (url, probe) = crate::services::nous::nous_api_key_probe(key);
+        return match client.post(url).bearer_auth(key).header("Content-Type", "application/json").body(probe["body"].to_string()).send().await {
+            Ok(response) if crate::services::nous::is_nous_api_key_accepted(response.status().as_u16()) => (true, None, "ok"),
+            Ok(response) => (false, Some(crate::services::nous::nous_api_key_validation_error(response.status().as_u16())), "auth"),
+            Err(e) => (false, Some(e.to_string()), "network"),
+        };
+    }
     if let Some(identity) = crate::services::web_identity::probe(
         &client, provider, api_key.as_deref().or(access_token.as_deref()).unwrap_or("")
     ).await {
@@ -1402,12 +1417,13 @@ async fn suggested_models(Query(q): Query<HashMap<String, String>>) -> Response 
         .or_else(|| parsed.as_array().cloned())
         .unwrap_or_else(|| {
             if parsed.is_object() {
-                vec![parsed]
+                vec![parsed.clone()]
             } else {
                 Vec::new()
             }
         });
     let data: Vec<Value> = match filter_type.as_str() {
+        "nous-free" => crate::services::nous::normalize_nous_free_models(&parsed),
         "openrouter-free" => raw_arr
             .into_iter()
             .filter(|m| {
@@ -1601,6 +1617,18 @@ async fn validate_provider(State(s): State<AppState>, Json(body): Json<Value>) -
         .timeout(std::time::Duration::from_secs(8))
         .build()
         .unwrap_or_default();
+    if provider == "nous" {
+        let (url, probe) = crate::services::nous::nous_api_key_probe(api_key);
+        return match client.post(url).bearer_auth(api_key).header("Content-Type", "application/json").body(probe["body"].to_string()).send().await {
+            Ok(response) => {
+                let status = response.status().as_u16();
+                let valid = crate::services::nous::is_nous_api_key_accepted(status);
+                if valid { Json(json!({"valid": true, "status": status})).into_response() }
+                else { Json(json!({"valid": false, "status": status, "error": crate::services::nous::nous_api_key_validation_error(status)})).into_response() }
+            }
+            Err(e) => Json(json!({"valid": false, "error": e.to_string()})).into_response(),
+        };
+    }
     let req = crate::executors::ExecutorRequest {
         provider,
         model,

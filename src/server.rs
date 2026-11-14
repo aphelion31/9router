@@ -248,6 +248,24 @@ async fn api_auth(
     let Some(key_id) = key.and_then(|key| s.db.lock().ok().and_then(|db| db.query_row("SELECT id FROM apiKeys WHERE key=?1 AND isActive=1 AND (expiresAt IS NULL OR expiresAt > strftime('%Y-%m-%dT%H:%M:%fZ','now')) AND COALESCE(accessRestricted,0)=0", [key], |r| r.get::<_, String>(0)).optional().ok().flatten())) else {
         return unauthorized();
     };
+    let quota = s.db.lock().ok().and_then(|db| {
+        let raw = crate::db::kv_get(&db, "keyQuotas", &key_id).ok()??;
+        let q: Value = serde_json::from_str(&raw).ok()?;
+        if q["enabled"] == false { return None; }
+        let limit = q["limit"].as_i64().filter(|n| *n > 0)?;
+        let hours = q["windowHours"].as_i64().unwrap_or(24).clamp(1, 8760);
+        let modifier = format!("-{hours} hours");
+        let (used, cost): (i64, f64) = db.query_row("SELECT COALESCE(SUM(COALESCE(promptTokens,0)+COALESCE(completionTokens,0)),0), COALESCE(SUM(cost),0) FROM usageHistory WHERE (apiKey=?1 OR apiKey=?2) AND timestamp >= strftime('%Y-%m-%dT%H:%M:%fZ','now',?3)", rusqlite::params![key_id, key.unwrap_or(""), modifier], |r| Ok((r.get(0)?, r.get(1)?))).ok()?;
+        let cost_limit = q["costLimit"].as_f64().filter(|n| *n > 0.0);
+        let cost_blocked = cost_limit.is_some_and(|n| cost >= n);
+        if used < limit && !cost_blocked { return None; }
+        let name: Option<String> = db.query_row("SELECT name FROM apiKeys WHERE id=?1", [&key_id], |r| r.get(0)).ok().flatten();
+        Some(json!({"keyName":name,"used":used,"limit":limit,"windowHours":hours,"costBlocked":cost_blocked,"costUsed":cost,"costLimit":cost_limit}))
+    });
+    if let Some(quota) = quota {
+        crate::services::notify::emit(s.db.clone(), "quota", quota);
+        return (StatusCode::TOO_MANY_REQUESTS, Json(json!({"error":"API key quota exceeded"}))).into_response();
+    }
     // Per-key rpm/rph/rpd/concurrency admission. Lookup errors fail open.
     let limits = s
         .db
@@ -292,6 +310,9 @@ async fn api_auth(
         None => None,
     };
     let response = next.run(request).await;
+    if response.status().is_client_error() || response.status().is_server_error() {
+        crate::services::notify::emit(s.db.clone(), "error", json!({"status": response.status().as_u16()}));
+    }
     let Some(slot) = slot else { return response };
     let (parts, body) = response.into_parts();
     struct GuardedBody {
@@ -424,8 +445,13 @@ impl ChatHooks for Hooks {
                 latency_ms: r.latency_ms as i64,
                 request_id: uuid_like(),
             };
-            if let Err(err) = crate::db::usage_insert(&db, &row) {
-                tracing::warn!("usage insert failed: {err}");
+            match crate::db::usage_insert(&db, &row) {
+                Err(err) => tracing::warn!("usage insert failed: {err}"),
+                Ok(()) => crate::services::notify::emit(self.state.db.clone(), "usage", json!({
+                    "provider": row.provider, "model": row.model, "connectionId": row.connection_id,
+                    "apiKeyMasked": null, "endpoint": row.endpoint, "promptTokens": row.prompt_tokens,
+                    "completionTokens": row.completion_tokens, "cost": 0, "status": row.status.to_string(), "requestId": row.request_id
+                })),
             }
             let settings = crate::db::settings_get(&db).unwrap_or_default();
             let enabled = settings.get("observabilityEnabled").or_else(|| settings.get("enableRequestDetails")).and_then(Value::as_bool).unwrap_or(true);
@@ -657,6 +683,16 @@ mod tests {
         let second = hooks.get_credentials("opencode", "test", &excluded).await.unwrap();
         let urls = [first.provider_specific_data["connectionProxyUrl"].as_str().unwrap(), second.provider_specific_data["connectionProxyUrl"].as_str().unwrap()];
         assert!(urls.contains(&"http://a:8080") && urls.contains(&"http://b:8080"));
+    }
+    #[tokio::test]
+    async fn configured_quota_blocks_exhausted_key() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&db).unwrap();
+        db.execute("INSERT INTO apiKeys(id,key,name,createdAt) VALUES('quota-key','quota-secret','test','now')", []).unwrap();
+        crate::db::kv_set(&db, "keyQuotas", "quota-key", r#"{"enabled":true,"limit":5,"windowHours":24}"#).unwrap();
+        db.execute("INSERT INTO usageHistory(timestamp,apiKey,promptTokens,completionTokens) VALUES(strftime('%Y-%m-%dT%H:%M:%fZ','now'),'quota-key',3,2)", []).unwrap();
+        let response = make_router(db, None).oneshot(Request::get("/v1/models").header("authorization", "Bearer quota-secret").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     }
     #[tokio::test]
     async fn key_limit_blocks_until_response_body_is_dropped() {
