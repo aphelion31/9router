@@ -49,12 +49,13 @@ pub(super) async fn execute(
     endpoint: &str,
     body: &mut Value,
     stream: bool,
+    proxy: Option<&Value>,
 ) -> anyhow::Result<reqwest::Response> {
     let client_id =
         std::env::var("MIMO_FREE_CLIENT_ID").context("MIMO_FREE_CLIENT_ID must be configured")?;
     let bootstrap = std::env::var("MIMO_FREE_BOOTSTRAP_URL")
         .unwrap_or_else(|_| "https://api.xiaomimimo.com/api/free-ai/bootstrap".into());
-    execute_with(client, endpoint, body, stream, &client_id, &bootstrap).await
+    execute_with(client, endpoint, body, stream, &client_id, &bootstrap, proxy).await
 }
 
 async fn execute_with(
@@ -64,6 +65,7 @@ async fn execute_with(
     stream: bool,
     client_id: &str,
     bootstrap: &str,
+    proxy: Option<&Value>,
 ) -> anyhow::Result<reqwest::Response> {
     if let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) {
         if !messages.iter().any(|m| {
@@ -80,14 +82,12 @@ async fn execute_with(
         let token = if let Some(cached) = get_cached_jwt(&cache_key) {
             cached
         } else {
-            let response = client
+            let builder = client
                 .post(bootstrap)
                 .header("user-agent", UA)
                 .header("content-type", "application/json")
-                .body(json!({"client":client_id}).to_string())
-                .send()
-                .await?
-                .error_for_status()?;
+                .body(json!({"client":client_id}).to_string());
+            let response = super::send_request(client, builder.build()?, proxy).await?.error_for_status()?;
             let value: Value = serde_json::from_slice(&response.bytes().await?)?;
             let tok = value
                 .get("jwt")
@@ -97,7 +97,7 @@ async fn execute_with(
             set_cached_jwt(cache_key.clone(), tok.clone());
             tok
         };
-        let response = client
+        let builder = client
             .post(endpoint)
             .header("user-agent", UA)
             .header("x-mimo-source", "mimocode-cli-free")
@@ -112,9 +112,8 @@ async fn execute_with(
             )
             .header("content-type", "application/json")
             .bearer_auth(&token)
-            .body(serde_json::to_vec(body)?)
-            .send()
-            .await?;
+            .body(serde_json::to_vec(body)?);
+        let response = super::send_request(client, builder.build()?, proxy).await?;
         if attempt == 1 || !matches!(response.status().as_u16(), 401 | 403) {
             return Ok(response);
         }
@@ -127,6 +126,21 @@ async fn execute_with(
 mod tests {
     use super::*;
     use axum::{Router, body::Bytes, http::HeaderMap, routing::post};
+    #[tokio::test]
+    async fn mimo_bootstrap_and_chat_use_relay() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let relay = format!("http://{}/relay", listener.local_addr().unwrap());
+        let app = Router::new().route("/relay", post(|headers: HeaderMap| async move {
+            assert_eq!(headers["x-relay-target"], "https://example.com");
+            if headers["x-relay-path"] == "/bootstrap" { json!({"jwt":"relay-token"}).to_string() }
+            else { assert_eq!(headers["x-relay-path"], "/chat"); assert_eq!(headers["authorization"], "Bearer relay-token"); "ok".to_string() }
+        }));
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let proxy = json!({"vercelRelayUrl":relay});
+        let response = execute_with(&reqwest::Client::new(), "https://example.com/chat", &mut json!({"messages":[]}), true, "relay-test-client", "https://example.com/bootstrap", Some(&proxy)).await.unwrap();
+        assert_eq!(response.text().await.unwrap(), "ok");
+        task.abort();
+    }
     #[tokio::test]
     async fn mimo_free_mock_request() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -153,6 +167,7 @@ mod tests {
             true,
             "test-client",
             &format!("{base}/bootstrap"),
+            None,
         )
         .await
         .unwrap();

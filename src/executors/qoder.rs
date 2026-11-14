@@ -952,7 +952,8 @@ pub async fn execute(
         .strip_prefix("qoder/")
         .unwrap_or(&request.model);
     let credentials = json!({"accessToken": auth_token, "provider": request.provider, "providerSpecificData": psd});
-    let custom = if request.base_url.is_none() {
+    let relay = psd.and_then(|d| d["vercelRelayUrl"].as_str()).is_some_and(|s| !s.trim().is_empty());
+    let custom = if request.base_url.is_none() && !relay {
         match crate::services::qoder_models::get_qoder_model_config(&credentials, qoder_key, false).await {
             Some(config) => Some(config),
             None => crate::services::qoder_models::get_qoder_model_config(&credentials, qoder_key, true).await,
@@ -991,7 +992,7 @@ pub async fn execute(
     for (k, v) in cosy_headers {
         builder = builder.header(k, v);
     }
-    Ok(builder.send().await?)
+    super::send_request(client, builder.build()?, request.provider_specific_data.as_ref()).await
 }
 
 #[cfg(test)]

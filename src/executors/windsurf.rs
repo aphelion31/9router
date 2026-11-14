@@ -397,7 +397,7 @@ pub(super) async fn execute(
     if !api_key.is_empty() {
         builder = builder.header(reqwest::header::AUTHORIZATION, format!("Bearer {api_key}"));
     }
-    Ok(builder.send().await?)
+    super::send_request(client, builder.build()?, request.provider_specific_data.as_ref()).await
 }
 
 fn unix_secs() -> u64 {

@@ -22,16 +22,15 @@ pub(super) async fn discover_project(
     client: &reqwest::Client,
     access_token: &str,
     base_url: Option<&str>,
+    proxy: Option<&Value>,
 ) -> Option<String> {
     let base = base_url
         .unwrap_or("https://cloudresourcemanager.googleapis.com")
         .trim_end_matches('/');
-    let res = client
+    let builder = client
         .get(format!("{base}/v1/projects?filter=lifecycleState%3AACTIVE"))
-        .bearer_auth(access_token)
-        .send()
-        .await
-        .ok()?;
+        .bearer_auth(access_token);
+    let res = super::send_request(client, builder.build().ok()?, proxy).await.ok()?;
     if !res.status().is_success() {
         return None;
     }
@@ -48,6 +47,7 @@ pub(super) async fn discover_project(
 pub(super) async fn refresh(
     client: &reqwest::Client,
     key: Option<&str>,
+    proxy: Option<&Value>,
 ) -> anyhow::Result<Option<(String, Option<String>)>> {
     let Some(key) = key.filter(|s| s.trim_start().starts_with('{')) else {
         return Ok(None);
@@ -109,15 +109,14 @@ pub(super) async fn refresh(
         }
         _ => bail!("unsupported Vertex credential type"),
     }
-    let bytes = client
+    let builder = client
         .post(token_uri)
         .header(
             reqwest::header::CONTENT_TYPE,
             "application/x-www-form-urlencoded",
         )
-        .body(form.query().unwrap_or_default().to_owned())
-        .send()
-        .await?
+        .body(form.query().unwrap_or_default().to_owned());
+    let bytes = super::send_request(client, builder.build()?, proxy).await?
         .error_for_status()?
         .bytes()
         .await?;
@@ -138,7 +137,7 @@ pub(super) async fn refresh(
         .and_then(Value::as_str)
         .map(str::to_owned);
     if project.is_none() {
-        project = discover_project(client, &token, None).await;
+        project = discover_project(client, &token, None, proxy).await;
     }
     if let Ok(mut guard) = cache.lock() {
         guard.insert(key.to_string(), (token.clone(), project.clone(), now + 3000));
@@ -227,6 +226,7 @@ mod tests {
         let result = super::refresh(
             &reqwest::Client::new(),
             Some(r#"{"type":"authorized_user"}"#),
+            None,
         )
         .await;
         assert!(result.unwrap_err().to_string().contains("refresh_token"));
