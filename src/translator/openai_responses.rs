@@ -374,12 +374,12 @@ pub fn openai_to_openai_responses_request(
         }
     }
 
-    if !system_parts.is_empty() {
-        result.insert(
-            "instructions".to_string(),
-            Value::String(system_parts.join("\n\n")),
-        );
-    }
+    // openai-responses.js: with no system message instructions stays "" (filled later by the
+    // executor), so system-prompt injectors merge into one instructions string.
+    result.insert(
+        "instructions".to_string(),
+        Value::String(system_parts.join("\n\n")),
+    );
     result.insert("input".to_string(), Value::Array(input_items));
 
     if let Some(tools) = body.get("tools").and_then(|v| v.as_array()) {

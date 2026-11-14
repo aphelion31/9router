@@ -1,3 +1,5 @@
+/// Upstream open-sse/config/codexInstructions.js, verbatim.
+const CODEX_DEFAULT_INSTRUCTIONS: &str = include_str!("codex_default_instructions.txt");
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 
@@ -189,7 +191,8 @@ pub fn prepare(
     obj.insert("stream".into(), json!(true));
     obj.insert("store".into(), json!(false));
     if lite {
-        let instructions = obj.get("instructions").and_then(Value::as_str).filter(|s| !s.trim().is_empty()).map(str::to_owned);
+        // codex.js: blank instructions fall back to CODEX_DEFAULT_INSTRUCTIONS in the lite prefix.
+        let instructions = Some(obj.get("instructions").and_then(Value::as_str).filter(|s| !s.trim().is_empty()).unwrap_or(CODEX_DEFAULT_INSTRUCTIONS).to_owned());
         let tools = obj.get("tools").and_then(Value::as_array).cloned().unwrap_or_default();
         let input = obj.entry("input").or_insert_with(|| json!([]));
         if let Some(input) = input.as_array_mut() {
@@ -208,7 +211,9 @@ pub fn prepare(
             reasoning.insert("context".into(), json!("all_turns"));
         }
     } else {
-        obj.entry("instructions").or_insert_with(|| json!("You are a helpful assistant."));
+        if obj.get("instructions").and_then(Value::as_str).is_none_or(|s| s.trim().is_empty()) {
+            obj.insert("instructions".into(), json!(CODEX_DEFAULT_INSTRUCTIONS));
+        }
     }
 
     if obj.get("reasoning").is_some_and(Value::is_object) {
@@ -292,7 +297,7 @@ mod tests {
 
         assert_eq!(body["stream"], true);
         assert_eq!(body["store"], false);
-        assert_eq!(body["instructions"], "You are a helpful assistant.");
+        assert_eq!(body["instructions"], CODEX_DEFAULT_INSTRUCTIONS);
         assert!(body.get("temperature").is_none());
         assert!(body.get("tool_choice").is_none());
         assert_eq!(body["input"].as_array().unwrap().len(), 2);
