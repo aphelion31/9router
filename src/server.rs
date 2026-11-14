@@ -466,9 +466,9 @@ fn rand_index(n: usize) -> usize {
 }
 
 /// Per-request chat hooks. `api_key_id` is the `apiKeys.id` of the caller, if known.
-struct Hooks {
-    state: AppState,
-    api_key_id: Option<String>,
+pub(crate) struct Hooks {
+    pub(crate) state: AppState,
+    pub(crate) api_key_id: Option<String>,
 }
 impl ChatHooks for Hooks {
     fn pair_enabled<'a>(&'a self, name: &'a str) -> BoxFuture<'a, bool> {

@@ -8,9 +8,9 @@ use axum::{
 };
 use serde_json::Value;
 
-use crate::handlers::Credentials;
 use crate::handlers::media::common::{
-    RequestJsonExt, http_client, media_error, read_json, resolve_credentials, split_provider_model,
+    AttemptOutcome, RequestJsonExt, for_each_account, http_client, media_error, read_json,
+    split_provider_model,
 };
 use crate::server::AppState;
 
@@ -57,65 +57,97 @@ pub async fn handle_systemone(State(state): State<AppState>, Json(mut body): Jso
 
     let raw_model = body["model"].as_str().unwrap_or("openai/systemone");
     let (provider, model) = split_provider_model(raw_model, "openai");
-    let creds: Option<Credentials> = resolve_credentials(&state, &provider);
-    let override_url = creds
-        .as_ref()
-        .and_then(|c| c.provider_specific_data.get("baseUrl").and_then(Value::as_str));
-
     let (cfg_base, cfg_path) = default_systemone_cfg(&provider)
         .map(|(b, p)| (Some(b), if p.is_empty() { None } else { Some(p) }))
         .unwrap_or((None, Some("/v1/systemone")));
+    body["model"] = Value::String(model.clone());
 
-    let Some(mut target_url) = build_systemone_url(override_url, cfg_base, cfg_path) else {
-        return media_error(
-            StatusCode::BAD_REQUEST,
-            format!("Provider '{provider}' does not support System One."),
-        );
-    };
+    for_each_account(
+        &state,
+        &provider,
+        &model,
+        true,
+        || media_error(StatusCode::UNAUTHORIZED, format!("No credentials for provider: {provider}")),
+        |creds| {
+            let provider = &provider;
+            let model = &model;
+            let body = &body;
+            async move {
+                let override_url = creds
+                    .as_ref()
+                    .and_then(|c| c.provider_specific_data.get("baseUrl").and_then(Value::as_str));
 
-    if target_url.contains("{accountId}") {
-        let Some(acct) = creds
-            .as_ref()
-            .and_then(|c| c.provider_specific_data.get("accountId").and_then(Value::as_str))
-        else {
-            return media_error(
-                StatusCode::BAD_REQUEST,
-                format!("Provider '{provider}' requires accountId in providerSpecificData."),
-            );
-        };
-        target_url = target_url.replace("{accountId}", acct);
-    }
-    if target_url.contains("{model}") {
-        target_url = target_url.replace("{model}", &model);
-    }
+                let Some(mut target_url) = build_systemone_url(override_url, cfg_base, cfg_path) else {
+                    let msg = format!("Provider '{provider}' does not support System One.");
+                    return AttemptOutcome::Failure {
+                        status: StatusCode::BAD_REQUEST,
+                        message: msg.clone(),
+                        response: media_error(StatusCode::BAD_REQUEST, msg),
+                    };
+                };
 
-    body["model"] = Value::String(model);
-    let token = creds
-        .as_ref()
-        .and_then(|c| c.api_key.as_deref().or(c.access_token.as_deref()));
+                if target_url.contains("{accountId}") {
+                    let Some(acct) = creds
+                        .as_ref()
+                        .and_then(|c| c.provider_specific_data.get("accountId").and_then(Value::as_str))
+                    else {
+                        let msg = format!("Provider '{provider}' requires accountId in providerSpecificData.");
+                        return AttemptOutcome::Failure {
+                            status: StatusCode::BAD_REQUEST,
+                            message: msg.clone(),
+                            response: media_error(StatusCode::BAD_REQUEST, msg),
+                        };
+                    };
+                    target_url = target_url.replace("{accountId}", acct);
+                }
+                if target_url.contains("{model}") {
+                    target_url = target_url.replace("{model}", model);
+                }
 
-    let mut req = http_client().post(target_url).json_body(&body);
-    if let Some(t) = token {
-        req = req.bearer_auth(t);
-    }
-    if provider == "opencode" || provider == "opencode-zen" {
-        req = req.header("x-opencode-session", format!("ses_{}", std::process::id()));
-    }
+                let token = creds
+                    .as_ref()
+                    .and_then(|c| c.api_key.as_deref().or(c.access_token.as_deref()));
 
-    match req.send().await {
-        Ok(res) if res.status().is_success() => match read_json(res).await {
-            Ok(data) => (
-                StatusCode::OK,
-                [("Access-Control-Allow-Origin", "*")],
-                Json(data),
-            )
-                .into_response(),
-            Err(e) => media_error(StatusCode::BAD_GATEWAY, e),
+                let mut req = http_client().post(target_url).json_body(body);
+                if let Some(t) = token {
+                    req = req.bearer_auth(t);
+                }
+                if provider == "opencode" || provider == "opencode-zen" {
+                    req = req.header("x-opencode-session", format!("ses_{}", std::process::id()));
+                }
+
+                match req.send().await {
+                    Ok(res) if res.status().is_success() => match read_json(res).await {
+                        Ok(data) => AttemptOutcome::Success(
+                            (StatusCode::OK, [("Access-Control-Allow-Origin", "*")], Json(data))
+                                .into_response(),
+                        ),
+                        Err(e) => AttemptOutcome::Failure {
+                            status: StatusCode::BAD_GATEWAY,
+                            message: e.clone(),
+                            response: media_error(StatusCode::BAD_GATEWAY, e),
+                        },
+                    },
+                    Ok(res) => {
+                        let st = StatusCode::from_u16(res.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+                        let msg = res.text().await.unwrap_or_default();
+                        AttemptOutcome::Failure {
+                            status: st,
+                            message: msg.clone(),
+                            response: media_error(st, msg),
+                        }
+                    }
+                    Err(e) => {
+                        let msg = e.to_string();
+                        AttemptOutcome::Failure {
+                            status: StatusCode::BAD_GATEWAY,
+                            message: msg.clone(),
+                            response: media_error(StatusCode::BAD_GATEWAY, msg),
+                        }
+                    }
+                }
+            }
         },
-        Ok(res) => {
-            let st = StatusCode::from_u16(res.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-            media_error(st, res.text().await.unwrap_or_default())
-        }
-        Err(e) => media_error(StatusCode::BAD_GATEWAY, e.to_string()),
-    }
+    )
+    .await
 }

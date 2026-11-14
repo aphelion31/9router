@@ -9,9 +9,9 @@ use axum::{
 use base64::Engine as _;
 use serde_json::{Value, json};
 
-use crate::handlers::Credentials;
 use crate::handlers::media::common::{
-    RequestJsonExt, http_client, media_error, read_json, resolve_credentials, split_provider_model,
+    AttemptOutcome, RequestJsonExt, for_each_account, http_client, media_error, read_json,
+    split_provider_model,
 };
 use crate::server::AppState;
 
@@ -105,52 +105,7 @@ pub async fn image_generations(State(state): State<AppState>, headers: axum::htt
 
     let raw_model = body["model"].as_str().unwrap_or("openai/dall-e-3");
     let (provider, model) = split_provider_model(raw_model, "openai");
-    let creds: Option<Credentials> = resolve_credentials(&state, &provider);
-    let override_url = creds
-        .as_ref()
-        .and_then(|c| c.provider_specific_data.get("baseUrl").and_then(Value::as_str))
-        .map(|s| s.trim_end_matches('/').to_owned());
-
-    let token = creds
-        .as_ref()
-        .and_then(|c| c.api_key.as_deref().or(c.access_token.as_deref()));
-
-    let target_url = if provider == "cloudflare-ai" {
-        let Some(acct) = creds
-            .as_ref()
-            .and_then(|c| c.provider_specific_data.get("accountId").and_then(Value::as_str))
-        else {
-            return media_error(
-                StatusCode::BAD_REQUEST,
-                "cloudflare-ai requires providerSpecificData.accountId",
-            );
-        };
-        override_url.unwrap_or_else(|| {
-            format!("https://api.cloudflare.com/client/v4/accounts/{acct}/ai/run/{model}")
-        })
-    } else if let Some(ov) = override_url {
-        if ov.contains("/images/generations") || ov.contains("/chat/completions") || ov.contains(":generateContent") {
-            ov
-        } else {
-            format!("{ov}/v1/images/generations")
-        }
-    } else if let Some(u) = default_image_url(&provider, &model) {
-        u
-    } else {
-        return media_error(
-            StatusCode::BAD_REQUEST,
-            format!("Provider '{provider}' does not support image generation"),
-        );
-    };
-
-    if token.is_none() && provider != "sdwebui" && provider != "comfyui" {
-        return media_error(
-            StatusCode::UNAUTHORIZED,
-            format!("No credentials for image provider: {provider}"),
-        );
-    }
-
-    let client = http_client();
+    let allow_noauth = matches!(provider.as_str(), "sdwebui" | "comfyui");
     let req_body = match provider.as_str() {
         "gemini" | "nanobanana" => json!({
             "contents": [{ "parts": [{ "text": prompt }] }],
@@ -184,64 +139,186 @@ pub async fn image_generations(State(state): State<AppState>, headers: axum::htt
         }
     };
 
-    let final_url = if (provider == "gemini" || provider == "nanobanana") && !target_url.contains("key=") {
-        format!("{target_url}?key={}", token.unwrap_or_default())
-    } else {
-        target_url
-    };
+    for_each_account(
+        &state,
+        &provider,
+        &model,
+        allow_noauth,
+        || {
+            media_error(
+                StatusCode::UNAUTHORIZED,
+                format!("No credentials for image provider: {provider}"),
+            )
+        },
+        |creds| {
+            let state = &state;
+            let headers = &headers;
+            let provider = &provider;
+            let model = &model;
+            let req_body = &req_body;
+            async move {
+                let override_url = creds
+                    .as_ref()
+                    .and_then(|c| c.provider_specific_data.get("baseUrl").and_then(Value::as_str))
+                    .map(|s| s.trim_end_matches('/').to_owned());
 
-    let mut req = client.post(final_url).json_body(&req_body);
-    if let Some(t) = token {
-        req = match provider.as_str() {
-            "gemini" | "nanobanana" => req,
-            "black-forest-labs" => req.header("x-key", t),
-            "fal-ai" => req.header("Authorization", format!("Key {t}")),
-            _ => req.bearer_auth(t),
-        };
-    }
+                let token = creds
+                    .as_ref()
+                    .and_then(|c| c.api_key.as_deref().or(c.access_token.as_deref()));
 
-    match req.send().await {
-        Ok(res) if res.status().is_success() => {
-            let ct = res
-                .headers()
-                .get("content-type")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("")
-                .to_owned();
-            if ct.starts_with("image/") {
-                let bytes = res.bytes().await.unwrap_or_default();
-                crate::services::modality_usage::record_modality_usage(&state, &provider, &model, creds.as_ref().map(|c| c.connection_id.as_str()), crate::server::api_key_id(&state, &headers).as_deref(), "/v1/images/generations", 0, 0, "request-only");
-                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                let created = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                return (
-                    StatusCode::OK,
-                    [("Access-Control-Allow-Origin", "*")],
-                    Json(json!({ "created": created, "data": [{ "b64_json": b64 }] })),
-                )
-                    .into_response();
-            }
-            match read_json(res).await {
-                Ok(data) => {
-                    let (prompt_tokens, completion_tokens) = crate::services::modality_usage::reported_tokens(&data["usage"]);
-                    crate::services::modality_usage::record_modality_usage(&state, &provider, &model, creds.as_ref().map(|c| c.connection_id.as_str()), crate::server::api_key_id(&state, &headers).as_deref(), "/v1/images/generations", prompt_tokens, completion_tokens, if data["usage"].is_object() { "reported" } else { "request-only" });
-                    let normalized = normalize_openai_shape(data, prompt);
-                    (
-                        StatusCode::OK,
-                        [("Access-Control-Allow-Origin", "*")],
-                        Json(normalized),
-                    )
-                        .into_response()
+                let target_url = if provider == "cloudflare-ai" {
+                    let Some(acct) = creds
+                        .as_ref()
+                        .and_then(|c| c.provider_specific_data.get("accountId").and_then(Value::as_str))
+                    else {
+                        let msg = "cloudflare-ai requires providerSpecificData.accountId".to_owned();
+                        return AttemptOutcome::Failure {
+                            status: StatusCode::BAD_REQUEST,
+                            message: msg.clone(),
+                            response: media_error(StatusCode::BAD_REQUEST, msg),
+                        };
+                    };
+                    override_url.unwrap_or_else(|| {
+                        format!("https://api.cloudflare.com/client/v4/accounts/{acct}/ai/run/{model}")
+                    })
+                } else if let Some(ov) = override_url {
+                    if ov.contains("/images/generations")
+                        || ov.contains("/chat/completions")
+                        || ov.contains(":generateContent")
+                    {
+                        ov
+                    } else {
+                        format!("{ov}/v1/images/generations")
+                    }
+                } else if let Some(u) = default_image_url(provider, model) {
+                    u
+                } else {
+                    let msg = format!("Provider '{provider}' does not support image generation");
+                    return AttemptOutcome::Failure {
+                        status: StatusCode::BAD_REQUEST,
+                        message: msg.clone(),
+                        response: media_error(StatusCode::BAD_REQUEST, msg),
+                    };
+                };
+
+                if token.is_none() && !allow_noauth {
+                    let msg = format!("No credentials for image provider: {provider}");
+                    return AttemptOutcome::Failure {
+                        status: StatusCode::UNAUTHORIZED,
+                        message: msg.clone(),
+                        response: media_error(StatusCode::UNAUTHORIZED, msg),
+                    };
                 }
-                Err(e) => media_error(StatusCode::BAD_GATEWAY, e),
+
+                let final_url = if (provider == "gemini" || provider == "nanobanana")
+                    && !target_url.contains("key=")
+                {
+                    format!("{target_url}?key={}", token.unwrap_or_default())
+                } else {
+                    target_url
+                };
+
+                let mut req = http_client().post(final_url).json_body(req_body);
+                if let Some(t) = token {
+                    req = match provider.as_str() {
+                        "gemini" | "nanobanana" => req,
+                        "black-forest-labs" => req.header("x-key", t),
+                        "fal-ai" => req.header("Authorization", format!("Key {t}")),
+                        _ => req.bearer_auth(t),
+                    };
+                }
+
+                match req.send().await {
+                    Ok(res) if res.status().is_success() => {
+                        let ct = res
+                            .headers()
+                            .get("content-type")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("")
+                            .to_owned();
+                        if ct.starts_with("image/") {
+                            let bytes = res.bytes().await.unwrap_or_default();
+                            crate::services::modality_usage::record_modality_usage(
+                                state,
+                                provider,
+                                model,
+                                creds.as_ref().map(|c| c.connection_id.as_str()),
+                                crate::server::api_key_id(state, headers).as_deref(),
+                                "/v1/images/generations",
+                                0,
+                                0,
+                                "request-only",
+                            );
+                            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                            let created = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0);
+                            return AttemptOutcome::Success(
+                                (
+                                    StatusCode::OK,
+                                    [("Access-Control-Allow-Origin", "*")],
+                                    Json(json!({ "created": created, "data": [{ "b64_json": b64 }] })),
+                                )
+                                    .into_response(),
+                            );
+                        }
+                        match read_json(res).await {
+                            Ok(data) => {
+                                let (prompt_tokens, completion_tokens) =
+                                    crate::services::modality_usage::reported_tokens(&data["usage"]);
+                                crate::services::modality_usage::record_modality_usage(
+                                    state,
+                                    provider,
+                                    model,
+                                    creds.as_ref().map(|c| c.connection_id.as_str()),
+                                    crate::server::api_key_id(state, headers).as_deref(),
+                                    "/v1/images/generations",
+                                    prompt_tokens,
+                                    completion_tokens,
+                                    if data["usage"].is_object() {
+                                        "reported"
+                                    } else {
+                                        "request-only"
+                                    },
+                                );
+                                let normalized = normalize_openai_shape(data, prompt);
+                                AttemptOutcome::Success(
+                                    (
+                                        StatusCode::OK,
+                                        [("Access-Control-Allow-Origin", "*")],
+                                        Json(normalized),
+                                    )
+                                        .into_response(),
+                                )
+                            }
+                            Err(e) => AttemptOutcome::Failure {
+                                status: StatusCode::BAD_GATEWAY,
+                                message: e.clone(),
+                                response: media_error(StatusCode::BAD_GATEWAY, e),
+                            },
+                        }
+                    }
+                    Ok(res) => {
+                        let st = StatusCode::from_u16(res.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+                        let msg = res.text().await.unwrap_or_default();
+                        AttemptOutcome::Failure {
+                            status: st,
+                            message: msg.clone(),
+                            response: media_error(st, msg),
+                        }
+                    }
+                    Err(e) => {
+                        let msg = e.to_string();
+                        AttemptOutcome::Failure {
+                            status: StatusCode::BAD_GATEWAY,
+                            message: msg.clone(),
+                            response: media_error(StatusCode::BAD_GATEWAY, msg),
+                        }
+                    }
+                }
             }
-        }
-        Ok(res) => {
-            let st = StatusCode::from_u16(res.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-            media_error(st, res.text().await.unwrap_or_default())
-        }
-        Err(e) => media_error(StatusCode::BAD_GATEWAY, e.to_string()),
-    }
+        },
+    )
+    .await
 }

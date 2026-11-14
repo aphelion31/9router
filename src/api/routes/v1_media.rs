@@ -36,27 +36,7 @@ fn err(status: StatusCode, msg: &str, typ: &str) -> Response {
     (status, Json(json!({ "error": { "message": msg, "type": typ } }))).into_response()
 }
 
-fn active_credential(state: &AppState, provider: &str) -> Option<(String, Option<String>)> {
-    let db = state.db.lock().ok()?;
-    let raw: String = db
-        .query_row(
-            "SELECT data FROM providerConnections WHERE provider=?1 AND isActive=1 ORDER BY priority ASC LIMIT 1",
-            [provider],
-            |r| r.get(0),
-        )
-        .ok()?;
-    let data: Value = crate::crypto::parse_data(&raw)?;
-    let token = data["apiKey"]
-        .as_str()
-        .or_else(|| data["accessToken"].as_str())
-        .filter(|s| !s.is_empty())?
-        .to_string();
-    let base_url = data["providerSpecificData"]["baseUrl"]
-        .as_str()
-        .or_else(|| data["baseUrl"].as_str())
-        .map(str::to_string);
-    Some((token, base_url))
-}
+use crate::handlers::media::common::{AttemptOutcome, for_each_account};
 
 fn provider_base_url(provider: &str, override_url: Option<String>) -> String {
     if let Some(u) = override_url.filter(|s| !s.is_empty()) {
@@ -69,13 +49,13 @@ fn provider_base_url(provider: &str, override_url: Option<String>) -> String {
         .to_string()
 }
 
-async fn forward_json(
+async fn forward_json_attempt(
     state: &AppState,
     method: reqwest::Method,
     url: &str,
     token: &str,
-    body: Option<Value>,
-) -> Response {
+    body: Option<&Value>,
+) -> AttemptOutcome {
     let mut req = state
         .executor
         .0
@@ -96,14 +76,29 @@ async fn forward_json(
                 .unwrap_or("application/json")
                 .to_string();
             let bytes = resp.bytes().await.unwrap_or_default();
-            let mut out = Response::new(Body::from(bytes));
+            let mut out = Response::new(Body::from(bytes.clone()));
             *out.status_mut() = status;
             if let Ok(hv) = HeaderValue::from_str(&ct) {
                 out.headers_mut().insert(header::CONTENT_TYPE, hv);
             }
-            out
+            if status.is_success() {
+                AttemptOutcome::Success(out)
+            } else {
+                AttemptOutcome::Failure {
+                    status,
+                    message: String::from_utf8_lossy(&bytes).into_owned(),
+                    response: out,
+                }
+            }
         }
-        Err(e) => err(StatusCode::BAD_GATEWAY, &e.to_string(), "upstream_error"),
+        Err(e) => {
+            let msg = e.to_string();
+            AttemptOutcome::Failure {
+                status: StatusCode::BAD_GATEWAY,
+                message: msg.clone(),
+                response: err(StatusCode::BAD_GATEWAY, &msg, "upstream_error"),
+            }
+        }
     }
 }
 
@@ -159,29 +154,82 @@ async fn web_search(State(s): State<AppState>, headers: HeaderMap, Json(body): J
         return err(StatusCode::BAD_REQUEST, "Missing query", "invalid_request_error");
     }
     let provider = providers::lookup(provider_input)
-        .map(|p| p.id.as_str())
-        .unwrap_or(provider_input);
-    let Some((token, base_override)) = active_credential(&s, provider) else {
-        return err(
-            StatusCode::SERVICE_UNAVAILABLE,
-            &format!("No active credentials for search provider: {provider}"),
-            "unavailable_error",
-        );
-    };
-    let url = match provider {
-        "tavily" => "https://api.tavily.com/search".to_string(),
-        "exa" => "https://api.exa.ai/search".to_string(),
-        "serper" => "https://google.serper.dev/search".to_string(),
-        _ => format!("{}/search", provider_base_url(provider, base_override)),
-    };
-    let provider = provider.to_owned();
-    let response = forward_json(&s, reqwest::Method::POST, &url, &token, Some(body)).await;
-    if response.status().is_success() {
-        let cost = match provider.as_str() { "exa" => Some(0.007), "serper" => Some(0.001), "tavily" => Some(0.008), "brave-search" | "google-pse" | "linkup" | "youcom" => Some(0.005), "searxng" | "tinyfish" => Some(0.0), _ => None };
-        let connection_id = crate::handlers::media::common::resolve_credentials(&s, &provider).map(|c| c.connection_id);
-        crate::services::modality_usage::record_search_usage(&s, &provider, connection_id.as_deref(), crate::server::api_key_id(&s, &headers).as_deref(), cost);
-    }
-    response
+        .map(|p| p.id.clone())
+        .unwrap_or_else(|| provider_input.to_owned());
+
+    for_each_account(
+        &s,
+        &provider,
+        "",
+        false,
+        || {
+            err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &format!("No active credentials for search provider: {provider}"),
+                "unavailable_error",
+            )
+        },
+        |creds| {
+            let s = &s;
+            let headers = &headers;
+            let body = &body;
+            let provider = &provider;
+            async move {
+                let Some(creds) = creds else {
+                    let msg = format!("No active credentials for search provider: {provider}");
+                    return AttemptOutcome::Failure {
+                        status: StatusCode::SERVICE_UNAVAILABLE,
+                        message: msg.clone(),
+                        response: err(StatusCode::SERVICE_UNAVAILABLE, &msg, "unavailable_error"),
+                    };
+                };
+                let token = creds
+                    .api_key
+                    .as_deref()
+                    .or(creds.access_token.as_deref())
+                    .unwrap_or("");
+                if token.is_empty() {
+                    let msg = format!("No active credentials for search provider: {provider}");
+                    return AttemptOutcome::Failure {
+                        status: StatusCode::UNAUTHORIZED,
+                        message: msg.clone(),
+                        response: err(StatusCode::UNAUTHORIZED, &msg, "unavailable_error"),
+                    };
+                }
+                let base_override = creds
+                    .provider_specific_data
+                    .get("baseUrl")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let url = match provider.as_str() {
+                    "tavily" => "https://api.tavily.com/search".to_string(),
+                    "exa" => "https://api.exa.ai/search".to_string(),
+                    "serper" => "https://google.serper.dev/search".to_string(),
+                    _ => format!("{}/search", provider_base_url(provider, base_override)),
+                };
+                let outcome = forward_json_attempt(s, reqwest::Method::POST, &url, token, Some(body)).await;
+                if matches!(outcome, AttemptOutcome::Success(_)) {
+                    let cost = match provider.as_str() {
+                        "exa" => Some(0.007),
+                        "serper" => Some(0.001),
+                        "tavily" => Some(0.008),
+                        "brave-search" | "google-pse" | "linkup" | "youcom" => Some(0.005),
+                        "searxng" | "tinyfish" => Some(0.0),
+                        _ => None,
+                    };
+                    crate::services::modality_usage::record_search_usage(
+                        s,
+                        provider,
+                        Some(&creds.connection_id),
+                        crate::server::api_key_id(s, headers).as_deref(),
+                        cost,
+                    );
+                }
+                outcome
+            }
+        },
+    )
+    .await
 }
 
 async fn web_fetch(State(s): State<AppState>, Json(body): Json<Value>) -> Response {
@@ -197,12 +245,69 @@ async fn web_fetch(State(s): State<AppState>, Json(body): Json<Value>) -> Respon
         .filter(|p| !p.is_empty())
     {
         let provider = providers::lookup(provider_input)
-            .map(|p| p.id.as_str())
-            .unwrap_or(provider_input);
-        if let Some((token, base_override)) = active_credential(&s, provider) {
-            let url = format!("{}/extract", provider_base_url(provider, base_override));
-            return forward_json(&s, reqwest::Method::POST, &url, &token, Some(body)).await;
-        }
+            .map(|p| p.id.clone())
+            .unwrap_or_else(|| provider_input.to_owned());
+        return for_each_account(
+            &s,
+            &provider,
+            "",
+            true,
+            || err(StatusCode::SERVICE_UNAVAILABLE, "No credentials", "unavailable_error"),
+            |creds| {
+                let s = &s;
+                let body = &body;
+                let provider = &provider;
+                async move {
+                    if let Some(creds) = creds {
+                        let token = creds
+                            .api_key
+                            .as_deref()
+                            .or(creds.access_token.as_deref())
+                            .unwrap_or("");
+                        if !token.is_empty() {
+                            let base_override = creds
+                                .provider_specific_data
+                                .get("baseUrl")
+                                .and_then(Value::as_str)
+                                .map(str::to_string);
+                            let url = format!("{}/extract", provider_base_url(provider, base_override));
+                            return forward_json_attempt(s, reqwest::Method::POST, &url, token, Some(body))
+                                .await;
+                        }
+                    }
+                    match s.executor.0.get(target).send().await {
+                        Ok(resp) => {
+                            let status = resp.status().as_u16();
+                            let ct = resp
+                                .headers()
+                                .get(header::CONTENT_TYPE)
+                                .and_then(|v| v.to_str().ok())
+                                .unwrap_or("text/plain")
+                                .to_string();
+                            let text = resp.text().await.unwrap_or_default();
+                            AttemptOutcome::Success(
+                                Json(json!({
+                                    "url": target,
+                                    "status": status,
+                                    "contentType": ct,
+                                    "content": text,
+                                }))
+                                .into_response(),
+                            )
+                        }
+                        Err(e) => {
+                            let msg = e.to_string();
+                            AttemptOutcome::Failure {
+                                status: StatusCode::BAD_GATEWAY,
+                                message: msg.clone(),
+                                response: err(StatusCode::BAD_GATEWAY, &msg, "upstream_error"),
+                            }
+                        }
+                    }
+                }
+            },
+        )
+        .await;
     }
     match s.executor.0.get(target).send().await {
         Ok(resp) => {
@@ -283,6 +388,7 @@ mod tests {
     use axum::{
         body::Body,
         http::{Method, Request, StatusCode},
+        response::IntoResponse,
     };
     use serde_json::json;
 
@@ -432,5 +538,250 @@ mod tests {
         .await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(emb["data"][0]["embedding"][0], 0.1);
+    }
+
+    async fn spawn_mock_media_server(
+        path: &'static str,
+        fail_status: StatusCode,
+        ok_body: serde_json::Value,
+    ) -> std::net::SocketAddr {
+        use axum::http::HeaderMap as ReqHeaders;
+        let router = axum::Router::new().route(
+            path,
+            axum::routing::post(move |headers: ReqHeaders| {
+                let ok_body = ok_body.clone();
+                async move {
+                    let auth = headers
+                        .get(axum::http::header::AUTHORIZATION)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("");
+                    if auth == "Bearer key-1" {
+                        (
+                            fail_status,
+                            axum::Json(json!({ "error": { "message": "account 1 failed" } })),
+                        )
+                            .into_response()
+                    } else {
+                        (StatusCode::OK, axum::Json(ok_body)).into_response()
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        addr
+    }
+
+    fn insert_conn(
+        db: &std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>,
+        id: &str,
+        provider: &str,
+        priority: i64,
+        api_key: &str,
+        base_url: &str,
+    ) {
+        let conn = db.lock().unwrap();
+        let data = json!({
+            "apiKey": api_key,
+            "providerSpecificData": { "baseUrl": base_url }
+        })
+        .to_string();
+        conn.execute(
+            "INSERT INTO providerConnections(id,provider,authType,name,isActive,priority,data,createdAt,updatedAt) VALUES(?1,?2,'apikey',?1,1,?3,?4,'2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')",
+            rusqlite::params![id, provider, priority, data],
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn modality_account_fallback_and_single_failure() {
+        // 1. Embeddings: 2 accounts (429 -> 200) and single failing account (429 -> 429)
+        let addr = spawn_mock_media_server(
+            "/embeddings",
+            StatusCode::TOO_MANY_REQUESTS,
+            json!({ "object": "list", "data": [{ "embedding": [0.42] }] }),
+        )
+        .await;
+        let base = format!("http://{addr}");
+
+        let (app1, db1) = app();
+        insert_conn(&db1, "emb-1", "openai", 1, "key-1", &base);
+        let (st, _) = call(
+            app1,
+            Request::post("/v1/embeddings")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"openai/text-embedding-3-small","input":"hi"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::TOO_MANY_REQUESTS);
+
+        let (app2, db2) = app();
+        insert_conn(&db2, "emb-1", "openai", 1, "key-1", &base);
+        insert_conn(&db2, "emb-2", "openai", 2, "key-2", &base);
+        let (st, body) = call(
+            app2,
+            Request::post("/v1/embeddings")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"openai/text-embedding-3-small","input":"hi"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(body["data"][0]["embedding"][0], 0.42);
+
+        // 2. Images: 2 accounts (401 -> 200)
+        let addr = spawn_mock_media_server(
+            "/v1/images/generations",
+            StatusCode::UNAUTHORIZED,
+            json!({ "created": 1, "data": [{ "url": "https://img.example/ok.png" }] }),
+        )
+        .await;
+        let (app_img, db_img) = app();
+        insert_conn(&db_img, "img-1", "openai", 1, "key-1", &format!("http://{addr}"));
+        insert_conn(&db_img, "img-2", "openai", 2, "key-2", &format!("http://{addr}"));
+        let (st, body) = call(
+            app_img,
+            Request::post("/v1/images/generations")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"openai/dall-e-3","prompt":"a cat"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(body["data"][0]["url"], "https://img.example/ok.png");
+
+        // 3. STT: 2 accounts (429 -> 200)
+        let addr = spawn_mock_media_server(
+            "/",
+            StatusCode::TOO_MANY_REQUESTS,
+            json!({ "text": "hello from account 2" }),
+        )
+        .await;
+        let (app_stt, db_stt) = app();
+        insert_conn(&db_stt, "stt-1", "openai", 1, "key-1", &format!("http://{addr}"));
+        insert_conn(&db_stt, "stt-2", "openai", 2, "key-2", &format!("http://{addr}"));
+        let boundary = "----testboundary";
+        let multipart_body = format!(
+            "--{b}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nopenai/whisper-1\r\n--{b}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\nContent-Type: audio/wav\r\n\r\nRIFF\r\n--{b}--\r\n",
+            b = boundary
+        );
+        let (st, body) = call(
+            app_stt,
+            Request::post("/v1/audio/transcriptions")
+                .header("content-type", format!("multipart/form-data; boundary={boundary}"))
+                .body(Body::from(multipart_body))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(body["text"], "hello from account 2");
+
+        // 4. TTS: 2 accounts (429 -> 200)
+        let addr = spawn_mock_media_server(
+            "/v1/audio/speech",
+            StatusCode::TOO_MANY_REQUESTS,
+            json!({ "ok": true }),
+        )
+        .await;
+        let (app_tts, db_tts) = app();
+        insert_conn(&db_tts, "tts-1", "openai", 1, "key-1", &format!("http://{addr}"));
+        insert_conn(&db_tts, "tts-2", "openai", 2, "key-2", &format!("http://{addr}"));
+        let (st, _) = call(
+            app_tts,
+            Request::post("/v1/audio/speech")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"openai/tts-1","input":"hi","response_format":"json"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+
+        // 5. Videos: 2 accounts (429 -> 200)
+        let addr = spawn_mock_media_server(
+            "/generations",
+            StatusCode::TOO_MANY_REQUESTS,
+            json!({ "id": "vid-2", "status": "queued" }),
+        )
+        .await;
+        let (app_vid, db_vid) = app();
+        insert_conn(&db_vid, "vid-1", "xai", 1, "key-1", &format!("http://{addr}"));
+        insert_conn(&db_vid, "vid-2", "xai", 2, "key-2", &format!("http://{addr}"));
+        let (st, body) = call(
+            app_vid,
+            Request::post("/v1/videos/generations")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"xai/grok-imagine-video","prompt":"sunset"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(body["id"], "vid-2");
+
+        // 6. SystemOne: 2 accounts (429 -> 200)
+        let addr = spawn_mock_media_server(
+            "/v1/systemone",
+            StatusCode::TOO_MANY_REQUESTS,
+            json!({ "answers": ["ok2"] }),
+        )
+        .await;
+        let (app_sys, db_sys) = app();
+        insert_conn(&db_sys, "sys-1", "openai", 1, "key-1", &format!("http://{addr}"));
+        insert_conn(&db_sys, "sys-2", "openai", 2, "key-2", &format!("http://{addr}"));
+        let (st, body) = call(
+            app_sys,
+            Request::post("/v1/systemone")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"openai/systemone","state":{},"questions":{"q1":{}}}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(body["answers"][0], "ok2");
+
+        // 7. Search: 2 accounts (429 -> 200)
+        let addr = spawn_mock_media_server(
+            "/search",
+            StatusCode::TOO_MANY_REQUESTS,
+            json!({ "results": [{ "title": "search-ok-2" }] }),
+        )
+        .await;
+        let (app_srch, db_srch) = app();
+        insert_conn(&db_srch, "srch-1", "brave-search", 1, "key-1", &format!("http://{addr}"));
+        insert_conn(&db_srch, "srch-2", "brave-search", 2, "key-2", &format!("http://{addr}"));
+        let (st, body) = call(
+            app_srch,
+            Request::post("/v1/search")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"provider":"brave-search","query":"rust"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(body["results"][0]["title"], "search-ok-2");
+
+        // 8. Fetch: 2 accounts (429 -> 200)
+        let addr = spawn_mock_media_server(
+            "/extract",
+            StatusCode::TOO_MANY_REQUESTS,
+            json!({ "content": "fetch-ok-2" }),
+        )
+        .await;
+        let (app_fch, db_fch) = app();
+        insert_conn(&db_fch, "fch-1", "tavily", 1, "key-1", &format!("http://{addr}"));
+        insert_conn(&db_fch, "fch-2", "tavily", 2, "key-2", &format!("http://{addr}"));
+        let (st, body) = call(
+            app_fch,
+            Request::post("/v1/web/fetch")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"provider":"tavily","url":"https://1.1.1.1/"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(body["content"], "fetch-ok-2");
     }
 }

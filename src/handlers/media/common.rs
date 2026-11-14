@@ -1,3 +1,6 @@
+use std::collections::HashSet;
+use std::future::Future;
+
 use axum::{
     Json,
     http::StatusCode,
@@ -5,8 +8,90 @@ use axum::{
 };
 use serde_json::{Value, json};
 
-use crate::handlers::Credentials;
-use crate::server::AppState;
+use crate::handlers::{Credentials, chat::ChatHooks};
+use crate::server::{AppState, Hooks};
+use crate::services::member_failover::resolve_combo_member_attempt_cap;
+
+pub enum AttemptOutcome {
+    Success(Response),
+    Failure {
+        status: StatusCode,
+        message: String,
+        response: Response,
+    },
+}
+
+pub async fn for_each_account<F, Fut>(
+    state: &AppState,
+    provider: &str,
+    model: &str,
+    allow_noauth: bool,
+    no_creds_response: impl FnOnce() -> Response,
+    mut attempt: F,
+) -> Response
+where
+    F: FnMut(Option<Credentials>) -> Fut,
+    Fut: Future<Output = AttemptOutcome>,
+{
+    let hooks = Hooks {
+        state: state.clone(),
+        api_key_id: None,
+    };
+    let settings = hooks.settings().await;
+    let cap = resolve_combo_member_attempt_cap(&settings, provider, model);
+    let mut excluded = HashSet::new();
+    let mut failures = 0usize;
+    let mut last_response: Option<Response> = None;
+
+    loop {
+        let Some(creds) = hooks.get_credentials(provider, model, &excluded).await else {
+            if excluded.is_empty() {
+                if allow_noauth {
+                    return match attempt(None).await {
+                        AttemptOutcome::Success(r) | AttemptOutcome::Failure { response: r, .. } => r,
+                    };
+                }
+                return no_creds_response();
+            }
+            return last_response.unwrap_or_else(|| {
+                media_error(StatusCode::SERVICE_UNAVAILABLE, "All accounts unavailable")
+            });
+        };
+
+        let conn_id = creds.connection_id.clone();
+        match attempt(Some(creds)).await {
+            AttemptOutcome::Success(resp) => {
+                if conn_id != "noauth" {
+                    hooks.on_request_success(&conn_id, model).await;
+                }
+                return resp;
+            }
+            AttemptOutcome::Failure {
+                status,
+                message,
+                response,
+            } => {
+                if conn_id == "noauth"
+                    || !hooks
+                        .on_account_error(&conn_id, model, status.as_u16(), &message)
+                        .await
+                {
+                    return response;
+                }
+                excluded.insert(conn_id);
+                failures += 1;
+                last_response = Some(response);
+                if cap.is_some_and(|c| failures >= c) {
+                    break;
+                }
+            }
+        }
+    }
+
+    last_response.unwrap_or_else(|| {
+        media_error(StatusCode::SERVICE_UNAVAILABLE, "All accounts unavailable")
+    })
+}
 
 pub fn media_error(status: StatusCode, msg: impl Into<String>) -> Response {
     let msg = msg.into();
@@ -60,42 +145,6 @@ pub fn split_provider_model(raw: &str, default_provider: &str) -> (String, Strin
         }
     }
     (default_provider.to_owned(), trimmed.to_owned())
-}
-
-pub fn resolve_credentials(state: &AppState, provider: &str) -> Option<Credentials> {
-    let db = state.db.lock().ok()?;
-    let mut st = db
-        .prepare("SELECT id,name,data FROM providerConnections WHERE provider=?1 AND isActive=1 ORDER BY priority ASC LIMIT 1")
-        .ok()?;
-    let mut rows = st
-        .query_map([provider], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, Option<String>>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })
-        .ok()?;
-    let (id, name, data_str) = rows.next()?.ok()?;
-    let data: Value = crate::crypto::parse_data(&data_str).unwrap_or(Value::Null);
-    let access_token = data["accessToken"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned);
-    let api_key = data["apiKey"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned);
-    Some(Credentials {
-        connection_id: id,
-        connection_name: name,
-        access_token,
-        refresh_token: data["refreshToken"].as_str().map(str::to_owned),
-        api_key,
-        expires_at: data["expiresAt"].as_str().map(str::to_owned),
-        provider_specific_data: data.get("providerSpecificData").cloned().unwrap_or(Value::Null),
-        ..Default::default()
-    })
 }
 
 pub fn http_client() -> reqwest::Client {
