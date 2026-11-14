@@ -483,11 +483,10 @@ mod tests {
     }
 
     #[test]
-    fn antigravity_gemini4_high_reserves_thinking_output() {
-        let body = json!({"max_tokens":200,"messages":[{"role":"user","content":"ping"}]});
+    fn antigravity_gemini4_high_preserves_output_limit_without_implicit_thinking() {
+        let body = json!({"max_tokens":200,"temperature":0.5,"top_p":0.9,"messages":[{"role":"user","content":"ping"}]});
         let out = translate_request("openai", "antigravity", "gemini-4-hydrogen-high", &body, false, None, Some("antigravity"));
-        assert_eq!(out["request"]["generationConfig"]["maxOutputTokens"], 65535);
-        assert_eq!(out["request"]["generationConfig"]["thinkingConfig"]["thinkingLevel"], "high");
+        assert_eq!(out["request"]["generationConfig"], json!({"maxOutputTokens":200}));
     }
 
     #[test]

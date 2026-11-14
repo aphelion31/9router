@@ -571,8 +571,11 @@ fn gemini_body_to_openai(body: &Value) -> Value {
         .get("usageMetadata")
         .or_else(|| body.get("usageMetadata"))
     {
-        if let Some(usage) = crate::translator::concerns::to_openai_usage(FORMAT_GEMINI, Some(u)) {
-            out["usage"] = usage;
+        let prompt = u["promptTokenCount"].as_u64().unwrap_or(0);
+        let thoughts = u["thoughtsTokenCount"].as_u64().unwrap_or(0);
+        out["usage"] = json!({"prompt_tokens": prompt + thoughts, "completion_tokens": u["candidatesTokenCount"].as_u64().unwrap_or(0), "total_tokens": u["totalTokenCount"].as_u64().unwrap_or(0)});
+        if thoughts > 0 {
+            out["usage"]["completion_tokens_details"] = json!({"reasoning_tokens": thoughts});
         }
     }
     out
@@ -617,7 +620,7 @@ fn responses_body_to_openai(body: &Value) -> Value {
     if !tool_calls.is_empty() {
         message["tool_calls"] = Value::Array(tool_calls);
     }
-    json!({
+    let mut result = json!({
         "id": body.get("id").and_then(|v| v.as_str()).unwrap_or("chatcmpl-0"),
         "object": "chat.completion",
         "created": body.get("created_at").and_then(|v| v.as_u64()).unwrap_or_else(now_unix_secs),
@@ -627,7 +630,11 @@ fn responses_body_to_openai(body: &Value) -> Value {
             "message": message,
             "finish_reason": if message.get("tool_calls").is_some() { "tool_calls" } else { "stop" }
         }]
-    })
+    });
+    if let Some(usage) = crate::translator::concerns::to_openai_usage(FORMAT_OPENAI_RESPONSES, body.get("usage")) {
+        result["usage"] = usage;
+    }
+    result
 }
 
 fn openai_body_to_responses(body: &Value) -> Value {
@@ -755,11 +762,7 @@ fn responses_stream_to_json(text: &str, model: &str) -> Value {
             "response.completed" | "response.done" => {
                 status = "completed".into();
                 if let Some(u) = v["response"]["usage"].as_object() {
-                    usage = json!({
-                        "input_tokens": u.get("input_tokens").and_then(Value::as_u64).unwrap_or(0),
-                        "output_tokens": u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0),
-                        "total_tokens": u.get("total_tokens").and_then(Value::as_u64).unwrap_or(0),
-                    });
+                    usage = Value::Object(u.clone());
                 }
             }
             "response.failed" => status = "failed".into(),
@@ -1226,6 +1229,8 @@ pub async fn handle_chat_core(
                     v
                 } else if options.provider == "zed" {
                     openai_stream_to_json(&String::from_utf8_lossy(&b), &options.model)
+                } else if resp_format == FORMAT_OPENAI_RESPONSES {
+                    responses_stream_to_json(&String::from_utf8_lossy(&b), &options.model)
                 } else if let Some(v) = parse_sse_text_to_last_json(&String::from_utf8_lossy(&b)) {
                     v
                 } else {
@@ -1345,11 +1350,12 @@ mod header_tests {
     }
 
     #[test]
-    fn gemini_non_stream_usage_keeps_reasoning_out_of_prompt() {
+    fn gemini_non_stream_usage_matches_upstream() {
         let body = json!({"candidates":[{"content":{"parts":[{"text":"pong"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":5,"thoughtsTokenCount":20,"totalTokenCount":125}});
         let result = gemini_body_to_openai(&body);
-        assert_eq!(result["usage"]["prompt_tokens"], 100);
-        assert_eq!(result["usage"]["completion_tokens"], 25);
+        assert_eq!(result["usage"]["prompt_tokens"], 120);
+        assert_eq!(result["usage"]["completion_tokens"], 5);
+        assert_eq!(result["usage"]["completion_tokens_details"]["reasoning_tokens"], 20);
     }
 
     #[test]
@@ -1375,12 +1381,14 @@ mod header_tests {
             "event: response.output_item.done\n",
             "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"pong\"}]}}\n\n",
             "event: response.completed\n",
-            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":1,\"total_tokens\":4}}}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":1,\"total_tokens\":4,\"input_tokens_details\":{\"cached_tokens\":2}}}}\n\n",
         );
         let body = responses_stream_to_json(sse, "gpt-test");
         let openai = translate_non_streaming_response(&body, FORMAT_OPENAI_RESPONSES, FORMAT_OPENAI);
         assert_eq!(openai["choices"][0]["message"]["content"], "pong");
         assert_eq!(openai["model"], "gpt-test");
+        assert_eq!(openai["usage"]["prompt_tokens"], 3);
+        assert_eq!(openai["usage"]["prompt_tokens_details"]["cached_tokens"], 2);
         // The Bytes branch must not fall back to last-line parsing (which loses output).
         let last_line = parse_sse_text_to_last_json(sse).unwrap();
         assert!(last_line.get("output").is_none());
