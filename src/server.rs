@@ -940,6 +940,10 @@ impl ChatHooks for Hooks {
             Some(crate::handlers::chat_core::TokenSaverConfig {
                 token_saver_enabled,
                 rtk_enabled,
+                headroom_enabled: settings["headroomEnabled"].as_bool().unwrap_or(false),
+                headroom_url: settings["headroomUrl"].as_str().unwrap_or("http://127.0.0.1:8787").to_owned(),
+                headroom_timeout_ms: settings["headroomTimeoutMs"].as_u64().unwrap_or(3000),
+                headroom_compress_user_messages: settings["headroomCompressUserMessages"].as_bool().unwrap_or(false),
                 caveman_enabled,
                 caveman_level,
                 brief_level,

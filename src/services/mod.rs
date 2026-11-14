@@ -40,6 +40,7 @@ pub mod rtk_caveman_prompts;
 pub mod rtk_constants;
 pub mod rtk_filters;
 pub mod rtk_index;
+pub mod headroom;
 pub mod rtk_ponytail_prompt;
 pub mod rtk_system_inject;
 pub mod stream_helpers;

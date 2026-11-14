@@ -60,6 +60,10 @@ pub fn usage_from_body(body: &Value) -> Option<(u64, u64)> {
 pub struct TokenSaverConfig {
     pub token_saver_enabled: bool,
     pub rtk_enabled: bool,
+    pub headroom_enabled: bool,
+    pub headroom_url: String,
+    pub headroom_timeout_ms: u64,
+    pub headroom_compress_user_messages: bool,
     pub caveman_enabled: bool,
     pub caveman_level: Option<String>,
     pub brief_level: Option<String>,
@@ -1029,6 +1033,15 @@ pub async fn handle_chat_core(
         tracing::debug!("{line}");
     }
 
+    if ts_cfg.token_saver_enabled && ts_cfg.headroom_enabled
+        && let Err(reason) = crate::services::headroom::compress_with_headroom(
+            &mut translated_body, &ts_cfg.headroom_url, &upstream_model,
+            ts_cfg.headroom_timeout_ms, ts_cfg.headroom_compress_user_messages,
+        ).await
+    {
+        tracing::warn!(target: "headroom", "skipped: {reason}");
+    }
+
     let effective_caveman = ts_cfg.brief_level.as_deref().or_else(|| {
         if ts_cfg.caveman_enabled {
             ts_cfg.caveman_level.as_deref()
@@ -1306,7 +1319,7 @@ mod header_tests {
                 credentials: Credentials { access_token: Some("sk-ant-oat-synthetic".into()), ..Default::default() },
                 source_format_override: None, endpoint_path: None, accept_header: None, user_agent: None,
                 client_tool: None, provider_session_id: None, first_response_timeout: None,
-                token_saver: Some(TokenSaverConfig { token_saver_enabled:true, rtk_enabled:true, caveman_enabled:true, caveman_level:Some("full".into()), brief_level:Some("ultra".into()), ponytail_enabled:true, ponytail_level:Some("ultra".into()) }),
+                token_saver: Some(TokenSaverConfig { token_saver_enabled:true, rtk_enabled:true, caveman_enabled:true, caveman_level:Some("full".into()), brief_level:Some("ultra".into()), ponytail_enabled:true, ponytail_level:Some("ultra".into()), ..Default::default() }),
                 prompt_injections: vec![json!({"mode":"chat","turns":[{"role":"user","content":"example question"},{"role":"assistant","content":"example answer"}]})],
             };
             let _ = handle_chat_core(options, &capture, &ChatCoreHooks::default()).await;
