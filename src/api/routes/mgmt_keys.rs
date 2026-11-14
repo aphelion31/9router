@@ -785,7 +785,7 @@ mod tests {
     #[test]
     fn reports_live_limit_usage() {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
-        let slot = crate::services::key_rate_limiter::limiter().admit("limits-usage-test", now);
+        let slot = crate::services::key_rate_limiter::limiter().try_admit("limits-usage-test", Default::default(), now).unwrap();
         let usage = limits_usage("limits-usage-test", 17);
         assert_eq!(usage["rpmUsed"], 1);
         assert_eq!(usage["inFlight"], 1);

@@ -87,9 +87,17 @@ impl ProxyRotation {
         if pool_ids.is_empty() {
             return None;
         }
-        if pool_ids.len() == 1 || strategy != "round-robin" {
+        if pool_ids.len() == 1 {
             return Some(pool_ids[0].clone());
         }
+        if strategy == "random" {
+            use ring::rand::SecureRandom;
+            let mut bytes = [0u8; 8];
+            if ring::rand::SystemRandom::new().fill(&mut bytes).is_ok() {
+                return Some(pool_ids[(u64::from_ne_bytes(bytes) % pool_ids.len() as u64) as usize].clone());
+            }
+        }
+        if strategy != "round-robin" { return Some(pool_ids[0].clone()); }
         let slot = self.index.entry(provider.to_owned()).or_insert(usize::MAX);
         *slot = slot.wrapping_add(1) % pool_ids.len();
         Some(pool_ids[*slot].clone())

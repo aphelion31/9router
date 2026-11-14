@@ -52,7 +52,6 @@ pub type ResponseFn = fn(Option<&Value>, &mut TranslateState) -> Vec<Value>;
 
 #[derive(Debug, Clone, Default)]
 pub struct ClaudeBlockState {
-    pub block_type: String,
     pub tool_call_index: Option<usize>,
 }
 

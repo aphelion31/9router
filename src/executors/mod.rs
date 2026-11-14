@@ -296,6 +296,7 @@ pub async fn execute(
             url.query_pairs_mut().append_pair("alt", "sse");
         }
     }
+    let generation_url = url.to_string();
     let mut codex_headers: Vec<(&'static str, String)> = Vec::new();
     if provider.id == "codex" {
         codex_headers = codex::prepare(&mut request.body, request.provider_specific_data.as_ref())?;
@@ -371,12 +372,20 @@ pub async fn execute(
         builder = builder.header("anthropic-version", "2023-06-01");
     }
     if provider.id == "antigravity" {
-        for (name, value) in antigravity::prepare(
+        for (name, mut value) in antigravity::prepare(
             &request.model,
             &mut request.body,
             request.stream,
             request.provider_specific_data.as_ref(),
         )? {
+            if name.eq_ignore_ascii_case("user-agent") {
+                let body = serde_json::to_vec(&request.body)?;
+                let (rewritten, ua, _) = crate::services::antigravity_ide_version::apply_antigravity_ide_version_override(
+                    &body, Some(&value), &generation_url,
+                );
+                request.body = serde_json::from_slice(&rewritten)?;
+                value = ua.unwrap_or(value);
+            }
             builder = builder.header(name, value);
         }
     }
@@ -1647,12 +1656,7 @@ mod tests {
         .unwrap();
         let echo: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
         assert_eq!(echo["uri"], "/v1internal:streamGenerateContent?alt=sse");
-        assert!(
-            echo["headers"]["user-agent"]
-                .as_str()
-                .unwrap()
-                .starts_with("antigravity/hub/")
-        );
+        assert!(echo["headers"]["user-agent"].as_str().unwrap().starts_with("antigravity/2.24.0 "));
         let body = &echo["body"];
         assert_eq!(body["project"], "proj-1");
         assert_eq!(body["userAgent"], "antigravity");

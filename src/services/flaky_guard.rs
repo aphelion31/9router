@@ -1,4 +1,5 @@
 use serde_json::Value;
+use futures_core::Stream;
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ResponseSignals {
@@ -232,41 +233,42 @@ pub fn judge_finished_text(text: &str) -> Option<&'static str> {
     None
 }
 
-/// Result of a bounded probe. `buffered` holds every byte read so far; the caller must
-/// replay it before reading the rest of the response, because reqwest responses cannot be cloned.
+/// Result of a bounded probe. The caller must replay buffered frames.
 #[derive(Debug)]
 pub struct Probe {
     pub flaky: Option<&'static str>,
-    pub buffered: Vec<u8>,
+    pub buffered: Vec<Result<axum::body::Bytes, axum::Error>>,
     pub ended: bool,
 }
 
 /// Reads up to `budget` / `max_bytes`. Only a stream that finishes inside the window is judged;
 /// a live stream is released as not flaky, fail open.
 pub async fn probe_response(
-    response: &mut reqwest::Response,
+    response: &mut axum::body::BodyDataStream,
     budget: std::time::Duration,
     max_bytes: usize,
 ) -> Probe {
     let deadline = tokio::time::Instant::now() + budget;
     let mut buffered = Vec::new();
+    let mut text = Vec::new();
     let mut ended = false;
-    while buffered.len() <= max_bytes {
+    while text.len() <= max_bytes {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             break;
         }
-        match tokio::time::timeout(remaining, response.chunk()).await {
-            Ok(Ok(Some(chunk))) => buffered.extend_from_slice(&chunk),
-            Ok(Ok(None)) => {
+        match tokio::time::timeout(remaining, std::future::poll_fn(|cx| std::pin::Pin::new(&mut *response).poll_next(cx))).await {
+            Ok(Some(Ok(chunk))) => { text.extend_from_slice(&chunk); buffered.push(Ok(chunk)); },
+            Ok(None) => {
                 ended = true;
                 break;
             }
-            _ => break,
+            Ok(Some(Err(error))) => { buffered.push(Err(error)); break; },
+            Err(_) => break,
         }
     }
     let flaky = if ended {
-        judge_finished_text(&String::from_utf8_lossy(&buffered))
+        judge_finished_text(&String::from_utf8_lossy(&text))
     } else {
         None
     };
@@ -340,12 +342,14 @@ data: {"choices":[{"delta":{"content":"ab"}}]}
         });
 
         let client = reqwest::Client::new();
-        let mut fast = client.get(format!("http://{addr}/a")).send().await.unwrap();
+        let fast = client.get(format!("http://{addr}/a")).send().await.unwrap();
+        let mut fast = axum::body::Body::from_stream(fast.bytes_stream()).into_data_stream();
         let probe = probe_response(&mut fast, Duration::from_millis(500), 2_000_000).await;
         assert!(probe.ended);
         assert_eq!(probe.flaky, Some("empty"));
 
-        let mut live = client.get(format!("http://{addr}/b")).send().await.unwrap();
+        let live = client.get(format!("http://{addr}/b")).send().await.unwrap();
+        let mut live = axum::body::Body::from_stream(live.bytes_stream()).into_data_stream();
         let started = Instant::now();
         let probe = probe_response(&mut live, Duration::from_millis(150), 2_000_000).await;
         assert!(!probe.ended);

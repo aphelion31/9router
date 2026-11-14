@@ -778,7 +778,6 @@ pub fn claude_to_openai_response(chunk: Option<&Value>, state: &mut TranslateSta
                     state.claude_blocks.insert(
                         index,
                         ClaudeBlockState {
-                            block_type: claude_block::THINKING.to_string(),
                             tool_call_index: None,
                         },
                     );
@@ -801,7 +800,6 @@ pub fn claude_to_openai_response(chunk: Option<&Value>, state: &mut TranslateSta
                     state.claude_blocks.insert(
                         index,
                         ClaudeBlockState {
-                            block_type: claude_block::TEXT.to_string(),
                             tool_call_index: None,
                         },
                     );
@@ -824,7 +822,6 @@ pub fn claude_to_openai_response(chunk: Option<&Value>, state: &mut TranslateSta
                     state.claude_blocks.insert(
                         index,
                         ClaudeBlockState {
-                            block_type: claude_block::TOOL_USE.to_string(),
                             tool_call_index: Some(tc_idx),
                         },
                     );
