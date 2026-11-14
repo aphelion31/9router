@@ -1,13 +1,29 @@
 use super::*;
 use std::collections::HashMap;
 
+/// gemini.js extractTextContent: strings as-is, arrays keep only `{type:"text"}` blocks.
 fn text(v: &Value) -> String {
     if let Some(s) = v.as_str() { return s.to_owned(); }
-    v.as_array().map(|a| a.iter().filter_map(|x| x["text"].as_str()).collect::<String>()).unwrap_or_default()
+    v.as_array().map(|a| a.iter().filter(|x| x["type"] == "text").filter_map(|x| x["text"].as_str()).collect::<String>()).unwrap_or_default()
 }
+/// combo.js extractPanelText, same candidate order.
 fn panel_text(v: &Value) -> String {
-    let candidates = [text(&v["choices"][0]["message"]["content"]), text(&v["choices"][0]["delta"]["content"]), text(&v["choices"][0]["text"]), text(&v["content"]), text(&v["candidates"][0]["content"]["parts"]), v["output"].as_array().map(|a| a.iter().map(|x| text(&x["content"])).collect()).unwrap_or_default()];
-    candidates.into_iter().find(|s| !s.trim().is_empty()).unwrap_or_default()
+    let nonblank = |s: String| (!s.trim().is_empty()).then_some(s);
+    let choice = &v["choices"][0];
+    if !choice.is_null() {
+        let msg = if choice["message"].is_null() { &choice["delta"] } else { &choice["message"] };
+        if let Some(t) = nonblank(text(&msg["content"])) { return t; }
+        if let Some(t) = choice["text"].as_str().map(str::to_owned).and_then(nonblank) { return t; }
+    }
+    if let Some(t) = nonblank(text(&v["content"])) { return t; }
+    // Gemini parts carry .text without a type discriminator.
+    if let Some(parts) = v["candidates"][0]["content"]["parts"].as_array()
+        && let Some(t) = nonblank(parts.iter().map(|p| p["text"].as_str().unwrap_or("")).collect())
+    { return t; }
+    if let Some(out) = v["output"].as_array()
+        && let Some(t) = nonblank(out.iter().flat_map(|o| o["content"].as_array().into_iter().flatten()).map(|c| c["text"].as_str().unwrap_or("")).collect())
+    { return t; }
+    String::new()
 }
 fn panel_body(body: &Value) -> Value {
     let mut body = body.clone();
@@ -92,7 +108,7 @@ pub(super) async fn fusion_chat(body: &Value, models: &[String], targets: &HashM
     for (i, response) in results.into_iter().enumerate() {
         let Some(response) = response.filter(|r| r.status().is_success()) else { continue };
         let (parts, b) = response.into_parts();
-        let Ok(bytes) = axum::body::to_bytes(b, 16 * 1024 * 1024).await else { continue };
+        let Ok(bytes) = axum::body::to_bytes(b, usize::MAX).await else { continue };
         let Ok(value) = serde_json::from_slice::<Value>(&bytes) else { continue };
         let answer = panel_text(&value);
         if !answer.is_empty() { answers.push((models[i].clone(), answer, value, Response::from_parts(parts, Body::from(bytes)))); }
@@ -111,6 +127,38 @@ pub(super) async fn fusion_chat(body: &Value, models: &[String], targets: &HashM
     let mut request = body.clone();
     let key = if request["messages"].is_array() { "messages" } else if request["input"].is_array() { "input" } else if request["contents"].is_array() { "contents" } else { request["messages"] = json!([]); "messages" };
     request[key].as_array_mut().unwrap().push(if key == "contents" { json!({"role":"user","parts":[{"text":prompt}]}) } else { json!({"role":"user","content":prompt}) });
-    let judge = settings["comboStrategies"][combo]["judgeModel"].as_str().map(str::trim).filter(|s| !s.is_empty()).unwrap_or(&models[0]);
-    call(judge.to_owned(), request).await
+    let judge = settings["comboStrategies"][combo]["judgeModel"].as_str().map(str::trim).filter(|s| !s.is_empty()).unwrap_or(&models[0]).to_owned();
+    // A bare judge name may be a variant: resolve it like panel members (comboDispatch variantBacking).
+    if !targets.contains_key(&judge) && !judge.contains('/') && let Some(backing) = hooks.variant_backing(&judge).await && let Some(t) = parse_model_target(&backing) {
+        let mut targets = targets.clone();
+        targets.insert(judge.clone(), t);
+        return Box::pin(fusion_judge(judge, request, &targets, settings, combo, headers, endpoint, executor, hooks)).await;
+    }
+    call(judge, request).await
+}
+
+async fn fusion_judge(judge: String, mut request: Value, targets: &HashMap<String, ModelTarget>, settings: &Value, combo: &str, headers: &HeaderMap, endpoint: Option<&str>, executor: &dyn Executor, hooks: Arc<dyn ChatHooks>) -> Response {
+    let Some(target) = targets.get(&judge).cloned() else { return error_response(400, "Invalid model format") };
+    let pin = &settings["comboMemberPins"][combo][&judge];
+    let pin = pin.as_str().or_else(|| pin["id"].as_str()).map(str::to_owned);
+    request["model"] = json!(format!("{}/{}", target.provider, target.model));
+    handle_chat_inner(request, headers, endpoint, executor, hooks, Some((judge, pin))).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn panel_text_matches_extract_panel_text() {
+        // combo.js extractPanelText + gemini.js extractTextContent: only {type:"text"} blocks count.
+        let thinking = json!({"content":[{"type":"thinking","text":"secret plan"},{"type":"text","text":"answer"}]});
+        assert_eq!(panel_text(&thinking), "answer");
+        // choices[0].text is used only when message content is blank.
+        assert_eq!(panel_text(&json!({"choices":[{"message":{"content":""},"text":"legacy"}]})), "legacy");
+        // Gemini parts have no type discriminator.
+        assert_eq!(panel_text(&json!({"candidates":[{"content":{"parts":[{"text":"a"},{"text":"b"}]}}]})), "ab");
+        assert_eq!(panel_text(&json!({"output":[{"content":[{"text":"r"}]}]})), "r");
+        assert_eq!(panel_text(&json!({"choices":[{"message":{"content":[{"type":"image_url"}]}}]})), "");
+    }
 }

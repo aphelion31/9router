@@ -35,6 +35,9 @@ pub struct UsageRecord {
     pub latency_ms: u64,
 }
 
+/// Pseudo provider marking a combo member that is itself a combo.
+const NESTED_COMBO: &str = "\u{0}nested-combo";
+
 #[derive(Debug, Clone)]
 pub struct ModelTarget {
     pub provider: String,
@@ -285,8 +288,16 @@ pub async fn handle_chat(
 }
 
 async fn handle_chat_inner(
-    mut body: Value, headers: &HeaderMap, endpoint_path: Option<&str>, executor: &dyn Executor,
+    body: Value, headers: &HeaderMap, endpoint_path: Option<&str>, executor: &dyn Executor,
     hooks: Arc<dyn ChatHooks>, member_context: Option<(String, Option<String>)>,
+) -> Response {
+    handle_chat_nested(body, headers, endpoint_path, executor, hooks, member_context, false).await
+}
+
+/// `nested`: upstream chat.js nested-combo branch (dispatchCombo with recordBreakerSuccess=false).
+async fn handle_chat_nested(
+    mut body: Value, headers: &HeaderMap, endpoint_path: Option<&str>, executor: &dyn Executor,
+    hooks: Arc<dyn ChatHooks>, member_context: Option<(String, Option<String>)>, nested: bool,
 ) -> Response {
     let Some(raw_model) = body.get("model").and_then(|v| v.as_str()).map(str::to_string) else {
         return error_response(400, "Missing model");
@@ -300,6 +311,7 @@ async fn handle_chat_inner(
 
     let is_combo = parse_model_target(&model_str).is_none();
     let mut member_targets = std::collections::HashMap::new();
+    let mut nested_members: HashSet<String> = HashSet::new();
     let mut targets = if let Some(mut t) = parse_model_target(&model_str) {
         // Upstream getModelInfo: a non-reserved prefix may name a provider node.
         if providers::lookup(&t.provider).is_none()
@@ -313,6 +325,12 @@ async fn handle_chat_inner(
         for member in combo_models {
             let backing = if member.contains('/') { member.clone() } else { hooks.variant_backing(&member).await.unwrap_or_else(|| member.clone()) };
             if let Some(target) = parse_model_target(&backing) { member_targets.insert(member, target.clone()); resolved.push(target); }
+            else if !nested && member != model_str && hooks.get_combo_models(&member).await.is_some() {
+                // Nested combo member: dispatched through its own combo below.
+                nested_members.insert(member.clone());
+                let target = ModelTarget { provider: NESTED_COMBO.into(), model: member.clone() };
+                member_targets.insert(member, target.clone()); resolved.push(target);
+            }
         }
         resolved
     } else {
@@ -438,6 +456,17 @@ async fn handle_chat_inner(
         let cap = if is_combo { crate::services::member_failover::resolve_combo_member_attempt_cap(&settings, &target.provider, &target.model) } else { None };
         let mut failures = 0usize;
         let mut overload_attempts = 0u32;
+        if target.provider == NESTED_COMBO {
+            let mut inner = body.clone();
+            inner["model"] = json!(target.model);
+            // Variant fallback: keep the outer requested name (upstream injectModelName || modelStr).
+            let inject = member_context.as_ref().map(|c| c.0.clone()).unwrap_or_else(|| model_str.clone());
+            let resp = Box::pin(handle_chat_nested(inner, headers, endpoint_path, executor, Arc::clone(&hooks), Some((inject, None)), true)).await;
+            if resp.status().is_success() { return resp; }
+            last_status = resp.status().as_u16();
+            last_error = format!("Nested combo {} failed", target.model);
+            continue;
+        }
         loop {
             if !crate::services::provider_breaker::global().lock().map(|mut b| b.gate(&target.provider, Some(&target.model), now_ms())).unwrap_or(true) { break; }
             let pin = &settings["comboMemberPins"][&model_str][&member];
@@ -497,7 +526,7 @@ async fn handle_chat_inner(
                     let cid = conn_id_success.clone();
                     let m = model_success.clone();
                     let p = provider_success.clone();
-                    Box::pin(async move { if let Ok(mut b) = crate::services::provider_breaker::global().lock() { b.success(&p, Some(&m), now_ms()); } h.on_request_success(&cid, &m).await })
+                    Box::pin(async move { if !nested && let Ok(mut b) = crate::services::provider_breaker::global().lock() { b.success(&p, Some(&m), now_ms()); } h.on_request_success(&cid, &m).await })
                 })),
             };
 
@@ -772,6 +801,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fusion_bare_judge_variant_resolves_to_backing() {
+        // combo.js handleFusionChat: judge goes through handleSingleModel, which resolves variants.
+        struct Judge;
+        impl ChatHooks for Judge {
+            fn get_credentials<'a>(&'a self, _: &'a str, _: &'a str, _: &'a HashSet<String>) -> BoxFuture<'a, Option<Credentials>> { Box::pin(async { Some(test_creds("judge")) }) }
+            fn get_combo_models<'a>(&'a self, n: &'a str) -> BoxFuture<'a, Option<Vec<String>>> { Box::pin(async move { (n == "fz").then(|| vec!["openai/a".into(), "openai/b".into()]) }) }
+            fn settings<'a>(&'a self) -> BoxFuture<'a, Value> { Box::pin(async { json!({"comboStrategies":{"fz":{"fallbackStrategy":"fusion","judgeModel":"my-judge"}}}) }) }
+            fn variant_backing<'a>(&'a self, n: &'a str) -> BoxFuture<'a, Option<String>> { Box::pin(async move { (n == "my-judge").then(|| "openai/judge-backing".into()) }) }
+        }
+        let executor = FakeExecutor::new(|req, _| {
+            let content = if req.model == "judge-backing" { "judged" } else { "panel" };
+            Ok(ExecutorResponse { status: 200, headers: vec![], body: ExecutorBody::Json(json!({"choices":[{"index":0,"message":{"role":"assistant","content":content},"finish_reason":"stop"}]})), url: None, response_format: None })
+        });
+        let response = handle_chat(json!({"model":"fz","stream":false,"messages":[{"role":"user","content":"hi"}]}), &HeaderMap::new(), Some("/v1/chat/completions"), &executor, Arc::new(Judge)).await;
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("judged"), "bare judge variant must not fail as invalid model");
+    }
+
+    #[tokio::test]
     async fn capacity_orders_locked_models_and_forwards_pin() {
         let executor = FakeExecutor::new(|req, _| {
             assert_eq!(req.body["model"], "b");
@@ -817,6 +866,24 @@ mod tests {
             let response = handle_chat(json!({"model":"openai/m","stream":false,"messages":[{"role":"user","content":"hi"}]}), &HeaderMap::new(), Some("/v1/chat/completions"), &executor, hooks).await;
             assert_eq!(response.status(), 502, "second call must not be locked out by a cooldown");
         }
+    }
+
+    #[tokio::test]
+    async fn nested_combo_member_dispatches_inner_combo() {
+        // chat.js handleSingleModelChat nested-combo branch -> dispatchCombo(recordBreakerSuccess:false)
+        struct Nested;
+        impl ChatHooks for Nested {
+            fn get_credentials<'a>(&'a self, _: &'a str, _: &'a str, _: &'a HashSet<String>) -> BoxFuture<'a, Option<Credentials>> { Box::pin(async { Some(test_creds("nested")) }) }
+            fn get_combo_models<'a>(&'a self, n: &'a str) -> BoxFuture<'a, Option<Vec<String>>> {
+                Box::pin(async move { match n { "outer" => Some(vec!["inner".into()]), "inner" => Some(vec!["openai/deep".into()]), _ => None } })
+            }
+        }
+        let executor = FakeExecutor::new(|req, _| {
+            assert_eq!(req.model, "deep");
+            Ok(ExecutorResponse { status: 200, headers: vec![], body: ExecutorBody::Json(json!({"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]})), url: None, response_format: None })
+        });
+        let response = handle_chat(json!({"model":"outer","stream":false,"messages":[{"role":"user","content":"hi"}]}), &HeaderMap::new(), Some("/v1/chat/completions"), &executor, Arc::new(Nested)).await;
+        assert_eq!(response.status(), 200, "combo member that is itself a combo must not be dropped");
     }
 
     #[tokio::test]
