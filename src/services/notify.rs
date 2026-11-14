@@ -82,9 +82,96 @@ pub fn webhook_headers(secret: &str, body: &str) -> Vec<(&'static str, String)> 
     headers
 }
 
+pub fn read_config(db: &rusqlite::Connection) -> Value {
+    let raw = crate::db::kv_get(db, "notify", "config").ok().flatten()
+        .and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(default_notify_config);
+    normalize_notify_config(&raw)
+}
+
+fn redact(value: &Value, mask: bool, depth: usize) -> Value {
+    if depth > 4 { return json!("[truncated]"); }
+    match value {
+        Value::Array(items) => Value::Array(items.iter().take(50).map(|v| redact(v, mask, depth + 1)).collect()),
+        Value::Object(items) => Value::Object(items.iter().filter_map(|(k, v)| {
+            if ["apiKey", "apikey", "api_key", "accessToken", "access_token", "refreshToken", "refresh_token", "idToken", "id_token", "secret", "token", "password", "botToken", "clientSecret", "sessionToken", "cookie", "authorization"].contains(&k.as_str()) {
+                mask.then(|| (k.clone(), json!("[masked]")))
+            } else { Some((k.clone(), redact(v, mask, depth + 1))) }
+        }).collect()),
+        Value::String(s) => json!(s.chars().take(2000).collect::<String>()),
+        _ => value.clone(),
+    }
+}
+
+async fn post(client: &reqwest::Client, url: &str, body: String, secret: &str) -> bool {
+    let mut request = client.post(url).timeout(std::time::Duration::from_millis(NOTIFY_TIMEOUT_MS));
+    for (name, value) in webhook_headers(secret, &body) { request = request.header(name, value); }
+    request.body(body).send().await.is_ok_and(|r| r.status().is_success())
+}
+
+fn payload(event: &str, data: Value) -> String {
+    let millis = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
+    json!({"event": event, "timestamp": crate::services::usage_shared::unix_millis_iso(millis), "data": data}).to_string()
+}
+
+pub async fn send_notification(client: &reqwest::Client, cfg: &Value, event: &str, data: Value) -> Value {
+    let mut results = json!({"telegram":"skipped", "webhook":"skipped"});
+    let telegram = &cfg["telegram"];
+    let token = telegram["botToken"].as_str().unwrap_or("");
+    let chat = telegram["chatId"].as_str().unwrap_or("");
+    if telegram["enabled"] == true && !token.is_empty() && !chat.is_empty() {
+        let body = json!({"chat_id":chat,"text":build_notify_text(event, &data)}).to_string();
+        results["telegram"] = json!(if post(client, &telegram_send_url(token), body, "").await { "sent" } else { "failed" });
+    }
+    let webhook = &cfg["webhook"];
+    let url = webhook["url"].as_str().unwrap_or("");
+    if webhook["enabled"] == true && !url.is_empty() {
+        results["webhook"] = json!(if post(client, url, payload(event, data), webhook["secret"].as_str().unwrap_or("")).await { "sent" } else { "failed" });
+    }
+    results
+}
+
+pub fn emit(db: std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>, event: &'static str, data: Value) {
+    tokio::spawn(async move {
+        let cfg = match db.lock() { Ok(db) => read_config(&db), Err(_) => return };
+        let wh = &cfg["webhook"];
+        let url = wh["url"].as_str().unwrap_or("");
+        if wh["enabled"] != true || url.is_empty() || cfg["webhookEvents"][event] != true { return; }
+        let data = redact(&data, cfg["webhookEvents"]["maskCredentials"] != false, 0);
+        let _ = post(&reqwest::Client::new(), url, payload(event, data), wh["secret"].as_str().unwrap_or("")).await;
+    });
+}
+
 #[cfg(test)]
 mod delivery_tests {
     use super::*;
+    #[tokio::test]
+    async fn signed_event_is_delivered_and_secrets_redacted() {
+        use axum::{Router, routing::post, extract::State, http::HeaderMap, body::Bytes};
+        use std::sync::{Arc, Mutex};
+        let received = Arc::new(Mutex::new(None));
+        let app = Router::new().route("/", post(|State(received): State<Arc<Mutex<Option<(HeaderMap, Bytes)>>>>, headers: HeaderMap, body: Bytes| async move {
+            *received.lock().unwrap() = Some((headers, body));
+        })).with_state(received.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE kv(scope TEXT, key TEXT, value TEXT, PRIMARY KEY(scope,key));").unwrap();
+        let cfg = json!({"webhook":{"enabled":true,"url":format!("http://{addr}/"),"secret":"key"},"webhookEvents":{"usage":true}});
+        crate::db::kv_set(&db, "notify", "config", &cfg.to_string()).unwrap();
+        emit(Arc::new(Mutex::new(db)), "usage", json!({"apiKey":"private","model":"x"}));
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop { if received.lock().unwrap().is_some() { break; } tokio::time::sleep(std::time::Duration::from_millis(10)).await; }
+        }).await.unwrap();
+        let guard = received.lock().unwrap();
+        let (headers, body) = guard.as_ref().unwrap();
+        let text = std::str::from_utf8(body).unwrap();
+        assert_eq!(headers["x-9router-signature"], sign_webhook("key", text));
+        let value: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(value["data"]["apiKey"], "[masked]");
+        assert_eq!(value["event"], "usage");
+        server.abort();
+    }
     #[test]
     fn telegram_url_and_optional_signature() {
         assert_eq!(
