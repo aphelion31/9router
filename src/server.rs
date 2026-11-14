@@ -912,7 +912,7 @@ impl ChatHooks for Hooks {
         Box::pin(async move {
             let db = self.state.db.lock().ok()?;
             let settings = crate::db::settings_get(&db).ok()?;
-            let token_saver_enabled = settings.get("tokenSaverEnabled").and_then(Value::as_bool).unwrap_or(false);
+            let token_saver_enabled = true;
             let rtk_enabled = settings.get("rtkEnabled").and_then(Value::as_bool).unwrap_or(true);
             let caveman_enabled = settings.get("cavemanEnabled").and_then(Value::as_bool).unwrap_or(false);
             let caveman_level = settings.get("cavemanLevel").and_then(Value::as_str).map(str::to_owned);

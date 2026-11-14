@@ -792,6 +792,28 @@ fn responses_stream_to_json(text: &str, model: &str) -> Value {
     })
 }
 
+fn openai_stream_to_json(text: &str, model: &str) -> Value {
+    let mut content = String::new();
+    let mut result = json!({"id":"", "object":"chat.completion", "model":model, "choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"stop"}]});
+    for line in text.lines() {
+        let Some(SseLine::Json(chunk)) = parse_sse_line(line) else { continue };
+        if let Some(s) = chunk["choices"][0]["delta"]["content"].as_str() { content.push_str(s); }
+        for key in ["id", "created", "model", "usage"] { if !chunk[key].is_null() { result[key] = chunk[key].clone(); } }
+        if !chunk["choices"][0]["finish_reason"].is_null() { result["choices"][0]["finish_reason"] = chunk["choices"][0]["finish_reason"].clone(); }
+    }
+    result["choices"][0]["message"]["content"] = json!(content);
+    result
+}
+
+#[cfg(test)]
+#[test]
+fn zed_non_stream_folds_content_and_usage() {
+    let text = "data: {\"choices\":[{\"delta\":{\"content\":\"po\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"ng\"}}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"completion_tokens\":2}}\n\n";
+    let result = openai_stream_to_json(text, "test");
+    assert_eq!(result["choices"][0]["message"]["content"], "pong");
+    assert_eq!(result["usage"]["completion_tokens"], 2);
+}
+
 fn parse_sse_text_to_last_json(text: &str) -> Option<Value> {
     let mut last = None;
     for line in text.lines() {
@@ -969,7 +991,7 @@ pub async fn handle_chat_core(
     for position in ["prepend", "append"] {
         let prompt = options.prompt_injections.iter()
             .filter(|p| p["mode"] != "chat" && (p["position"] == "prepend") == (position == "prepend"))
-            .filter_map(|p| p["content"].as_str()).filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n\n");
+            .filter_map(|p| p["text"].as_str().or_else(|| p["content"].as_str())).filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n\n");
         crate::services::rtk_system_inject::inject_system_prompt(&mut translated_body, &target_format, &prompt, position);
     }
     let turns: Vec<Value> = options.prompt_injections.iter().filter(|p| p["mode"] == "chat")
@@ -1138,6 +1160,8 @@ pub async fn handle_chat_core(
             ExecutorBody::Bytes(b) => {
                 if let Ok(v) = serde_json::from_slice::<Value>(&b) {
                     v
+                } else if options.provider == "zed" {
+                    openai_stream_to_json(&String::from_utf8_lossy(&b), &options.model)
                 } else if resp_format == FORMAT_OPENAI_RESPONSES {
                     // Upstream streamToJsonConverter.js: forced-stream Responses (codex) is folded, not last-line.
                     responses_stream_to_json(&String::from_utf8_lossy(&b), &options.model)
@@ -1158,6 +1182,8 @@ pub async fn handle_chat_core(
                     .unwrap_or_default();
                 if let Ok(v) = serde_json::from_slice::<Value>(&b) {
                     v
+                } else if options.provider == "zed" {
+                    openai_stream_to_json(&String::from_utf8_lossy(&b), &options.model)
                 } else if let Some(v) = parse_sse_text_to_last_json(&String::from_utf8_lossy(&b)) {
                     v
                 } else {

@@ -271,6 +271,7 @@ pub async fn execute(
                 .access_token
                 .as_deref()
                 .or(request.api_key.as_deref()),
+            request.provider_specific_data.as_ref(),
         )
         .await;
     }
