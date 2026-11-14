@@ -11,6 +11,11 @@ pub struct StickyComboStore {
     entries: std::collections::HashMap<String, (String, u64)>,
 }
 
+pub fn sticky_store() -> &'static std::sync::Mutex<StickyComboStore> {
+    static STORE: std::sync::OnceLock<std::sync::Mutex<StickyComboStore>> = std::sync::OnceLock::new();
+    STORE.get_or_init(Default::default)
+}
+
 impl StickyComboStore {
     pub fn get(
         &mut self,

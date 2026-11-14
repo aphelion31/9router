@@ -382,6 +382,22 @@ struct Hooks {
     api_key_id: Option<String>,
 }
 impl ChatHooks for Hooks {
+    fn settings<'a>(&'a self) -> BoxFuture<'a, Value> {
+        Box::pin(async move {
+            self.state.db.lock().ok().and_then(|db| crate::db::settings_get(&db).ok()).unwrap_or_default()
+        })
+    }
+    fn smart_choice<'a>(&'a self, body: &'a Value) -> BoxFuture<'a, Option<Value>> {
+        Box::pin(async move {
+            let model = body["model"].as_str()?;
+            let target = crate::handlers::chat::parse_model_target(model)?;
+            self.get_credentials(&target.provider, &target.model, &std::collections::HashSet::new()).await?;
+            let response = crate::handlers::media::systemone::handle_systemone(State(self.state.clone()), Json(body.clone())).await;
+            if !response.status().is_success() { return None; }
+            let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024).await.ok()?;
+            serde_json::from_slice(&bytes).ok()
+        })
+    }
     fn prompt_injections<'a>(&'a self, model: &'a str) -> BoxFuture<'a, Vec<Value>> {
         Box::pin(async move {
             let Ok(db) = self.state.db.lock() else { return Vec::new() };

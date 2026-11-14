@@ -1,6 +1,60 @@
 use serde_json::Value;
 use std::collections::HashSet;
 
+pub fn detect_required_capabilities(body: &Value) -> Vec<String> {
+    let mut required = HashSet::new();
+    fn mime(s: &str, out: &mut HashSet<&'static str>) {
+        if s.starts_with("image/") { out.insert("vision"); }
+        else if s == "application/pdf" { out.insert("pdf"); }
+        else if s.starts_with("audio/") { out.insert("audioInput"); }
+        else if s.starts_with("video/") { out.insert("videoInput"); }
+    }
+    fn scan(value: &Value, out: &mut HashSet<&'static str>) {
+        if let Some(items) = value.as_array() { for item in items { scan(item, out); } }
+        if let Some(obj) = value.as_object() {
+            match value["type"].as_str().unwrap_or("") {
+                "image_url" | "image" | "input_image" => { out.insert("vision"); },
+                "input_audio" | "audio_url" | "audio" => { out.insert("audioInput"); },
+                "input_video" | "video_url" | "video" => { out.insert("videoInput"); },
+                "file" | "document" | "input_file" => {
+                    let data = value["file"]["file_data"].as_str().or_else(|| value["source"]["data"].as_str()).unwrap_or("");
+                    let kind = value["source"]["media_type"].as_str().or_else(|| data.strip_prefix("data:").and_then(|s| s.split([';', ',']).next()));
+                    if let Some(kind) = kind { mime(kind, out); } else { out.insert("pdf"); }
+                }, _ => ()
+            }
+            if value["images"].as_array().is_some_and(|a| !a.is_empty()) || !value["image_url"].is_null() || !value["image"].is_null() { out.insert("vision"); }
+            if !value["audio_url"].is_null() || !value["audio"].is_null() { out.insert("audioInput"); }
+            for key in ["mimeType", "contentType", "mediaType"] { if let Some(s) = value[key].as_str() { mime(s, out); } }
+            for (key, v) in obj { if matches!(key.as_str(), "content" | "parts" | "inlineData" | "fileData" | "attachments" | "experimental_attachments") { scan(v, out); } }
+        }
+        if let Some(s) = value.as_str() {
+            if s.contains("data:image/") { out.insert("vision"); }
+            else if s.contains("data:audio/") { out.insert("audioInput"); }
+            else if s.contains("data:application/pdf") { out.insert("pdf"); }
+        }
+    }
+    for items in [&body["messages"], &body["input"], body.get("contents").unwrap_or(&body["request"]["contents"])] {
+        if let Some(items) = items.as_array() {
+            let start = items.iter().rposition(|m| matches!(m["role"].as_str(), Some("assistant" | "model"))).map_or(0, |i| i + 1);
+            for item in &items[start..] { scan(item, &mut required); }
+        }
+    }
+    ["vision", "pdf", "audioInput", "videoInput"].into_iter().filter(|cap| required.contains(cap)).map(str::to_owned).collect()
+}
+
+fn model_metadata(provider: &str, model: &str) -> Option<&'static crate::providers::Model> {
+    crate::providers::lookup(provider)?.models.iter().find(|m| m.id == model)
+}
+pub fn model_context_window(provider: &str, model: &str) -> Option<u64> {
+    model_metadata(provider, model)?.metadata.get("contextLength")?.as_u64()
+}
+pub fn model_satisfies(model: &str, required: &[&str]) -> bool {
+    let Some((provider, model)) = model.split_once('/') else { return false; };
+    let Some(model) = model_metadata(provider, model) else { return false; };
+    let caps = model.metadata.get("capabilities");
+    required.iter().all(|cap| caps.is_some_and(|c| c[*cap] == true || c.as_array().is_some_and(|a| a.iter().any(|v| v.as_str() == Some(cap)))))
+}
+
 pub const DEFAULT_FALLBACK_MODEL: &str = "oc/mimo-v2.6-flash-free";
 const CAPS: [&str; 4] = ["vision", "pdf", "audioInput", "videoInput"];
 #[derive(Debug, PartialEq, Eq)]
