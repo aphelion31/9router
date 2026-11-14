@@ -613,13 +613,7 @@ pub fn openai_to_antigravity_request(
     _stream: bool,
     credentials: Option<&Value>,
 ) -> Value {
-    let mut inner = build_gemini_core(model, body, true);
-    if inner.get("systemInstruction").is_none() {
-        inner["systemInstruction"] = json!({
-            "role": gemini_role::USER,
-            "parts": [{ "text": defaults::ANTIGRAVITY_DEFAULT_SYSTEM }]
-        });
-    }
+    let inner = build_gemini_core(model, body, true);
     let project = credentials
         .and_then(|c| c.get("projectId"))
         .and_then(|v| v.as_str())

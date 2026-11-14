@@ -569,21 +569,9 @@ fn gemini_body_to_openai(body: &Value) -> Value {
         .get("usageMetadata")
         .or_else(|| body.get("usageMetadata"))
     {
-        let prompt = u.get("promptTokenCount").and_then(|v| v.as_u64()).unwrap_or(0)
-            + u.get("thoughtsTokenCount").and_then(|v| v.as_u64()).unwrap_or(0);
-        let comp = u
-            .get("candidatesTokenCount")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        let total = u
-            .get("totalTokenCount")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(prompt + comp);
-        out["usage"] = json!({
-            "prompt_tokens": prompt,
-            "completion_tokens": comp,
-            "total_tokens": total,
-        });
+        if let Some(usage) = crate::translator::concerns::to_openai_usage(FORMAT_GEMINI, Some(u)) {
+            out["usage"] = usage;
+        }
     }
     out
 }
@@ -794,15 +782,45 @@ fn responses_stream_to_json(text: &str, model: &str) -> Value {
 
 fn openai_stream_to_json(text: &str, model: &str) -> Value {
     let mut content = String::new();
+    let mut calls = std::collections::BTreeMap::<u64, Value>::new();
     let mut result = json!({"id":"", "object":"chat.completion", "model":model, "choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"stop"}]});
     for line in text.lines() {
         let Some(SseLine::Json(chunk)) = parse_sse_line(line) else { continue };
         if let Some(s) = chunk["choices"][0]["delta"]["content"].as_str() { content.push_str(s); }
+        if let Some(deltas) = chunk["choices"][0]["delta"]["tool_calls"].as_array() {
+            for delta in deltas {
+                let index = delta["index"].as_u64().unwrap_or(0);
+                let call = calls.entry(index).or_insert_with(|| json!({"id":"","type":"function","function":{"name":"","arguments":""}}));
+                for key in ["id", "type"] { if let Some(value) = delta[key].as_str() { call[key] = json!(value); } }
+                for key in ["name", "arguments"] {
+                    if let Some(value) = delta["function"][key].as_str() {
+                        let current = call["function"][key].as_str().unwrap_or("");
+                        call["function"][key] = json!(format!("{current}{value}"));
+                    }
+                }
+            }
+        }
         for key in ["id", "created", "model", "usage"] { if !chunk[key].is_null() { result[key] = chunk[key].clone(); } }
         if !chunk["choices"][0]["finish_reason"].is_null() { result["choices"][0]["finish_reason"] = chunk["choices"][0]["finish_reason"].clone(); }
     }
     result["choices"][0]["message"]["content"] = json!(content);
+    if !calls.is_empty() {
+        if content.is_empty() { result["choices"][0]["message"]["content"] = Value::Null; }
+        result["choices"][0]["message"]["tool_calls"] = json!(calls.into_values().collect::<Vec<_>>());
+        if result["choices"][0]["finish_reason"] == "stop" { result["choices"][0]["finish_reason"] = json!("tool_calls"); }
+    }
     result
+}
+
+#[test]
+fn zed_non_stream_folds_tool_calls() {
+    let text = concat!(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"q\\\":\"}}]}}]}\n",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"1}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n"
+    );
+    let result = openai_stream_to_json(text, "test");
+    assert_eq!(result["choices"][0]["message"]["tool_calls"][0], json!({"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":1}"}}));
+    assert_eq!(result["choices"][0]["finish_reason"], "tool_calls");
 }
 
 #[cfg(test)]
@@ -988,16 +1006,6 @@ pub async fn handle_chat_core(
         );
         *tools = deduped;
     }
-    for position in ["prepend", "append"] {
-        let prompt = options.prompt_injections.iter()
-            .filter(|p| p["mode"] != "chat" && (p["position"] == "prepend") == (position == "prepend"))
-            .filter_map(|p| p["text"].as_str().or_else(|| p["content"].as_str())).filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n\n");
-        crate::services::rtk_system_inject::inject_system_prompt(&mut translated_body, &target_format, &prompt, position);
-    }
-    let turns: Vec<Value> = options.prompt_injections.iter().filter(|p| p["mode"] == "chat")
-        .filter_map(|p| p["turns"].as_array()).flatten().cloned().collect();
-    crate::services::rtk_system_inject::inject_chat_turns(&mut translated_body, &target_format, &turns);
-
     let rtk_stats = pre_translate_rtk.or_else(|| {
         crate::services::rtk_index::compress_messages(&mut translated_body, rtk_active)
     });
@@ -1025,6 +1033,15 @@ pub async fn handle_chat_core(
     {
         crate::services::rtk_caveman::inject_ponytail(&mut translated_body, &target_format, level);
     }
+    for position in ["prepend", "append"] {
+        let prompt = options.prompt_injections.iter()
+            .filter(|p| p["mode"] != "chat" && (p["position"] == "prepend") == (position == "prepend"))
+            .filter_map(|p| p["text"].as_str().or_else(|| p["content"].as_str())).filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n\n");
+        crate::services::rtk_system_inject::inject_system_prompt(&mut translated_body, &target_format, &prompt, position);
+    }
+    let turns: Vec<Value> = options.prompt_injections.iter().filter(|p| p["mode"] == "chat")
+        .filter_map(|p| p["turns"].as_array()).flatten().cloned().collect();
+    crate::services::rtk_system_inject::inject_chat_turns(&mut translated_body, &target_format, &turns);
 
     let exec_req = ExecutorRequest {
         provider: options.provider.clone(),
@@ -1249,6 +1266,14 @@ pub async fn handle_chat_core(
 #[cfg(test)]
 mod header_tests {
     use super::*;
+
+    #[test]
+    fn gemini_non_stream_usage_keeps_reasoning_out_of_prompt() {
+        let body = json!({"candidates":[{"content":{"parts":[{"text":"pong"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":5,"thoughtsTokenCount":20,"totalTokenCount":125}});
+        let result = gemini_body_to_openai(&body);
+        assert_eq!(result["usage"]["prompt_tokens"], 100);
+        assert_eq!(result["usage"]["completion_tokens"], 25);
+    }
 
     #[test]
     fn hop_by_hop_headers_are_not_forwarded() {
