@@ -1035,7 +1035,7 @@ pub async fn handle_chat_core(
 
     if ts_cfg.token_saver_enabled && ts_cfg.headroom_enabled
         && let Err(reason) = crate::services::headroom::compress_with_headroom(
-            &mut translated_body, &ts_cfg.headroom_url, &upstream_model,
+            &mut translated_body, &ts_cfg.headroom_url, &upstream_model, &target_format,
             ts_cfg.headroom_timeout_ms, ts_cfg.headroom_compress_user_messages,
         ).await
     {
@@ -1060,7 +1060,7 @@ pub async fn handle_chat_core(
     {
         crate::services::rtk_caveman::inject_ponytail(&mut translated_body, &target_format, level);
     }
-    for position in ["prepend", "append"] {
+    for position in ["append", "prepend"] {
         let prompt = options.prompt_injections.iter()
             .filter(|p| p["mode"] != "chat" && (p["position"] == "prepend") == (position == "prepend"))
             .filter_map(|p| p["text"].as_str().or_else(|| p["content"].as_str())).filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n\n");
