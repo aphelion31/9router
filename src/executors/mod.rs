@@ -479,7 +479,8 @@ pub async fn execute(
             builder = builder.header(name, value);
         }
     }
-    if request.stream || matches!(provider.id.as_str(), "codex" | "codebuddy-cn" | "codebuddy-intl") {
+    // antigravity.js overrides buildHeaders without an Accept header (wire capture: */*).
+    if (request.stream && provider.id != "antigravity") || matches!(provider.id.as_str(), "codex" | "codebuddy-cn" | "codebuddy-intl") {
         builder = builder.header(reqwest::header::ACCEPT, "text/event-stream");
     }
     if provider.id == "azure" {
@@ -1743,7 +1744,8 @@ mod tests {
             assert_eq!(h["authorization"], "Bearer test-token");
             assert_eq!(h["content-type"], "application/json");
             assert_eq!(h["user-agent"], "antigravity/hub/2.24.0 darwin/arm64");
-            assert_eq!(h["accept"], if stream { "text/event-stream" } else { "*/*" });
+            // Production wire capture: antigravity never sends a stream Accept header.
+            assert_eq!(h["accept"], "*/*");
             let body = &echo["body"];
             assert_eq!(body["project"], "aicode-consumers");
             assert_eq!(body["model"], "gemini-4-hydrogen-high");
