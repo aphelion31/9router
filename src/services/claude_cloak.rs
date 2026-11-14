@@ -175,6 +175,7 @@ pub fn apply_cloaking(body: &mut Value, token: &str, session_id: &str) {
 }
 
 /// Anthropic beta flags sent with every OAuth claude request (CLI fingerprint).
+#[cfg(test)]
 pub fn cli_beta_header() -> &'static str {
     CLAUDE_CLI_BETA
 }
