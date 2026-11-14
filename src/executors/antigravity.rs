@@ -404,6 +404,18 @@ pub(super) fn prepare(
         }
     }
 
+    if model.starts_with("gemini-3") || model.starts_with("gemini-4") {
+        let level = ["minimal", "low", "medium", "high"].into_iter().find(|level| model.ends_with(&format!("-{level}")));
+        if let Some(level) = level {
+            let config = inner.entry("generationConfig").or_insert_with(|| json!({}));
+            if let Some(config) = config.as_object_mut() {
+                let floor = match level { "minimal" => 4096, "low" => 8192, "medium" => 16384, _ => 65535 };
+                config.insert("thinkingConfig".into(), json!({"thinkingLevel":level,"includeThoughts":level != "minimal"}));
+                let current = config.get("maxOutputTokens").and_then(Value::as_i64).unwrap_or(0);
+                config.insert("maxOutputTokens".into(), json!(current.max(floor)));
+            }
+        }
+    }
     if let Some(gen_cfg) = inner
         .get_mut("generationConfig")
         .and_then(Value::as_object_mut)

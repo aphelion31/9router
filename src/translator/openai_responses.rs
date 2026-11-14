@@ -377,7 +377,7 @@ pub fn openai_to_openai_responses_request(
     if !system_parts.is_empty() {
         result.insert(
             "instructions".to_string(),
-            Value::String(system_parts.join("\n")),
+            Value::String(system_parts.join("\n\n")),
         );
     }
     result.insert("input".to_string(), Value::Array(input_items));

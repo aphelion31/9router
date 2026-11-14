@@ -177,10 +177,39 @@ pub fn prepare(
     strip_stored_item_references(obj);
     normalize_codex_tools(obj);
 
+    let model = obj.get("model").and_then(Value::as_str).unwrap_or("").to_owned();
+    let lite = matches!(model.split('[').next().unwrap_or(""), "gpt-6.1-sol" | "gpt-6.1-terra" | "gpt-6-sol" | "gpt-6-luna")
+        && !obj.get("tools").and_then(Value::as_array).is_some_and(|tools| tools.iter().any(|t| t["type"] == "web_search"));
+    let session_body = Value::Object(obj.clone());
+    let session = crate::services::systemone_router::client_session_id(&Default::default(), &session_body)
+        .or_else(|| provider_specific_data.and_then(|d| d.get("workspaceId").or_else(|| d.get("connectionId"))).and_then(Value::as_str).map(str::to_owned))
+        .unwrap_or_else(|| crate::services::systemone_router::session_id(&Default::default(), &session_body));
+    obj.entry("prompt_cache_key").or_insert_with(|| json!(session));
+
     obj.insert("stream".into(), json!(true));
     obj.insert("store".into(), json!(false));
-    obj.entry("instructions")
-        .or_insert_with(|| json!("You are a helpful assistant."));
+    if lite {
+        let instructions = obj.get("instructions").and_then(Value::as_str).filter(|s| !s.trim().is_empty()).map(str::to_owned);
+        let tools = obj.get("tools").and_then(Value::as_array).cloned().unwrap_or_default();
+        let input = obj.entry("input").or_insert_with(|| json!([]));
+        if let Some(input) = input.as_array_mut() {
+            if !input.iter().any(|item| item["type"] == "additional_tools") {
+                if let Some(text) = instructions { input.insert(0, json!({"type":"message","role":"developer","content":[{"type":"input_text","text":text}]})); }
+                input.insert(0, json!({"type":"additional_tools","role":"developer","tools":tools}));
+            }
+        }
+        obj.insert("instructions".into(), json!(""));
+        obj.insert("tools".into(), Value::Null);
+        obj.entry("tool_choice").or_insert_with(|| json!("auto"));
+        obj.insert("parallel_tool_calls".into(), json!(false));
+        let reasoning = obj.entry("reasoning").or_insert_with(|| json!({"effort":"medium"}));
+        if let Some(reasoning) = reasoning.as_object_mut() {
+            reasoning.entry("effort").or_insert_with(|| json!("medium"));
+            reasoning.insert("context".into(), json!("all_turns"));
+        }
+    } else {
+        obj.entry("instructions").or_insert_with(|| json!("You are a helpful assistant."));
+    }
 
     if obj.get("reasoning").is_some_and(Value::is_object) {
         let include = obj
@@ -200,8 +229,13 @@ pub fn prepare(
 
     let mut headers = vec![
         ("originator", "codex_cli_rs".to_string()),
-        ("session_id", "default".to_string()),
+        ("session_id", session),
+        ("user-agent", "codex_cli_rs/0.159.0".to_string()),
+        ("version", "0.159.0".to_string()),
+        ("accept-language", "*".to_string()),
+        ("sec-fetch-mode", "cors".to_string()),
     ];
+    if lite { headers.push(("x-openai-internal-codex-responses-lite", "true".to_string())); }
     if let Some(account_id) = provider_specific_data.and_then(|d| {
         d.get("workspaceId")
             .or_else(|| d.get("chatgptAccountId"))
@@ -217,6 +251,23 @@ pub fn prepare(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lite_wire_request_matches_codex_cli() {
+        let mut body = json!({"model":"gpt-6.1-terra","instructions":"policy", "input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"pong"}]}]});
+        let headers = prepare(&mut body, None).unwrap();
+        assert_eq!(body["input"][0], json!({"type":"additional_tools","role":"developer","tools":[]}));
+        assert_eq!(body["input"][1], json!({"type":"message","role":"developer","content":[{"type":"input_text","text":"policy"}]}));
+        assert_eq!(body["instructions"], "");
+        assert_eq!(body["tools"], Value::Null);
+        assert_eq!(body["tool_choice"], "auto");
+        assert_eq!(body["parallel_tool_calls"], false);
+        assert_eq!(body["reasoning"], json!({"effort":"medium","context":"all_turns"}));
+        assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
+        assert!(headers.iter().any(|(k,v)| *k == "session_id" && body["prompt_cache_key"] == *v));
+        assert!(headers.iter().any(|(k,v)| *k == "x-openai-internal-codex-responses-lite" && v == "true"));
+        assert!(headers.iter().any(|(k,v)| *k == "user-agent" && v == "codex_cli_rs/0.159.0"));
+    }
 
     #[test]
     fn codex_prepare_shapes_input_tools_and_headers() {
