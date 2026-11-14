@@ -125,6 +125,9 @@ fn make_router_with_db(
         .route("/login", get(dashboard::login_page))
         .route("/dashboard/style.css", get(dashboard::style_css))
         .route("/dashboard/app.js", get(dashboard::app_js))
+        .route("/providers/{file}", get(dashboard::provider_icon))
+        .route("/favicon.svg", get(dashboard::favicon))
+        .route("/favicon.ico", get(dashboard::favicon))
         .merge(crate::api::routes::public())
         .merge(dashboard_pages)
         .merge(management)
@@ -1732,6 +1735,22 @@ mod tests {
         let body = to_bytes(r.into_body(), 100_000).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
         assert!(html.contains("Endpoint &amp; API Keys"));
+    }
+
+    #[tokio::test]
+    async fn provider_icons_and_favicon_are_public() {
+        let app = test_router();
+        for (p, status, ctype) in [
+            ("/providers/claude.png", 200, "image/png"),
+            ("/favicon.svg", 200, "image/svg+xml"),
+            ("/providers/nope.png", 404, ""),
+        ] {
+            let r = app.clone().oneshot(Request::get(p).body(Body::empty()).unwrap()).await.unwrap();
+            assert_eq!(r.status().as_u16(), status, "{p}");
+            if status == 200 {
+                assert_eq!(r.headers()["content-type"], ctype, "{p}");
+            }
+        }
     }
 
     #[tokio::test]

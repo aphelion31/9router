@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Provider Quota — 9Router</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/dashboard/style.css">
 </head>
 <body data-page="quota">
@@ -41,7 +42,7 @@
       async function load() {
         tbody.innerHTML = '<tr><td colspan="5" class="mono">Loading...</td></tr>';
         try {
-          var provData = await nr.apiFetch("/api/providers");
+          var provData = await nr.apiFetch("/api/providers?lite=1");
           var list = Array.isArray(provData.connections) ? provData.connections : [];
           if (list.length === 0) {
             tbody.innerHTML = '<tr><td colspan="5">No provider connections configured.</td></tr>';
@@ -55,7 +56,7 @@
             var statusLabel = c.rateLimitedUntil ? "Cooldown" : (active ? "Healthy" : "Paused");
             var statusCls = c.rateLimitedUntil ? "badge-warn" : (active ? "badge-ok" : "badge-off");
             tr.innerHTML =
-              '<td class="mono">' + nr.escapeHtml(c.provider || "-") + "</td>" +
+              '<td class="mono"><span class="provider-cell">' + (nr.providerIcon ? nr.providerIcon(c.provider) : "") + nr.escapeHtml(c.provider || "-") + "</span></td>" +
               "<td>" + nr.escapeHtml(c.name || c.id || "-") + "</td>" +
               '<td><span class="badge ' + statusCls + '">' + statusLabel + "</span></td>" +
               '<td style="min-width:160px"><div class="progress-track"><div class="progress-fill" style="width:' + pct + '%"></div></div><div class="muted text-sm">' + pct + "%</div></td>" +
