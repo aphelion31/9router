@@ -48,11 +48,19 @@ fn read_settings_map(s: &AppState) -> Map<String, Value> {
     let Ok(db) = s.db.lock() else {
         return Map::new();
     };
-    let mut map = crate::db::kv_get(&db, "settings", "data")
+    // Upstream getSettings() reads the settings table (production DBs keep authMode,
+    // SSO config and the bcrypt password there); legacy kv values layer on top.
+    let mut map = crate::db::settings_get(&db)
+        .ok()
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    if let Some(legacy) = crate::db::kv_get(&db, "settings", "data")
         .ok()
         .flatten()
         .and_then(|raw| serde_json::from_str::<Map<String, Value>>(&raw).ok())
-        .unwrap_or_default();
+    {
+        map.extend(legacy);
+    }
     if let Ok(Some(pw)) = crate::db::kv_get(&db, "settings", "password") {
         if !pw.is_empty() {
             map.insert("password".into(), Value::String(pw));

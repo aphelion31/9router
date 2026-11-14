@@ -201,6 +201,14 @@ pub fn verify_password(db: &Connection, candidate: &str) -> bool {
                         .map(str::to_owned)
                 })
                 .filter(|s| !s.is_empty())
+        })
+        // Upstream login/route.js reads settings.password from the settings table;
+        // that is where a production 9router-pro DB keeps the bcrypt hash.
+        .or_else(|| {
+            crate::db::settings_get(db)
+                .ok()
+                .and_then(|v| v.get("password").and_then(Value::as_str).map(str::to_owned))
+                .filter(|s| !s.is_empty())
         });
     let Some(expected) = expected else {
         return false;
@@ -234,6 +242,17 @@ mod bcrypt_tests {
         let hash = bcrypt::hash("s3cret", 4).unwrap();
         crate::db::kv_set(&db, "settings", "password", &hash).unwrap();
         assert!(super::verify_password(&db, "s3cret"));
+        assert!(!super::verify_password(&db, "wrong"));
+    }
+
+    #[test]
+    fn production_settings_table_password_logs_in() {
+        // 9router-pro keeps the bcrypt hash in settings.data.password (settings table).
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrate(&db).unwrap();
+        let hash = bcrypt::hash("prod-pass", 4).unwrap();
+        crate::db::settings_put(&db, &serde_json::json!({"password": hash, "cavemanEnabled": true})).unwrap();
+        assert!(super::verify_password(&db, "prod-pass"));
         assert!(!super::verify_password(&db, "wrong"));
     }
 }
