@@ -3,7 +3,10 @@ use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use std::path::{Path, PathBuf};
 
+/// Upstream `schema.js` SCHEMA_VERSION, stored as `_meta.backupSchemaVersion`.
 pub const SCHEMA_VERSION: i64 = 6;
+/// Upstream `migrations/index.js` latestVersion(), stored as `_meta.schemaVersion`.
+pub const MIGRATION_VERSION: i64 = 1;
 
 const PRAGMAS: &str = "
 PRAGMA journal_mode = WAL;
@@ -45,14 +48,19 @@ fn guard_schema(path: &Path) -> Result<()> {
         return Ok(());
     }
     let has_meta = count("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='_meta'")? > 0;
-    let found = if has_meta { Some(schema_version(&ro)?).filter(|v| *v != 0) } else { None };
-    if found == Some(SCHEMA_VERSION) {
+    let meta = |k: &str| -> Result<i64> {
+        Ok(ro.query_row("SELECT value FROM _meta WHERE key=?1", [k], |r| r.get::<_, String>(0)).optional()?.and_then(|v| v.parse().ok()).unwrap_or(0))
+    };
+    let (mig, back) = if has_meta { (meta("schemaVersion")?, meta("backupSchemaVersion")?) } else { (0, 0) };
+    // Upstream 9router-pro DBs (and ours): known migration chain, schema not newer than ours.
+    // Builds before this fix stamped schemaVersion=6 with no backupSchemaVersion; accept those too.
+    if (1..=MIGRATION_VERSION).contains(&mig) && back <= SCHEMA_VERSION || (mig == SCHEMA_VERSION && back == 0) {
         return Ok(());
     }
-    let found = found.map_or("none".to_string(), |v| v.to_string());
     bail!(
-        "refusing to migrate {}: schema version {found} is not supported (expected {SCHEMA_VERSION}). \
-         The file was not modified. Back it up, or point DATA_DIR at an empty directory.",
+        "refusing to migrate {}: schemaVersion {mig} / backupSchemaVersion {back} is not supported \
+         (expected <= {MIGRATION_VERSION} / {SCHEMA_VERSION}). The file was not modified. \
+         Back it up, or point DATA_DIR at an empty directory.",
         path.display()
     )
 }
@@ -103,11 +111,12 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         conn.execute_batch(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_settings_id ON settings(id)",
         )?;
-        if schema_version(conn)? < SCHEMA_VERSION {
+        // Same two stamps as upstream migrate.js: migration chain + backup schema version.
+        for (key, value) in [("schemaVersion", MIGRATION_VERSION), ("backupSchemaVersion", SCHEMA_VERSION)] {
             conn.execute(
-                "INSERT INTO _meta(key, value) VALUES('schemaVersion', ?1)
+                "INSERT INTO _meta(key, value) VALUES(?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                params![SCHEMA_VERSION.to_string()],
+                params![key, value.to_string()],
             )?;
         }
         Ok(())
@@ -122,6 +131,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 pub fn schema_version(conn: &Connection) -> Result<i64> {
     let v: Option<String> = conn
         .query_row(
@@ -357,9 +367,9 @@ mod tests {
     #[test]
     fn migrations_idempotent_and_versioned() {
         let c = mem();
-        assert_eq!(schema_version(&c).unwrap(), SCHEMA_VERSION);
+        assert_eq!(schema_version(&c).unwrap(), MIGRATION_VERSION);
         migrate(&c).unwrap();
-        assert_eq!(schema_version(&c).unwrap(), SCHEMA_VERSION);
+        assert_eq!(schema_version(&c).unwrap(), MIGRATION_VERSION);
     }
 
     #[test]
@@ -458,6 +468,27 @@ mod tests {
         settings_put(&c, &serde_json::json!({"a": 1})).unwrap();
         settings_put(&c, &serde_json::json!({"a": 2})).unwrap();
         assert_eq!(settings_get(&c).unwrap(), serde_json::json!({"a": 2}));
+    }
+
+    #[test]
+    fn upstream_production_meta_is_accepted() {
+        // Real 9router-pro 0.5.109 DB: schemaVersion=1 (migration), backupSchemaVersion=6.
+        let dir = std::env::temp_dir().join(format!("nr-up-{}-{}", std::process::id(), line!()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("data.sqlite");
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(PRAGMAS).unwrap();
+            migrate(&c).unwrap();
+            c.execute_batch("UPDATE _meta SET value='1' WHERE key='schemaVersion'; UPDATE _meta SET value='6' WHERE key='backupSchemaVersion'; INSERT INTO apiKeys(id,key,createdAt) VALUES('k','s','now');").unwrap();
+        }
+        let c = open(&path).unwrap();
+        assert_eq!(schema_version(&c).unwrap(), 1);
+        drop(c);
+        // A newer upstream schema is still refused.
+        Connection::open(&path).unwrap().execute_batch("UPDATE _meta SET value='7' WHERE key='backupSchemaVersion'").unwrap();
+        assert!(open(&path).unwrap_err().to_string().contains("refusing to migrate"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
