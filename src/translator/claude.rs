@@ -524,12 +524,18 @@ fn openai_to_claude_request_core(
         }
     }
 
+    let mut system = Vec::new();
+    if !for_antigravity {
+        system.push(json!({"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."}));
+    }
     if !system_parts.is_empty() {
-        let joined = system_parts.join("\n");
-        result.insert(
-            "system".to_string(),
-            json!([{ "type": claude_block::TEXT, "text": joined }]),
-        );
+        system.push(json!({"type": "text", "text": system_parts.join("\n")}));
+    }
+    if !system.is_empty() {
+        if !for_antigravity {
+            system.last_mut().unwrap()["cache_control"] = json!({"type":"ephemeral", "ttl":"1h"});
+        }
+        result.insert("system".to_string(), Value::Array(system));
     }
 
     // Thinking configuration
