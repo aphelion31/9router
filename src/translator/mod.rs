@@ -482,6 +482,14 @@ mod tests {
     }
 
     #[test]
+    fn antigravity_gemini4_high_reserves_thinking_output() {
+        let body = json!({"max_tokens":200,"messages":[{"role":"user","content":"ping"}]});
+        let out = translate_request("openai", "antigravity", "gemini-4-hydrogen-high", &body, false, None, Some("antigravity"));
+        assert_eq!(out["request"]["generationConfig"]["maxOutputTokens"], 65535);
+        assert_eq!(out["request"]["generationConfig"]["thinkingConfig"]["thinkingLevel"], "high");
+    }
+
+    #[test]
     fn claude_to_openai_stream_text_thinking_tool_usage_finish() {
         let events = vec![
             json!({ "type": "message_start", "message": { "id": "msg_1", "model": "claude-opus-4-6" } }),
