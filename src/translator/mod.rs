@@ -436,7 +436,8 @@ mod tests {
         assert_eq!(out["thinking"]["type"], "adaptive");
         assert_eq!(out["output_config"]["effort"], "high");
         assert_eq!(out["tools"][0]["name"], "get_weather");
-        assert_eq!(out["system"][0]["text"], "You are helpful.");
+        assert_eq!(out["system"][0]["text"], "You are Claude Code, Anthropic's official CLI for Claude.");
+        assert_eq!(out["system"][1]["text"], "You are helpful.");
         assert_eq!(out["messages"][0]["content"][1]["type"], "image");
         assert_eq!(out["messages"][1]["content"][0]["type"], "tool_use");
         assert_eq!(out["messages"][2]["content"][0]["type"], "tool_result");

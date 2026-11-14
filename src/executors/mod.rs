@@ -534,6 +534,7 @@ pub async fn execute(
     if provider.id == "claude"
         && let Some(token) = request.access_token.as_deref()
         && crate::services::claude_cloak::is_oauth_token(token)
+        && !request.body["system"].as_array().and_then(|s| s.first()).and_then(|s| s["text"].as_str()).is_some_and(|s| s.starts_with("x-anthropic-billing-header:"))
     {
         // Session id: stable per conversation (first message hash), like upstream resolveSessionId.
         let seed = request.body["messages"].as_array().and_then(|m| m.first()).map(Value::to_string).unwrap_or_default();

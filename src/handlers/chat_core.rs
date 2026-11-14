@@ -999,6 +999,15 @@ pub async fn handle_chat_core(
     if let Some(obj) = translated_body.as_object_mut() {
         obj.insert("model".to_string(), json!(upstream_model));
     }
+    if options.provider == "claude"
+        && !passthrough
+        && let Some(token) = options.credentials.access_token.as_deref()
+        && crate::services::claude_cloak::is_oauth_token(token)
+    {
+        let seed = translated_body["messages"].as_array().and_then(|m| m.first()).map(Value::to_string).unwrap_or_default();
+        let session = crate::services::claude_cloak::session_seed(&seed);
+        crate::services::claude_cloak::apply_cloaking(&mut translated_body, token, &session);
+    }
     strip_continuity_fields(&mut translated_body);
     if let Some(tools) = translated_body.get_mut("tools").and_then(Value::as_array_mut) {
         let (deduped, _) = crate::services::tool_deduper::dedupe_tools(
@@ -1266,6 +1275,54 @@ pub async fn handle_chat_core(
 #[cfg(test)]
 mod header_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn production_prompt_stack_reaches_claude_and_antigravity() {
+        struct Capture(std::sync::Mutex<Option<Value>>);
+        impl Executor for Capture {
+            fn execute<'a>(&'a self, req: ExecutorRequest) -> BoxFuture<'a, Result<ExecutorResponse, String>> {
+                Box::pin(async move {
+                    *self.0.lock().unwrap() = Some(req.body);
+                    Ok(ExecutorResponse { status: 200, headers: vec![], body: ExecutorBody::Json(json!({})), url: None, response_format: None })
+                })
+            }
+        }
+        let caveman = crate::services::rtk_caveman_prompts::get_caveman_prompt("ultra").unwrap();
+        let ponytail = crate::services::rtk_ponytail_prompt::get_ponytail_prompt("ultra").unwrap();
+        for (provider, model) in [("claude", "claude-haiku-5-5"), ("antigravity", "gemini-4-hydrogen-high")] {
+            let capture = Capture(std::sync::Mutex::new(None));
+            let options = ChatCoreOptions {
+                body: json!({"stream":false,"max_tokens":200,"messages":[{"role":"user","content":"Reply with exactly: pong"}]}),
+                provider: provider.into(), model: model.into(),
+                credentials: Credentials { access_token: Some("sk-ant-oat-synthetic".into()), ..Default::default() },
+                source_format_override: None, endpoint_path: None, accept_header: None, user_agent: None,
+                client_tool: None, provider_session_id: None, first_response_timeout: None,
+                token_saver: Some(TokenSaverConfig { token_saver_enabled:true, rtk_enabled:true, caveman_enabled:true, caveman_level:Some("full".into()), brief_level:Some("ultra".into()), ponytail_enabled:true, ponytail_level:Some("ultra".into()) }),
+                prompt_injections: vec![json!({"mode":"chat","turns":[{"role":"user","content":"example question"},{"role":"assistant","content":"example answer"}]})],
+            };
+            let _ = handle_chat_core(options, &capture, &ChatCoreHooks::default()).await;
+            let body = capture.0.lock().unwrap().clone().unwrap();
+            if provider == "claude" {
+                let system = body["system"].as_array().unwrap();
+                assert!(system[0]["text"].as_str().unwrap().starts_with("x-anthropic-billing-header:"));
+                assert_eq!(system[1]["text"], caveman);
+                assert_eq!(system[2]["text"], ponytail);
+                assert_eq!(system[3]["text"], "You are Claude Code, Anthropic's official CLI for Claude.");
+                assert_eq!(system[3]["cache_control"]["ttl"], "1h");
+                assert_eq!(body["messages"][0], json!({"role":"user","content":"example question"}));
+                assert_eq!(body["messages"][1], json!({"role":"assistant","content":"example answer"}));
+                assert_eq!(body["messages"][2]["content"][0]["text"], "Reply with exactly: pong");
+                assert!(body["metadata"]["user_id"].is_string());
+            } else {
+                assert_eq!(body["request"]["systemInstruction"]["parts"], json!([{"text":caveman},{"text":ponytail}]));
+                assert_eq!(body["request"]["contents"], json!([
+                    {"role":"user","parts":[{"text":"example question"}]},
+                    {"role":"model","parts":[{"text":"example answer"}]},
+                    {"role":"user","parts":[{"text":"Reply with exactly: pong"}]}
+                ]));
+            }
+        }
+    }
 
     #[test]
     fn gemini_non_stream_usage_keeps_reasoning_out_of_prompt() {
