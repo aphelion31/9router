@@ -407,10 +407,21 @@ impl ChatHooks for Hooks {
     }
     fn smart_choice<'a>(&'a self, body: &'a Value) -> BoxFuture<'a, Option<Value>> {
         Box::pin(async move {
-            let model = body["model"].as_str()?;
-            let target = crate::handlers::chat::parse_model_target(model)?;
+            let model = body["model"].as_str()?.trim();
+            let resolved = if model.contains('/') { model.to_owned() } else {
+                let db = self.state.db.lock().ok()?;
+                let raw = crate::db::kv_get(&db, "modelAliases", model).ok().flatten()?;
+                let value: Value = serde_json::from_str(&raw).ok()?;
+                value.as_str().map(str::to_owned).or_else(|| Some(format!("{}/{}", value["provider"].as_str()?, value["model"].as_str()?)))?
+            };
+            let mut target = crate::handlers::chat::parse_model_target(&resolved)?;
+            if crate::providers::lookup(&target.provider).is_none() {
+                if let Some(id) = self.resolve_node_prefix(&target.provider).await { target.provider = id; }
+            }
             self.get_credentials(&target.provider, &target.model, &std::collections::HashSet::new()).await?;
-            let response = crate::handlers::media::systemone::handle_systemone(State(self.state.clone()), Json(body.clone())).await;
+            let mut request = body.clone();
+            request["model"] = json!(format!("{}/{}", target.provider, target.model));
+            let response = crate::handlers::media::systemone::handle_systemone(State(self.state.clone()), Json(request)).await;
             if !response.status().is_success() { return None; }
             let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024).await.ok()?;
             serde_json::from_slice(&bytes).ok()
@@ -424,8 +435,11 @@ impl ChatHooks for Hooks {
             let by_key = load("byKey");
             let by_model = load("prompts");
             let by_key_model = load("byKeyModel");
+            let variants = load("variants");
             let key = self.api_key_id.as_deref().unwrap_or("");
-            [global, by_key[key].clone(), by_model[model].clone(), by_key_model[key][model].clone()]
+            let variant = &variants[model];
+            let model_entry = if !model.contains('/') && variant.is_object() && variant["enabled"] == true { variant.clone() } else { by_model[model].clone() };
+            [global, by_key[key].clone(), model_entry, if !model.contains('/') && variant.is_object() && variant["enabled"] == true { Value::Null } else { by_key_model[key][model].clone() }]
                 .into_iter().filter(|entry| entry.is_object() && entry["enabled"] != false).collect()
         })
     }
@@ -634,6 +648,15 @@ impl ChatHooks for Hooks {
                 })
                 .ok()?;
             serde_json::from_str(&models).ok()
+        })
+    }
+
+    fn variant_backing<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Option<String>> {
+        Box::pin(async move {
+            let db = self.state.db.lock().ok()?;
+            let raw = crate::db::kv_get(&db, "promptInjections", "variants").ok().flatten()?;
+            let variants: Value = serde_json::from_str(&raw).ok()?;
+            variants[name]["model"].as_str().map(str::to_owned)
         })
     }
 }

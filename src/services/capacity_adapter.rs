@@ -39,7 +39,15 @@ pub fn detect_required_capabilities(body: &Value) -> Vec<String> {
             for item in &items[start..] { scan(item, &mut required); }
         }
     }
-    ["vision", "pdf", "audioInput", "videoInput"].into_iter().filter(|cap| required.contains(cap)).map(str::to_owned).collect()
+    if body["tools"].as_array().is_some_and(|tools| tools.iter().any(|t| [t["type"].as_str(), t["function"]["name"].as_str().or_else(|| t["name"].as_str())].into_iter().flatten().any(|s| s.contains("web_search") || s.contains("web_fetch")))) { required.insert("search"); }
+    ["vision", "pdf", "audioInput", "videoInput", "search"].into_iter().filter(|cap| required.contains(cap)).map(str::to_owned).collect()
+}
+
+// combo.js reorderByCapabilities: preserve fallback members and stable tier order.
+pub fn reorder_by_capabilities(models: &mut [String], required: &[String], satisfies: impl Fn(&str, &[&str]) -> bool) {
+    let hard: Vec<_> = required.iter().map(String::as_str).filter(|c| CAPS.contains(c)).collect();
+    let all: Vec<_> = required.iter().map(String::as_str).collect();
+    models.sort_by_key(|m| if satisfies(m, &all) { 0 } else if satisfies(m, &hard) { 1 } else { 2 });
 }
 
 fn model_metadata(provider: &str, model: &str) -> Option<&'static crate::providers::Model> {
@@ -233,6 +241,15 @@ pub fn strip_history_for_context(body: &Value, context_window: Option<u64>) -> V
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn capability_tiers_keep_all_fallbacks_stable() {
+        // combo.js reorderByCapabilities and detectRequiredCapabilities
+        let required = super::detect_required_capabilities(&serde_json::json!({"messages":[{"role":"user","content":[{"type":"image_url"}]}],"tools":[{"type":"web_search"}]}));
+        assert_eq!(required, ["vision", "search"]);
+        let mut models = vec!["none".into(), "hard".into(), "both".into(), "hard2".into()];
+        super::reorder_by_capabilities(&mut models, &required, |m, caps| caps.iter().all(|c| match *c { "vision" => m != "none", "search" => m == "both", _ => false }));
+        assert_eq!(models, ["both", "hard", "hard2", "none"]);
+    }
     use super::*;
     use serde_json::json;
 

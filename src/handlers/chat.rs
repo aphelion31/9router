@@ -171,6 +171,10 @@ pub trait ChatHooks: Send + Sync {
         Box::pin(async { None })
     }
 
+    fn variant_backing<'a>(&'a self, _name: &'a str) -> BoxFuture<'a, Option<String>> {
+        Box::pin(async { None })
+    }
+
     /// Map a user-defined provider-node prefix (e.g. `nr`) to its node id
     /// (`openai-compatible-chat-...`). Built-in provider ids/aliases are never passed here.
     fn resolve_node_prefix<'a>(&'a self, _prefix: &'a str) -> BoxFuture<'a, Option<String>> {
@@ -265,6 +269,7 @@ pub async fn handle_chat(
     }
 
     let is_combo = parse_model_target(&model_str).is_none();
+    let mut member_targets = std::collections::HashMap::new();
     let mut targets = if let Some(mut t) = parse_model_target(&model_str) {
         // Upstream getModelInfo: a non-reserved prefix may name a provider node.
         if providers::lookup(&t.provider).is_none()
@@ -274,10 +279,12 @@ pub async fn handle_chat(
         }
         vec![t]
     } else if let Some(combo_models) = hooks.get_combo_models(&model_str).await {
-        combo_models
-            .into_iter()
-            .filter_map(|m| parse_model_target(&m))
-            .collect()
+        let mut resolved = Vec::new();
+        for member in combo_models {
+            let backing = if member.contains('/') { member.clone() } else { hooks.variant_backing(&member).await.unwrap_or_else(|| member.clone()) };
+            if let Some(target) = parse_model_target(&backing) { member_targets.insert(member, target.clone()); resolved.push(target); }
+        }
+        resolved
     } else {
         return error_response(400, "Invalid model format");
     };
@@ -288,9 +295,13 @@ pub async fn handle_chat(
 
     let settings = hooks.settings().await;
     let required = crate::services::capacity_adapter::detect_required_capabilities(&body);
-    let original: Vec<String> = targets.iter().map(|t| format!("{}/{}", t.provider, t.model)).collect();
+    let original: Vec<String> = if is_combo { hooks.get_combo_models(&model_str).await.unwrap_or_default().into_iter().filter(|m| member_targets.contains_key(m)).collect() } else { targets.iter().map(|t| format!("{}/{}", t.provider, t.model)).collect() };
+    let satisfies = |name: &str, caps: &[&str]| {
+        let backing = member_targets.get(name).map(|t| format!("{}/{}", t.provider, t.model)).unwrap_or_else(|| name.to_owned());
+        crate::services::capacity_adapter::model_satisfies(&backing, caps)
+    };
     let mut names = crate::services::capacity_adapter::augment_models_with_capacity_adapter(
-        &original, &required, &settings, crate::services::capacity_adapter::model_satisfies,
+        &original, &required, &settings, satisfies,
     );
     let adapters: HashSet<String> = names.iter().filter(|n| !original.contains(n)).filter_map(|n| parse_model_target(n)).map(|t| format!("{}/{}", t.provider, t.model)).collect();
     let strategy = if is_combo {
@@ -301,11 +312,13 @@ pub async fn handle_chat(
     } else {
         crate::services::capacity_adapter::get_active_adapter_strategy(&required, &settings)
     };
+    let mut active_sticky: Option<String> = None;
+    let session_id = crate::services::systemone_router::session_id(&headers, &body);
     if is_combo && strategy == "smart" && names.len() > 1 {
-        use crate::services::systemone_router::*;
+        use crate::services::systemone_router::{sticky_store, extract_prompt_state, MAX_STATE_CHARS, DEFAULT_SYSTEMONE_ROUTER_MODEL, DEFAULT_SYSTEMONE_TIMEOUT_MS, build_choice_criteria, parse_systemone_route_answer, order_models_by_choice};
         let cfg = &settings["comboStrategies"][&model_str];
         let policy = cfg["smartPolicy"].as_str().unwrap_or("smart").to_ascii_lowercase();
-        let session = headers.get("x-session-id").and_then(|v| v.to_str().ok()).unwrap_or("");
+        let session = session_id.as_str();
         let sticky_enabled = policy != "per-turn" && cfg["sessionSticky"] != false && !session.is_empty();
         let sticky = if sticky_enabled { sticky_store().lock().ok().and_then(|mut s| s.get(&model_str, session, &names, now_ms())) } else { None };
         let threshold = match policy.as_str() { "smart-switch-70" => 0.7, "smart-switch-90" => 0.9, _ => cfg["confidenceThreshold"].as_f64().filter(|n| *n > 0.0).unwrap_or(0.8) };
@@ -316,20 +329,25 @@ pub async fn handle_chat(
         };
         let chosen = decision.as_ref().filter(|d| names.iter().any(|n| Some(n.as_str()) == d["choice"].as_str())).filter(|d| {
             let confidence = d["confidence"].as_f64();
-            if sticky.is_some() { confidence.is_some_and(|c| c >= threshold) } else { confidence.is_none_or(|c| c >= threshold) }
+            if let Some(ref sticky) = sticky { d["choice"].as_str() != Some(sticky.as_str()) && confidence.is_some_and(|c| c >= threshold) } else { confidence.is_none_or(|c| c >= threshold) }
         });
         if let Some(decision) = chosen {
             names = order_models_by_choice(&names, decision);
-            if sticky_enabled { if let Ok(mut s) = sticky_store().lock() { s.set(&model_str, session, &names[0], now_ms()); } }
+            if sticky_enabled { if let Ok(mut s) = sticky_store().lock() { s.set(&model_str, session, &names[0], now_ms()); active_sticky = Some(names[0].clone()); } }
         } else if let Some(sticky) = sticky {
             names = order_models_by_choice(&names, &json!({"choice":sticky}));
+            active_sticky = Some(sticky);
         }
     } else if strategy == "round-robin" && names.len() > 1 {
-        static ROTATION: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let offset = ROTATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % names.len();
-        names.rotate_left(offset);
+        static ROTATION: std::sync::OnceLock<std::sync::Mutex<crate::services::systemone_router::ComboRotation>> = std::sync::OnceLock::new();
+        let limit = settings["comboStickyRoundRobinLimit"].as_u64().or_else(|| settings["comboStickyRoundRobinLimit"].as_str().and_then(|s| s.parse().ok())).unwrap_or(1) as usize;
+        if let Ok(mut rotation) = ROTATION.get_or_init(Default::default).lock() { rotation.rotate(&mut names, &model_str, limit); }
     }
-    targets = names.iter().filter_map(|n| parse_model_target(n)).collect();
+    if !required.is_empty() {
+        crate::services::capacity_adapter::reorder_by_capabilities(&mut names, &required, satisfies);
+    }
+    let ordered_names = names.clone();
+    targets = names.iter().filter_map(|n| member_targets.get(n).cloned().or_else(|| parse_model_target(n))).collect();
 
     let accept_header = headers
         .get("accept")
@@ -364,6 +382,7 @@ pub async fn handle_chat(
     let (anti_flaky_enabled, max_flaky_retries) = hooks.anti_flaky_config().await;
 
     for target in targets {
+        let member = ordered_names.iter().find(|name| member_targets.get(*name).is_some_and(|t| t.provider == target.provider && t.model == target.model)).cloned().unwrap_or_else(|| format!("{}/{}", target.provider, target.model));
         let mut excluded = HashSet::new();
         let mut overload_attempts = 0u32;
         loop {
@@ -446,7 +465,7 @@ pub async fn handle_chat(
                 provider_session_id: None,
                 first_response_timeout,
                 token_saver,
-                prompt_injections: hooks.prompt_injections(&format!("{}/{}", target.provider, target.model)).await,
+                prompt_injections: hooks.prompt_injections(&member).await,
             };
 
             match handle_chat_core(options, executor, &core_hooks).await {
@@ -557,15 +576,12 @@ pub async fn handle_chat(
                 }
             }
         }
-    }
-
-    if is_combo && strategy == "smart" {
-        if let Some(session) = headers.get("x-session-id").and_then(|v| v.to_str().ok()).filter(|s| !s.is_empty()) {
-            if let Ok(mut store) = crate::services::systemone_router::sticky_store().lock() {
-                store.clear(&model_str, Some(session));
-            }
+        if active_sticky.as_deref() == Some(member.as_str()) {
+            if let Ok(mut store) = crate::services::systemone_router::sticky_store().lock() { store.clear(&model_str, Some(&session_id)); }
+            active_sticky = None;
         }
     }
+
     last_flaky.unwrap_or_else(|| upstream_error_response(last_status, &last_error, &last_headers))
 }
 
@@ -704,6 +720,23 @@ mod tests {
             Ok(ExecutorResponse { status: 200, headers: vec![], body: ExecutorBody::Json(json!({"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]})), url: None, response_format: None })
         });
         let response = handle_chat(json!({"model":"test","messages":[{"role":"user","content":"hello"}]}), &HeaderMap::new(), Some("/v1/chat/completions"), &executor, Arc::new(Smart)).await;
+        assert_eq!(response.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn smart_combo_variant_keeps_choice_and_injection_name() {
+        // comboDispatch.js createVariantHelpers and dispatchCombo
+        struct Variant;
+        impl ChatHooks for Variant {
+            fn get_credentials<'a>(&'a self, _: &'a str, _: &'a str, _: &'a HashSet<String>) -> BoxFuture<'a, Option<Credentials>> { Box::pin(async { Some(test_creds("variant-parity")) }) }
+            fn get_combo_models<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Option<Vec<String>>> { Box::pin(async { Some(vec!["custom-variant".into(), "openai/second".into()]) }) }
+            fn variant_backing<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Option<String>> { Box::pin(async { Some("openai/backing".into()) }) }
+            fn settings<'a>(&'a self) -> BoxFuture<'a, Value> { Box::pin(async { json!({"comboStrategies":{"variant-combo":{"fallbackStrategy":"smart","smartPolicy":"per-turn"}}}) }) }
+            fn smart_choice<'a>(&'a self, body: &'a Value) -> BoxFuture<'a, Option<Value>> { Box::pin(async move { assert!(body["questions"]["route"]["criteria"].get("custom-variant").is_some()); Some(json!({"answers":{"route":{"choice":"custom-variant","confidence":1.0}}})) }) }
+            fn prompt_injections<'a>(&'a self, model: &'a str) -> BoxFuture<'a, Vec<Value>> { Box::pin(async move { assert_eq!(model, "custom-variant"); vec![] }) }
+        }
+        let executor = FakeExecutor::new(|req, _| { assert_eq!(req.model, "backing"); Ok(ExecutorResponse { status: 200, headers: vec![], body: ExecutorBody::Json(json!({"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]})), url: None, response_format: None }) });
+        let response = handle_chat(json!({"model":"variant-combo","messages":[{"role":"user","content":"hello"}]}), &HeaderMap::new(), Some("/v1/chat/completions"), &executor, Arc::new(Variant)).await;
         assert_eq!(response.status(), 200);
     }
 
