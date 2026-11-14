@@ -537,7 +537,8 @@ impl ChatHooks for Hooks {
                         Ok(pool)
                     }).optional().map_err(|_| ())
                 };
-                let proxy = crate::services::connection_proxy::resolve_connection_proxy_config(&json!({"proxyPoolId":pool_id}), pool.as_ref().map(|p| p.as_ref()).map_err(|_| ()));
+                let pool = pool.and_then(|p| p.ok_or(()));
+                let proxy = crate::services::connection_proxy::resolve_connection_proxy_config(&json!({"proxyPoolId":pool_id}), pool.as_ref().map(Some).map_err(|_| ()));
                 return Some(Credentials { connection_id: "noauth".into(), access_token: Some("public".into()), provider_specific_data: proxy, ..Default::default() });
             }
             let candidate = {
@@ -562,6 +563,21 @@ impl ChatHooks for Hooks {
                     Err(e) => tracing::warn!("oauth refresh for {} failed: {e}", candidate.0),
                 }
             }
+            let mut specific = data["providerSpecificData"].as_object().cloned().unwrap_or_default();
+            let pool_id = specific.get("proxyPoolId").and_then(Value::as_str).unwrap_or("").to_owned();
+            if !pool_id.is_empty() && pool_id != "__none__" {
+                let pool = self.state.db.lock().map_err(|_| ()).and_then(|db| {
+                    db.query_row("SELECT data,isActive FROM proxyPools WHERE id=?1", [&pool_id], |row| {
+                        let raw: String = row.get(0)?;
+                        let mut pool: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
+                        pool["isActive"] = json!(row.get::<_, i64>(1)? != 0);
+                        Ok(pool)
+                    }).optional().map_err(|_| ())
+                });
+                let pool = pool.and_then(|p| p.ok_or(()));
+                let proxy = crate::services::connection_proxy::resolve_connection_proxy_config(&json!({"proxyPoolId":pool_id}), pool.as_ref().map(Some).map_err(|_| ()));
+                if let Some(config) = proxy.as_object() { specific.extend(config.clone()); }
+            }
             Some(Credentials {
                 connection_id: candidate.0,
                 connection_name: candidate.1,
@@ -569,7 +585,7 @@ impl ChatHooks for Hooks {
                 refresh_token: data["refreshToken"].as_str().map(str::to_owned),
                 api_key: data["apiKey"].as_str().map(str::to_owned),
                 expires_at: data["expiresAt"].as_str().map(str::to_owned),
-                provider_specific_data: data["providerSpecificData"].clone(),
+                provider_specific_data: Value::Object(specific),
                 ..Default::default()
             })
         })

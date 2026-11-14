@@ -35,8 +35,10 @@ impl Executor for HttpExecutor {
                 .map(str::to_owned)).flatten();
             let model = req.model.clone();
             let proxy = &req.credentials.provider_specific_data;
-            let proxy_client = if proxy["connectionProxyEnabled"] == true || proxy["strictProxy"] == true || proxy["vercelRelayUrl"].as_str().is_some_and(|s| !s.is_empty()) {
-                if proxy["vercelRelayUrl"].as_str().is_some_and(|s| !s.is_empty()) { return Err("Relay proxy is not supported for chat".into()); }
+            let relay = proxy["vercelRelayUrl"].as_str().is_some_and(|s| !s.trim().is_empty());
+            let proxy_client = if relay {
+                Some(reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).connect_timeout(std::time::Duration::from_millis(crate::config::FETCH_CONNECT_TIMEOUT_MS)).build().map_err(|e| e.to_string())?)
+            } else if proxy["connectionProxyEnabled"] == true || proxy["strictProxy"] == true {
                 if proxy["connectionProxyEnabled"] != true { return Err("Strict proxy is unavailable".into()); }
                 let url = proxy["connectionProxyUrl"].as_str().filter(|s| !s.is_empty()).ok_or("Proxy URL is missing")?;
                 let no_proxy = proxy["connectionNoProxy"].as_str().and_then(reqwest::NoProxy::from_string);
@@ -74,7 +76,7 @@ impl Executor for HttpExecutor {
                     response_url.query_pairs_mut().extend_pairs(pairs);
                 }
             }
-            let url = Some(response_url.to_string());
+            let url = (!relay).then(|| response_url.to_string());
             let headers = response
                 .headers()
                 .iter()
@@ -297,5 +299,45 @@ impl Executor for HttpExecutor {
                 copilot_token: None,
             }))
         })
+    }
+}
+
+#[cfg(test)]
+mod relay_tests {
+    use super::*;
+    use crate::handlers::Credentials;
+    use axum::{Router, routing::post, http::HeaderMap, body::Bytes};
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn chat_relay_wire_format_and_passthrough() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new().route("/relay", post(|headers: HeaderMap, body: Bytes| async move {
+            assert_eq!(headers["x-relay-target"], "https://example.com");
+            assert_eq!(headers["x-relay-path"], "/v1/chat/completions");
+            assert_eq!(headers["authorization"], "Bearer secret");
+            assert_eq!(headers["content-type"], "application/json");
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            if body["stream"] == true { "data: hello\n\ndata: [DONE]\n\n" } else { "{\"ok\":true}" }
+        }));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let executor = HttpExecutor(reqwest::Client::new());
+        for stream in [false, true] {
+            let response = executor.execute(ExecutorRequest {
+                provider: "openai-compatible-test".into(), model: "test".into(),
+                body: json!({"model":"test", "stream":stream}), stream,
+                credentials: Credentials { api_key: Some("secret".into()), provider_specific_data: json!({"baseUrl":"https://example.com/v1", "vercelRelayUrl":format!("http://{addr}/relay")}), ..Default::default() },
+                provider_session_id: None, client_tool: None,
+            }).await.unwrap();
+            assert_eq!(response.status, 200);
+            let bytes = match response.body {
+                ExecutorBody::Bytes(bytes) => bytes,
+                ExecutorBody::Stream(mut rx) => { let mut all = Vec::new(); while let Some(chunk) = rx.recv().await { all.extend(chunk.unwrap()); } all },
+                ExecutorBody::Json(_) => panic!("unexpected JSON body"),
+            };
+            assert_eq!(bytes, if stream { b"data: hello\n\ndata: [DONE]\n\n".as_slice() } else { b"{\"ok\":true}".as_slice() });
+        }
+        server.abort();
     }
 }

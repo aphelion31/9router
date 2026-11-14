@@ -1057,7 +1057,8 @@ pub async fn execute(
         .get("reasoning_effort")
         .and_then(Value::as_str);
     let credentials = json!({"accessToken": access_token, "providerSpecificData": request.provider_specific_data});
-    let selection = if matches!(request.model.as_str(), "auto" | "default") {
+    let relay = request.provider_specific_data.as_ref().and_then(|d| d["vercelRelayUrl"].as_str()).is_some_and(|s| !s.trim().is_empty());
+    let selection = if !relay && matches!(request.model.as_str(), "auto" | "default") {
         crate::services::cursor_models::resolve_cursor_models(client, &credentials, false)
             .await
             .and_then(|catalog| catalog["models"].as_array().and_then(|models| crate::services::cursor_models::resolve_auto_model_selection(models)))
@@ -1071,7 +1072,7 @@ pub async fn execute(
     for (name, value) in build_cursor_headers(access_token, machine_id, ghost_mode) {
         builder = builder.header(name, value);
     }
-    Ok(builder.send().await?)
+    super::send_request(client, builder.build()?, request.provider_specific_data.as_ref()).await
 }
 
 #[cfg(test)]

@@ -110,7 +110,58 @@ async fn compat_node(client: &reqwest::Client, request: &ExecutorRequest) -> any
     if request.stream {
         builder = builder.header(reqwest::header::ACCEPT, "text/event-stream");
     }
-    Ok(builder.send().await?)
+    send_request(client, builder.build()?, request.provider_specific_data.as_ref()).await
+}
+
+async fn send_request(client: &reqwest::Client, mut request: reqwest::Request, data: Option<&Value>) -> anyhow::Result<reqwest::Response> {
+    if let Some(relay) = data.and_then(|v| v["vercelRelayUrl"].as_str()).map(str::trim).filter(|v| !v.is_empty()) {
+        let relay = reqwest::Url::parse(relay).context("invalid relay URL")?;
+        if !matches!(relay.scheme(), "http" | "https") || relay.host_str().is_none() || !relay.username().is_empty() || relay.password().is_some() {
+            bail!("invalid relay URL");
+        }
+        let target = request.url();
+        if !matches!(target.scheme(), "http" | "https") || target.host_str().is_none() || !target.username().is_empty() || target.password().is_some() {
+            bail!("invalid relay target URL");
+        }
+        let origin = target.origin().ascii_serialization();
+        let mut path = target.path().to_owned();
+        if let Some(query) = target.query() { path.push('?'); path.push_str(query); }
+        request.headers_mut().insert("x-relay-target", origin.parse()?);
+        request.headers_mut().insert("x-relay-path", path.parse()?);
+        *request.url_mut() = relay;
+    }
+    client.execute(request).await.map_err(|e| e.without_url().into())
+}
+
+#[cfg(test)]
+mod relay_family_tests {
+    use super::*;
+    use axum::{Router, routing::post, http::{HeaderMap, StatusCode}};
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn specialized_executor_families_route_via_relay() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new().route("/relay", post(|headers: HeaderMap| async move {
+            assert!(headers.contains_key("x-relay-target"));
+            assert!(headers.contains_key("x-relay-path"));
+            (StatusCode::IM_A_TEAPOT, "relay response")
+        }));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+        for provider in ["windsurf", "cursor", "qoder", "qoder-cn", "vertex", "vertex-partner"] {
+            let request = ExecutorRequest {
+                provider: provider.into(), model: "test-model".into(), body: json!({"messages":[{"role":"user","content":"hello"}]}),
+                api_key: Some("test-key".into()), base_url: Some("https://example.com".into()),
+                provider_specific_data: Some(json!({"vercelRelayUrl":format!("http://{addr}/relay"),"machineId":"machine","userId":"user","projectId":"project"})),
+                ..Default::default()
+            };
+            let response = execute(&client, request).await.unwrap_or_else(|e| panic!("{provider}: {e:#}"));
+            assert_eq!(response.status(), StatusCode::IM_A_TEAPOT, "{provider}");
+        }
+        server.abort();
+    }
 }
 
 /// Sends a translated request and leaves the upstream body unbuffered.
@@ -119,6 +170,10 @@ pub async fn execute(
     client: &reqwest::Client,
     mut request: ExecutorRequest,
 ) -> anyhow::Result<reqwest::Response> {
+    let relay = request.provider_specific_data.as_ref().and_then(|v| v["vercelRelayUrl"].as_str()).is_some_and(|v| !v.trim().is_empty());
+    if relay && matches!(request.provider.as_str(), "trae" | "kiro" | "deepseek-web" | "grok-web" | "perplexity-web" | "uc-web" | "veoaifree-web" | "zed") {
+        bail!("relay transport is unavailable for this provider");
+    }
     if request.provider == "devin-cli" {
         return Err(devin_cli::unsupported());
     }
@@ -172,18 +227,17 @@ pub async fn execute(
             request.stream,
         )?;
         // AWS credentials must never be forwarded to a redirect target.
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()?;
+        let secure_client = if relay { None } else { Some(reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build()?) };
+        let client = secure_client.as_ref().unwrap_or(client);
         let mut builder = client.post(url).body(body);
         for (name, value) in headers {
             builder = builder.header(name, value);
         }
-        return Ok(builder.send().await?);
+        return send_request(client, builder.build()?, request.provider_specific_data.as_ref()).await;
     }
     let mut vertex_project = None;
     if matches!(provider.id.as_str(), "vertex" | "vertex-partner") {
-        if let Some((token, project)) = vertex::refresh(client, request.api_key.as_deref()).await? {
+        if let Some((token, project)) = vertex::refresh(client, request.api_key.as_deref(), request.provider_specific_data.as_ref()).await? {
             request.access_token = Some(token);
             vertex_project = project;
         }
@@ -205,7 +259,7 @@ pub async fn execute(
         .or(provider.base_url.as_deref())
         .with_context(|| format!("provider {} has no endpoint", provider.id))?;
     if provider.id == "mimo-free" {
-        return mimo_free::execute(client, endpoint, &mut request.body, request.stream).await;
+        return mimo_free::execute(client, endpoint, &mut request.body, request.stream, request.provider_specific_data.as_ref()).await;
     }
     if provider.id == "zed" {
         return zed::execute(
@@ -481,10 +535,10 @@ pub async fn execute(
     let mut attempts = 0;
     let response = loop {
         let cloned = outgoing.try_clone().context("upstream request cannot be retried")?;
-        let result = client.execute(cloned).await;
+        let result = send_request(client, cloned, request.provider_specific_data.as_ref()).await;
         let status = result.as_ref().map(|r| r.status().as_u16()).unwrap_or(502);
         let (limit, delay) = retry_policy(status);
-        if attempts >= limit || result.as_ref().is_err_and(|e| e.is_timeout()) {
+        if attempts >= limit || result.as_ref().is_err_and(|e| e.downcast_ref::<reqwest::Error>().is_some_and(reqwest::Error::is_timeout)) {
             break result?;
         }
         attempts += 1;
@@ -510,7 +564,7 @@ pub async fn execute(
             *fallback.body_mut() = Some(reqwest::Body::from(serde_json::to_vec(
                 &github::prepare_responses_fallback(&request.model, &request.body),
             )?));
-            client.execute(fallback).await?
+            send_request(client, fallback, request.provider_specific_data.as_ref()).await?
         } else {
             let mut rebuilt = axum::http::Response::builder().status(status.as_u16());
             for (name, value) in &headers {
