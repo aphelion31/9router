@@ -512,6 +512,14 @@ pub async fn execute(
         } else if let Some(token) = request.access_token.as_deref() {
             builder = builder.bearer_auth(token);
         }
+        // Upstream claude registry: OAuth tokens ride the Claude CLI fingerprint.
+        if provider.id == "claude" && request.access_token.as_deref().is_some_and(crate::services::claude_cloak::is_oauth_token) {
+            builder = builder
+                .header("anthropic-beta", crate::services::claude_cloak::cli_beta_header())
+                .header("user-agent", crate::services::claude_cloak::cli_user_agent())
+                .header("x-app", "cli")
+                .header("anthropic-dangerous-direct-browser-access", "true");
+        }
     } else if format == "gemini" {
         if let Some(key) = request.api_key.as_deref() {
             builder = builder.header("x-goog-api-key", key);
@@ -530,6 +538,15 @@ pub async fn execute(
             .or(request.access_token.as_deref())
     {
         builder = builder.bearer_auth(token);
+    }
+    if provider.id == "claude"
+        && let Some(token) = request.access_token.as_deref()
+        && crate::services::claude_cloak::is_oauth_token(token)
+    {
+        // Session id: stable per conversation (first message hash), like upstream resolveSessionId.
+        let seed = request.body["messages"].as_array().and_then(|m| m.first()).map(Value::to_string).unwrap_or_default();
+        let session = crate::services::claude_cloak::session_seed(&seed);
+        crate::services::claude_cloak::apply_cloaking(&mut request.body, token, &session);
     }
     let outgoing = builder.body(serde_json::to_vec(&request.body)?).build()?;
     let mut attempts = 0;

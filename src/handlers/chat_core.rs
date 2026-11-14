@@ -744,6 +744,54 @@ fn tap_usage(
     rx
 }
 
+/// Port of upstream `convertResponsesStreamToJson`: collects `output_item.done` items by
+/// `output_index`, takes id/created_at/usage/status from `response.created`/`response.completed`.
+fn responses_stream_to_json(text: &str, model: &str) -> Value {
+    let mut id = String::new();
+    let mut created = now_unix_secs();
+    let mut status = "in_progress".to_string();
+    let mut usage = json!({"input_tokens":0,"output_tokens":0,"total_tokens":0});
+    let mut items: std::collections::BTreeMap<u64, Value> = std::collections::BTreeMap::new();
+    for line in text.lines() {
+        let Some(SseLine::Json(v)) = parse_sse_line(line) else { continue };
+        match v["type"].as_str().unwrap_or("") {
+            "response.created" => {
+                if let Some(s) = v["response"]["id"].as_str() { id = s.to_owned(); }
+                if let Some(c) = v["response"]["created_at"].as_u64() { created = c; }
+            }
+            "response.output_item.done" => {
+                items.insert(v["output_index"].as_u64().unwrap_or(0), v["item"].clone());
+            }
+            "response.completed" | "response.done" => {
+                status = "completed".into();
+                if let Some(u) = v["response"]["usage"].as_object() {
+                    usage = json!({
+                        "input_tokens": u.get("input_tokens").and_then(Value::as_u64).unwrap_or(0),
+                        "output_tokens": u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0),
+                        "total_tokens": u.get("total_tokens").and_then(Value::as_u64).unwrap_or(0),
+                    });
+                }
+            }
+            "response.failed" => status = "failed".into(),
+            _ => {}
+        }
+    }
+    let max = items.keys().next_back().copied();
+    let output: Vec<Value> = match max {
+        Some(max) => (0..=max).map(|i| items.remove(&i).unwrap_or_else(|| json!({"type":"message","content":[],"role":"assistant"}))).collect(),
+        None => Vec::new(),
+    };
+    json!({
+        "id": if id.is_empty() { format!("resp_{}", now_unix_secs()) } else { id },
+        "model": model,
+        "object": "response",
+        "created_at": created,
+        "status": if status == "in_progress" { "completed".to_string() } else { status },
+        "output": output,
+        "usage": usage,
+    })
+}
+
 fn parse_sse_text_to_last_json(text: &str) -> Option<Value> {
     let mut last = None;
     for line in text.lines() {
@@ -1090,6 +1138,9 @@ pub async fn handle_chat_core(
             ExecutorBody::Bytes(b) => {
                 if let Ok(v) = serde_json::from_slice::<Value>(&b) {
                     v
+                } else if resp_format == FORMAT_OPENAI_RESPONSES {
+                    // Upstream streamToJsonConverter.js: forced-stream Responses (codex) is folded, not last-line.
+                    responses_stream_to_json(&String::from_utf8_lossy(&b), &options.model)
                 } else if let Some(v) = parse_sse_text_to_last_json(&String::from_utf8_lossy(&b)) {
                     v
                 } else {
@@ -1184,5 +1235,26 @@ mod header_tests {
         assert!(res.headers().get("transfer-encoding").is_none());
         assert!(res.headers().get("connection").is_none());
         assert_eq!(res.headers().get("x-request-id").unwrap(), "abc");
+    }
+
+    // Synthetic Responses SSE shaped like a forced-stream codex upstream. No real ids or tokens.
+    // Codex answers a non-stream request with ExecutorBody::Bytes, so this drives the real Bytes path.
+    #[test]
+    fn codex_forced_stream_bytes_fold_into_chat_content() {
+        let sse = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_test\",\"created_at\":1700000000}}\n\n",
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"pong\"}]}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":1,\"total_tokens\":4}}}\n\n",
+        );
+        let body = responses_stream_to_json(sse, "gpt-test");
+        let openai = translate_non_streaming_response(&body, FORMAT_OPENAI_RESPONSES, FORMAT_OPENAI);
+        assert_eq!(openai["choices"][0]["message"]["content"], "pong");
+        assert_eq!(openai["model"], "gpt-test");
+        // The Bytes branch must not fall back to last-line parsing (which loses output).
+        let last_line = parse_sse_text_to_last_json(sse).unwrap();
+        assert!(last_line.get("output").is_none());
     }
 }
