@@ -3,7 +3,7 @@
 use axum::{
     Json,
     extract::State,
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use serde_json::{Value, json};
@@ -36,7 +36,7 @@ fn default_embedding_url(provider: &str) -> Option<&'static str> {
     }
 }
 
-pub async fn create_embeddings(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
+pub async fn create_embeddings(State(state): State<AppState>, headers: HeaderMap, Json(body): Json<Value>) -> Response {
     let input = &body["input"];
     if input.is_null() || (input.as_str().is_some_and(str::is_empty)) {
         return media_error(StatusCode::BAD_REQUEST, "Missing required field: input");
@@ -101,6 +101,8 @@ pub async fn create_embeddings(State(state): State<AppState>, Json(body): Json<V
         match http_client().post(url).json_body(&req_body).send().await {
             Ok(res) if res.status().is_success() => {
                 let data = read_json(res).await.unwrap_or(Value::Null);
+                let (prompt, completion) = crate::services::modality_usage::reported_tokens(&data["usage"]);
+                crate::services::modality_usage::record_modality_usage(&state, &provider, &model, creds.as_ref().map(|c| c.connection_id.as_str()), crate::server::api_key_id(&state, &headers).as_deref(), "/v1/embeddings", prompt, completion, "reported");
                 if data["object"] == "list" && data["data"].is_array() {
                     return (StatusCode::OK, Json(data)).into_response();
                 }
@@ -176,12 +178,16 @@ pub async fn create_embeddings(State(state): State<AppState>, Json(body): Json<V
 
     match req.send().await {
         Ok(res) if res.status().is_success() => match read_json(res).await {
-            Ok(data) => (
+            Ok(data) => {
+                let (prompt, completion) = crate::services::modality_usage::reported_tokens(&data["usage"]);
+                crate::services::modality_usage::record_modality_usage(&state, &provider, &model, creds.as_ref().map(|c| c.connection_id.as_str()), crate::server::api_key_id(&state, &headers).as_deref(), "/v1/embeddings", prompt, completion, "reported");
+                (
                 StatusCode::OK,
                 [("Access-Control-Allow-Origin", "*")],
                 Json(data),
             )
-                .into_response(),
+                .into_response()
+            },
             Err(e) => media_error(StatusCode::BAD_GATEWAY, e),
         },
         Ok(res) => {

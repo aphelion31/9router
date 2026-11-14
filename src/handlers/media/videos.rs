@@ -190,6 +190,7 @@ async fn handle_video_inner(
                 let bytes = r.bytes().await.unwrap_or_default();
                 let data: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
                 let name = data["name"].as_str().unwrap_or("");
+                crate::services::modality_usage::record_modality_usage(&state, &provider, &model, creds.as_ref().map(|c| c.connection_id.as_str()), crate::server::api_key_id(&state, &headers).as_deref(), "/v1/videos/generations", 0, 0, "request-only");
                 let id = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(name.as_bytes());
                 (
                     StatusCode::OK,
@@ -248,6 +249,7 @@ async fn handle_video_inner(
             if !st.is_success() {
                 return media_error(st, sanitize_secrets(&txt, creds.as_ref()));
             }
+            if request_id.is_none() { crate::services::modality_usage::record_modality_usage(&state, &provider, &model, creds.as_ref().map(|c| c.connection_id.as_str()), crate::server::api_key_id(&state, &headers).as_deref(), "/v1/videos/generations", 0, 0, "request-only"); }
             let mut h = HeaderMap::new();
             h.insert("Content-Type", rct.parse().unwrap());
             h.insert("Access-Control-Allow-Origin", "*".parse().unwrap());

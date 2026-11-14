@@ -145,6 +145,7 @@ pub async fn audio_transcriptions(
     };
 
     let client = http_client();
+    let record = |text: &str| crate::services::modality_usage::record_modality_usage(&state, &provider, &model, creds.as_ref().map(|c| c.connection_id.as_str()), crate::server::api_key_id(&state, &headers).as_deref(), "/v1/audio/transcriptions", 0, crate::services::modality_usage::estimate_tokens_from_text(text), "estimated");
     let audio_ct = resolve_audio_content_type(file.content_type.as_deref(), file.filename.as_deref());
     let filename = file.filename.as_deref().unwrap_or("audio.wav");
 
@@ -165,6 +166,7 @@ pub async fn audio_transcriptions(
                     let text = data["results"]["channels"][0]["alternatives"][0]["transcript"]
                         .as_str()
                         .unwrap_or("");
+                    record(text);
                     (StatusCode::OK, Json(json!({ "text": text }))).into_response()
                 }
                 Ok(res) => {
@@ -207,6 +209,7 @@ pub async fn audio_transcriptions(
                                 .join("")
                         })
                         .unwrap_or_default();
+                    record(&text);
                     (StatusCode::OK, Json(json!({ "text": text }))).into_response()
                 }
                 Ok(r) => {
@@ -229,6 +232,7 @@ pub async fn audio_transcriptions(
             {
                 Ok(r) if r.status().is_success() => {
                     let data: Value = read_json(r).await.unwrap_or(Value::Null);
+                    record(data["text"].as_str().unwrap_or(""));
                     (StatusCode::OK, Json(json!({ "text": data["text"].as_str().unwrap_or("") }))).into_response()
                 }
                 Ok(r) => media_error(StatusCode::BAD_GATEWAY, r.text().await.unwrap_or_default()),
@@ -267,6 +271,8 @@ pub async fn audio_transcriptions(
                         .unwrap_or("application/json")
                         .to_owned();
                     let txt = r.text().await.unwrap_or_default();
+                    let parsed: Value = serde_json::from_str(&txt).unwrap_or(Value::Null);
+                    record(parsed["text"].as_str().unwrap_or(if rct.starts_with("text/") { &txt } else { "" }));
                     let mut h = HeaderMap::new();
                     h.insert("Content-Type", rct.parse().unwrap());
                     h.insert("Access-Control-Allow-Origin", "*".parse().unwrap());

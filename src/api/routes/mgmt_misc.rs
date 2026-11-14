@@ -62,7 +62,15 @@ async fn health(State(s): State<AppState>) -> Response {
         }
     }
 
-    let degraded = !db_ok;
+    let snapshot = crate::services::provider_breaker::global().lock().map(|mut b| b.snapshot(crate::routing::classify::now_ms())).unwrap_or_default();
+    let values = snapshot.as_object().into_iter().flat_map(|m| m.values());
+    let mut breakers = json!({"total":0,"open":0,"halfOpen":0,"preTrip":0});
+    for b in values {
+        breakers["total"] = json!(breakers["total"].as_u64().unwrap_or(0) + 1);
+        let field = match b["state"].as_str() { Some("open") => Some("open"), Some("half-open") => Some("halfOpen"), Some("closed") if b["failuresInWindow"].as_u64().unwrap_or(0) > 0 => Some("preTrip"), _ => None };
+        if let Some(field) = field { breakers[field] = json!(breakers[field].as_u64().unwrap_or(0) + 1); }
+    }
+    let degraded = !db_ok || breakers["open"] != 0 || breakers["halfOpen"] != 0;
     let status = if degraded {
         StatusCode::SERVICE_UNAVAILABLE
     } else {
@@ -77,7 +85,7 @@ async fn health(State(s): State<AppState>) -> Response {
             "checks": {
                 "db": if db_ok { "ok" } else { "error" },
                 "connections": { "total": total, "active": active },
-                "breakers": { "total": 0, "open": 0, "halfOpen": 0, "preTrip": 0 }
+                "breakers": breakers
             }
         })),
     )

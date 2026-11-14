@@ -423,8 +423,11 @@ async fn handle_chat_inner(
     for target in targets {
         let member = member_context.as_ref().map(|c| c.0.clone()).unwrap_or_else(|| ordered_names.iter().find(|name| member_targets.get(*name).is_some_and(|t| t.provider == target.provider && t.model == target.model)).cloned().unwrap_or_else(|| format!("{}/{}", target.provider, target.model)));
         let mut excluded = HashSet::new();
+        let cap = if is_combo { crate::services::member_failover::resolve_combo_member_attempt_cap(&settings, &target.provider, &target.model) } else { None };
+        let mut failures = 0usize;
         let mut overload_attempts = 0u32;
         loop {
+            if !crate::services::provider_breaker::global().lock().map(|mut b| b.gate(&target.provider, Some(&target.model), now_ms())).unwrap_or(true) { break; }
             let pin = &settings["comboMemberPins"][&model_str][&member];
             let pin = member_context.as_ref().and_then(|c| c.1.as_deref()).or_else(|| pin.as_str().or_else(|| pin["id"].as_str()));
             let Some(creds) = hooks
@@ -448,6 +451,7 @@ async fn handle_chat_inner(
             let hooks_for_success = Arc::clone(&hooks);
             let conn_id_success = conn_id.clone();
             let model_success = target.model.clone();
+            let provider_success = target.provider.clone();
             let hooks_for_usage = Arc::clone(&hooks);
             let usage_base = UsageRecord {
                 connection_id: Some(conn_id.clone()),
@@ -477,7 +481,8 @@ async fn handle_chat_inner(
                     let h = Arc::clone(&hooks_for_success);
                     let cid = conn_id_success.clone();
                     let m = model_success.clone();
-                    Box::pin(async move { h.on_request_success(&cid, &m).await })
+                    let p = provider_success.clone();
+                    Box::pin(async move { if let Ok(mut b) = crate::services::provider_breaker::global().lock() { b.success(&p, Some(&m), now_ms()); } h.on_request_success(&cid, &m).await })
                 })),
             };
 
@@ -525,6 +530,8 @@ async fn handle_chat_inner(
                         if flaky && flaky_attempts < max_flaky_retries {
                             flaky_attempts += 1;
                             last_flaky = Some(resp);
+                            failures += 1;
+                            if cap.is_some_and(|cap| failures >= cap) { break; }
                             excluded.insert(conn_id);
                             continue;
                         }
@@ -539,6 +546,8 @@ async fn handle_chat_inner(
                                 if flaky && flaky_attempts < max_flaky_retries {
                                     flaky_attempts += 1;
                                     last_flaky = Some(resp);
+                                    failures += 1;
+                                    if cap.is_some_and(|cap| failures >= cap) { break; }
                                     excluded.insert(conn_id);
                                     continue;
                                 }
@@ -599,6 +608,7 @@ async fn handle_chat_inner(
                     if conn_id == "noauth" || !hooks.on_account_error(&conn_id, status, &message).await {
                         return upstream_error_response(status, &message, &last_headers);
                     }
+                    if (status == 429 || status >= 500) && let Ok(mut b) = crate::services::provider_breaker::global().lock() { b.failure(&target.provider, &conn_id, Some(&target.model), now_ms()); }
                     match verdict {
                         Verdict::Fixed(d) => cooldowns.set(&conn_id, d),
                         Verdict::Quota { reset_ms } => cooldowns.set(
@@ -613,6 +623,8 @@ async fn handle_chat_inner(
                         Verdict::RequestScoped => {}
                     }
                     excluded.insert(conn_id);
+                    failures += 1;
+                    if cap.is_some_and(|cap| failures >= cap) { break; }
                     continue;
                 }
             }

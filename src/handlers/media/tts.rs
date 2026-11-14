@@ -507,7 +507,7 @@ fn extract_between<'a>(haystack: &'a str, start: &str, end: &str) -> Option<&'a 
     Some(&haystack[i..i + j])
 }
 
-pub async fn audio_speech(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
+pub async fn audio_speech(State(state): State<AppState>, request_headers: HeaderMap, Json(body): Json<Value>) -> Response {
     let input = body["input"].as_str().unwrap_or("");
     if input.trim().is_empty() {
         return media_error(StatusCode::BAD_REQUEST, "Missing required field: input");
@@ -533,6 +533,7 @@ pub async fn audio_speech(State(state): State<AppState>, Json(body): Json<Value>
     .await
     {
         Ok(audio) => {
+            crate::services::modality_usage::record_modality_usage(&state, &provider, &model, creds.as_ref().map(|c| c.connection_id.as_str()), crate::server::api_key_id(&state, &request_headers).as_deref(), "/v1/audio/speech", crate::services::modality_usage::estimate_tokens_from_text(input), 0, "estimated");
             if response_format == "json" {
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&audio.bytes);
                 return (
