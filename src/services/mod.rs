@@ -21,6 +21,7 @@ pub mod latency_stats;
 pub mod minimax_code_lease;
 pub mod member_failover;
 pub mod modality_usage;
+pub mod pricing;
 pub mod provider_breaker;
 pub mod minimax_code_usage;
 pub mod model_markers;

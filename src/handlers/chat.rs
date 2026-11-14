@@ -28,6 +28,9 @@ pub struct UsageRecord {
     pub model: String,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+    pub cached_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub reasoning_tokens: u64,
     pub status: u16,
     pub latency_ms: u64,
 }
@@ -475,11 +478,14 @@ async fn handle_chat_inner(
                     let cid = conn_id_refresh.clone();
                     Box::pin(async move { h.on_credentials_refreshed(&cid, new_creds).await })
                 })),
-                on_usage: Some(Arc::new(move |prompt_tokens, completion_tokens| {
+                on_usage: Some(Arc::new(move |counts: crate::services::pricing::TokenCounts| {
                     let h = Arc::clone(&hooks_for_usage);
                     let record = UsageRecord {
-                        prompt_tokens,
-                        completion_tokens,
+                        prompt_tokens: counts.prompt_tokens.max(0) as u64,
+                        completion_tokens: counts.completion_tokens.max(0) as u64,
+                        cached_tokens: counts.cached_tokens.max(0) as u64,
+                        cache_creation_tokens: counts.cache_creation_tokens.max(0) as u64,
+                        reasoning_tokens: counts.reasoning_tokens.max(0) as u64,
                         status: 200,
                         latency_ms: started.elapsed().as_millis() as u64,
                         ..usage_base.clone()

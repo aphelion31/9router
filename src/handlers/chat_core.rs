@@ -22,15 +22,26 @@ use crate::translator::{needs_translation, normalize_format, translate_request};
 pub type RefreshHook =
     Arc<dyn Fn(RefreshedCredentials) -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
 pub type SuccessHook = Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>;
-/// Called once per completed upstream call with `(prompt_tokens, completion_tokens)`.
+/// Called once per completed upstream call with the canonical token counts (cache and
+/// reasoning included), so the usage writer prices the call like upstream `calculateCost`.
 /// Streaming reports the last usage seen in the SSE stream, sent when the stream ends.
-pub type UsageHook = Arc<dyn Fn(u64, u64) -> BoxFuture<'static, ()> + Send + Sync>;
+pub type UsageHook = Arc<dyn Fn(crate::services::pricing::TokenCounts) -> BoxFuture<'static, ()> + Send + Sync>;
 
 #[derive(Default, Clone)]
 pub struct ChatCoreHooks {
     pub on_credentials_refreshed: Option<RefreshHook>,
     pub on_request_success: Option<SuccessHook>,
     pub on_usage: Option<UsageHook>,
+}
+
+/// Canonical token counts (cache and reasoning kept) from a raw upstream body. `None` when absent.
+pub fn usage_counts_from_body(body: &Value) -> Option<crate::services::pricing::TokenCounts> {
+    let u = body.get("usage").or_else(|| body.get("usageMetadata"))?;
+    let c = crate::services::pricing::canonicalize_usage(u);
+    if c == Default::default() {
+        return None;
+    }
+    Some(c)
 }
 
 /// Token counts from a raw upstream body (OpenAI, Claude, Gemini, Responses shapes).
@@ -702,10 +713,10 @@ fn tap_usage(
     let (tx, rx) = mpsc::channel(64);
     tokio::spawn(async move {
         let mut buf: Vec<u8> = Vec::new();
-        let mut usage: Option<(u64, u64)> = None;
-        let scan = |line: &[u8], usage: &mut Option<(u64, u64)>| {
+        let mut usage: Option<crate::services::pricing::TokenCounts> = None;
+        let scan = |line: &[u8], usage: &mut Option<crate::services::pricing::TokenCounts>| {
             if let Some(SseLine::Json(v)) = parse_sse_line(&String::from_utf8_lossy(line))
-                && let Some(found) = usage_from_body(&v)
+                && let Some(found) = usage_counts_from_body(&v)
             {
                 *usage = Some(found);
             }
@@ -728,8 +739,7 @@ fn tap_usage(
         if !buf.is_empty() {
             scan(&buf, &mut usage);
         }
-        let (p, c) = usage.unwrap_or((0, 0));
-        hook(p, c).await;
+        hook(usage.unwrap_or_default()).await;
     });
     rx
 }
@@ -1110,7 +1120,7 @@ pub async fn handle_chat_core(
             }
         };
 
-        let usage = hooks.on_usage.as_ref().map(|_| usage_from_body(&raw_json).unwrap_or((0, 0)));
+        let usage = hooks.on_usage.as_ref().map(|_| usage_counts_from_body(&raw_json).unwrap_or_default());
         let mut translated = if needs_translation(&resp_format, &source_format) {
             translate_non_streaming_response(&raw_json, &resp_format, &source_format)
         } else {
@@ -1125,8 +1135,8 @@ pub async fn handle_chat_core(
                 .or_insert_with(|| json!(now_unix_secs()));
         }
 
-        if let (Some(hook), Some((p, c))) = (&hooks.on_usage, usage) {
-            hook(p, c).await;
+        if let (Some(hook), Some(counts)) = (&hooks.on_usage, usage) {
+            hook(counts).await;
         }
         return ChatCoreResult::Success(build_json_response(
             200,
