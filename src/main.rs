@@ -96,7 +96,7 @@ async fn serve() -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind((config::host().as_str(), config::port())).await?;
     tracing::info!("listening on {}", listener.local_addr()?);
-    axum::serve(listener, server::router())
+    axum::serve(listener, server::router().into_make_service_with_connect_info::<std::net::SocketAddr>())
         .with_graceful_shutdown(server::shutdown_notify().notified())
         .await?;
     Ok(())
