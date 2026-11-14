@@ -150,6 +150,13 @@ async fn probe_flaky_response(response: Response) -> (Response, bool) {
 
 /// Hooks for credential lookup, persistence, and account failover in `handle_chat`.
 pub trait ChatHooks: Send + Sync {
+    fn settings<'a>(&'a self) -> BoxFuture<'a, Value> {
+        Box::pin(async { json!({}) })
+    }
+
+    fn smart_choice<'a>(&'a self, _body: &'a Value) -> BoxFuture<'a, Option<Value>> {
+        Box::pin(async { None })
+    }
     fn get_credentials<'a>(
         &'a self,
         provider: &'a str,
@@ -253,6 +260,7 @@ pub async fn handle_chat(
         obj.insert("model".to_string(), json!(model_str));
     }
 
+    let is_combo = parse_model_target(&model_str).is_none();
     let mut targets = if let Some(mut t) = parse_model_target(&model_str) {
         // Upstream getModelInfo: a non-reserved prefix may name a provider node.
         if providers::lookup(&t.provider).is_none()
@@ -273,6 +281,51 @@ pub async fn handle_chat(
     if targets.is_empty() {
         return error_response(400, "No valid target models resolved");
     }
+
+    let settings = hooks.settings().await;
+    let required = crate::services::capacity_adapter::detect_required_capabilities(&body);
+    let original: Vec<String> = targets.iter().map(|t| format!("{}/{}", t.provider, t.model)).collect();
+    let mut names = crate::services::capacity_adapter::augment_models_with_capacity_adapter(
+        &original, &required, &settings, crate::services::capacity_adapter::model_satisfies,
+    );
+    let adapters: HashSet<String> = names.iter().filter(|n| !original.contains(n)).filter_map(|n| parse_model_target(n)).map(|t| format!("{}/{}", t.provider, t.model)).collect();
+    let strategy = if is_combo {
+        settings["comboStrategies"][&model_str]["fallbackStrategy"].as_str()
+            .filter(|s| *s != "auto")
+            .or_else(|| settings["comboStrategy"].as_str().filter(|s| *s != "auto"))
+            .unwrap_or("fallback")
+    } else {
+        crate::services::capacity_adapter::get_active_adapter_strategy(&required, &settings)
+    };
+    if is_combo && strategy == "smart" && names.len() > 1 {
+        use crate::services::systemone_router::*;
+        let cfg = &settings["comboStrategies"][&model_str];
+        let policy = cfg["smartPolicy"].as_str().unwrap_or("smart").to_ascii_lowercase();
+        let session = headers.get("x-session-id").and_then(|v| v.to_str().ok()).unwrap_or("");
+        let sticky_enabled = policy != "per-turn" && cfg["sessionSticky"] != false && !session.is_empty();
+        let sticky = if sticky_enabled { sticky_store().lock().ok().and_then(|mut s| s.get(&model_str, session, &names, now_ms())) } else { None };
+        let threshold = match policy.as_str() { "smart-switch-70" => 0.7, "smart-switch-90" => 0.9, _ => cfg["confidenceThreshold"].as_f64().filter(|n| *n > 0.0).unwrap_or(0.8) };
+        let state = extract_prompt_state(&body, MAX_STATE_CHARS);
+        let decision = if sticky.is_some() && policy == "strict" || state.is_empty() { None } else {
+            let request = json!({"model": cfg["routerModel"].as_str().filter(|s| !s.trim().is_empty()).unwrap_or(DEFAULT_SYSTEMONE_ROUTER_MODEL), "state": state, "questions":{"route":{"type":"choice","instructions":"Which of these configured models is the most appropriate for this request?","criteria":build_choice_criteria(&names)}}});
+            tokio::time::timeout(Duration::from_millis(DEFAULT_SYSTEMONE_TIMEOUT_MS), hooks.smart_choice(&request)).await.ok().flatten().and_then(|v| parse_systemone_route_answer(&v))
+        };
+        let chosen = decision.as_ref().filter(|d| names.iter().any(|n| Some(n.as_str()) == d["choice"].as_str())).filter(|d| {
+            let confidence = d["confidence"].as_f64();
+            if sticky.is_some() { confidence.is_some_and(|c| c >= threshold) } else { confidence.is_none_or(|c| c >= threshold) }
+        });
+        if let Some(decision) = chosen {
+            names = order_models_by_choice(&names, decision);
+            if sticky_enabled { if let Ok(mut s) = sticky_store().lock() { s.set(&model_str, session, &names[0], now_ms()); } }
+        } else if let Some(sticky) = sticky {
+            names = order_models_by_choice(&names, &json!({"choice":sticky}));
+        }
+    } else if strategy == "round-robin" && names.len() > 1 {
+        static ROTATION: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let offset = ROTATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % names.len();
+        names.rotate_left(offset);
+    }
+    targets = names.iter().filter_map(|n| parse_model_target(n)).collect();
 
     let accept_header = headers
         .get("accept")
@@ -375,7 +428,9 @@ pub async fn handle_chat(
                 }
             }
             let options = ChatCoreOptions {
-                body: body.clone(),
+                body: if adapters.contains(&format!("{}/{}", target.provider, target.model)) {
+                    crate::services::capacity_adapter::strip_history_for_context(&body, crate::services::capacity_adapter::model_context_window(&target.provider, &target.model))
+                } else { body.clone() },
                 provider: target.provider.clone(),
                 model: target.model.clone(),
                 credentials: creds,
@@ -495,6 +550,13 @@ pub async fn handle_chat(
         }
     }
 
+    if is_combo && strategy == "smart" {
+        if let Some(session) = headers.get("x-session-id").and_then(|v| v.to_str().ok()).filter(|s| !s.is_empty()) {
+            if let Ok(mut store) = crate::services::systemone_router::sticky_store().lock() {
+                store.clear(&model_str, Some(session));
+            }
+        }
+    }
     last_flaky.unwrap_or_else(|| upstream_error_response(last_status, &last_error, &last_headers))
 }
 
@@ -603,6 +665,23 @@ mod tests {
         headers.insert("user-agent", "claude-cli".parse().unwrap());
         let hooks: Arc<dyn ChatHooks> = Arc::new(SingleCredHooks { credentials: test_creds("native-test") });
         let response = handle_chat(json!({"model":"claude/test","stream":false,"custom_native_field":"preserved","messages":[{"role":"user","content":"hello"}]}), &headers, Some("/v1/messages"), &executor, hooks).await;
+        assert_eq!(response.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn smart_combo_dispatches_selected_model() {
+        struct Smart;
+        impl ChatHooks for Smart {
+            fn get_credentials<'a>(&'a self, _: &'a str, _: &'a str, _: &'a HashSet<String>) -> BoxFuture<'a, Option<Credentials>> { Box::pin(async { Some(test_creds("smart-combo-test")) }) }
+            fn get_combo_models<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Option<Vec<String>>> { Box::pin(async { Some(vec!["openai/first".into(), "openai/second".into()]) }) }
+            fn settings<'a>(&'a self) -> BoxFuture<'a, Value> { Box::pin(async { json!({"comboStrategies":{"test":{"fallbackStrategy":"smart","smartPolicy":"per-turn"}}}) }) }
+            fn smart_choice<'a>(&'a self, body: &'a Value) -> BoxFuture<'a, Option<Value>> { Box::pin(async move { assert_eq!(body["state"], "hello"); assert!(body["questions"]["route"]["criteria"]["openai/second"].is_null()); Some(json!({"answers":{"route":{"choice":"openai/second","confidence":0.9}}})) }) }
+        }
+        let executor = FakeExecutor::new(|req, _| {
+            assert_eq!(req.model, "second");
+            Ok(ExecutorResponse { status: 200, headers: vec![], body: ExecutorBody::Json(json!({"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]})), url: None, response_format: None })
+        });
+        let response = handle_chat(json!({"model":"test","messages":[{"role":"user","content":"hello"}]}), &HeaderMap::new(), Some("/v1/chat/completions"), &executor, Arc::new(Smart)).await;
         assert_eq!(response.status(), 200);
     }
 
