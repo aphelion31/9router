@@ -191,12 +191,12 @@ pub fn to_openai_usage(source_format: &str, raw: Option<&Value>) -> Option<Value
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
             let output = raw.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-            Some(build_usage(
-                input + cache_read + cache_create,
-                output,
-                cache_read,
-                0,
-            ))
+            let mut usage = build_usage(input + cache_read + cache_create, output, cache_read, 0);
+            // concerns/usage.js: cache creation is visible alongside cached_tokens.
+            if cache_create > 0 {
+                usage["prompt_tokens_details"]["cache_creation_tokens"] = json!(cache_create);
+            }
+            Some(usage)
         }
         FORMAT_GEMINI | FORMAT_GEMINI_CLI | FORMAT_VERTEX | FORMAT_ANTIGRAVITY => {
             let cached = raw
