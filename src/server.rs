@@ -444,6 +444,37 @@ impl ChatHooks for Hooks {
         excluded: &'a HashSet<String>,
     ) -> BoxFuture<'a, Option<Credentials>> {
         Box::pin(async move {
+            if matches!(provider, "opencode" | "mimo-free") {
+                if excluded.contains("noauth") { return None; }
+                let db = self.state.db.lock().ok()?;
+                let settings = crate::db::settings_get(&db).unwrap_or_default();
+                let config = &settings["providerStrategies"][provider];
+                let mut pool_id = config["proxyPoolId"].as_str().unwrap_or("").to_owned();
+                if pool_id.is_empty() && config["rotateStrategy"].as_str().unwrap_or("none") != "none" {
+                    let mut stmt = db.prepare("SELECT id,data FROM proxyPools WHERE isActive=1 ORDER BY createdAt DESC").ok()?;
+                    let pools: Vec<Value> = stmt.query_map([], |row| {
+                        let id: String = row.get(0)?;
+                        let data: String = row.get(1)?;
+                        let mut value: Value = serde_json::from_str(&data).unwrap_or(json!({}));
+                        value["id"] = json!(id);
+                        Ok(value)
+                    }).ok()?.flatten().collect();
+                    let selected: Vec<String> = config["proxyPoolIds"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
+                    let ids = crate::services::connection_proxy::resolve_rotation_pool_ids(&pools, &selected);
+                    static ROTATION: std::sync::OnceLock<std::sync::Mutex<crate::services::connection_proxy::ProxyRotation>> = std::sync::OnceLock::new();
+                    pool_id = ROTATION.get_or_init(Default::default).lock().ok()?.pick(&ids, config["rotateStrategy"].as_str().unwrap_or("none"), provider).unwrap_or_default();
+                }
+                let pool = if pool_id.is_empty() { Ok(None) } else {
+                    db.query_row("SELECT data,isActive FROM proxyPools WHERE id=?1", [&pool_id], |row| {
+                        let raw: String = row.get(0)?;
+                        let mut pool: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
+                        pool["isActive"] = json!(row.get::<_, i64>(1)? != 0);
+                        Ok(pool)
+                    }).optional().map_err(|_| ())
+                };
+                let proxy = crate::services::connection_proxy::resolve_connection_proxy_config(&json!({"proxyPoolId":pool_id}), pool.as_ref().map(|p| p.as_ref()).map_err(|_| ()));
+                return Some(Credentials { connection_id: "noauth".into(), access_token: Some("public".into()), provider_specific_data: proxy, ..Default::default() });
+            }
             let candidate = {
                 let db = self.state.db.lock().ok()?;
                 let mut st = db.prepare("SELECT id,name,data FROM providerConnections WHERE provider=?1 AND isActive=1 ORDER BY priority ASC").ok()?;
@@ -610,6 +641,22 @@ mod tests {
         crate::db::migrate(&db).unwrap();
         db.execute("INSERT INTO apiKeys(id,key,createdAt,accessRestricted,accessAllow) VALUES('1','secret','now',1,?1)",params!["{\"restricted\":true}"]).unwrap();
         make_router(db, Some(b"test-secret".to_vec()))
+    }
+    #[tokio::test]
+    async fn free_provider_rotates_selected_active_proxy_pools() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&db).unwrap();
+        for (id, url, created) in [("a", "http://a:8080", "2"), ("b", "http://b:8080", "1")] {
+            db.execute("INSERT INTO proxyPools(id,isActive,data,createdAt,updatedAt) VALUES(?1,1,?2,?3,?3)", params![id, json!({"proxyUrl":url}).to_string(), created]).unwrap();
+        }
+        crate::db::settings_put(&db, &json!({"providerStrategies":{"opencode":{"rotateStrategy":"round-robin","proxyPoolIds":["a","b"]}}})).unwrap();
+        let state = AppState { db: Arc::new(Mutex::new(db)), executor: Arc::new(HttpExecutor(reqwest::Client::new())), jwt_secret: None };
+        let hooks = Hooks { state, api_key_id: None };
+        let excluded = HashSet::new();
+        let first = hooks.get_credentials("opencode", "test", &excluded).await.unwrap();
+        let second = hooks.get_credentials("opencode", "test", &excluded).await.unwrap();
+        let urls = [first.provider_specific_data["connectionProxyUrl"].as_str().unwrap(), second.provider_specific_data["connectionProxyUrl"].as_str().unwrap()];
+        assert!(urls.contains(&"http://a:8080") && urls.contains(&"http://b:8080"));
     }
     #[tokio::test]
     async fn key_limit_blocks_until_response_body_is_dropped() {

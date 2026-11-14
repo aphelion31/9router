@@ -34,8 +34,20 @@ impl Executor for HttpExecutor {
                 .and_then(|v| v.as_str())
                 .map(str::to_owned)).flatten();
             let model = req.model.clone();
+            let proxy = &req.credentials.provider_specific_data;
+            let proxy_client = if proxy["connectionProxyEnabled"] == true || proxy["strictProxy"] == true || proxy["vercelRelayUrl"].as_str().is_some_and(|s| !s.is_empty()) {
+                if proxy["vercelRelayUrl"].as_str().is_some_and(|s| !s.is_empty()) { return Err("Relay proxy is not supported for chat".into()); }
+                if proxy["connectionProxyEnabled"] != true { return Err("Strict proxy is unavailable".into()); }
+                let url = proxy["connectionProxyUrl"].as_str().filter(|s| !s.is_empty()).ok_or("Proxy URL is missing")?;
+                let no_proxy = proxy["connectionNoProxy"].as_str().and_then(reqwest::NoProxy::from_string);
+                let client = reqwest::Client::builder()
+                    .connect_timeout(std::time::Duration::from_millis(crate::config::FETCH_CONNECT_TIMEOUT_MS))
+                    .proxy(reqwest::Proxy::all(url).map_err(|e| e.to_string())?.no_proxy(no_proxy))
+                    .build().map_err(|e| e.to_string())?;
+                Some(client)
+            } else { None };
             let response = crate::executors::execute(
-                &self.0,
+                proxy_client.as_ref().unwrap_or(&self.0),
                 crate::executors::ExecutorRequest {
                     provider: req.provider,
                     model: req.model,

@@ -120,27 +120,6 @@ impl KeyRateLimiter {
         entry.slots.insert(id, now);
         Ok(Slot { state: self.state.clone(), key: key.to_owned(), id })
     }
-    pub fn admit(&self, key: &str, now: u64) -> Slot {
-        if key.is_empty() {
-            return Slot {
-                state: self.state.clone(),
-                key: String::new(),
-                id: 0,
-            };
-        }
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.next_id = state.next_id.wrapping_add(1);
-        let id = state.next_id;
-        let entry = state.keys.entry(key.into()).or_default();
-        prune(entry, now);
-        entry.times.push_back(now);
-        entry.slots.insert(id, now);
-        Slot {
-            state: self.state.clone(),
-            key: key.into(),
-            id,
-        }
-    }
     pub fn usage(&self, key: &str, now: u64) -> Usage {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let Some(entry) = state.keys.get_mut(key) else {
@@ -213,7 +192,7 @@ mod tests {
     #[test]
     fn enforces_windows_and_releases_slots() {
         let limiter = KeyRateLimiter::default();
-        let mut slot = limiter.admit("key", 1000);
+        let mut slot = limiter.try_admit("key", Limits::default(), 1000).unwrap();
         let limits = Limits {
             rpm: 1,
             max_concurrent: 1,
@@ -230,7 +209,7 @@ mod tests {
             60
         );
         drop(limiter.try_admit("key", limits, 61_000).unwrap());
-        let _leaked = limiter.admit("key", 100_000);
+        let _leaked = limiter.try_admit("key", Limits::default(), 100_000).unwrap();
         assert_eq!(limiter.usage("key", 100_000 + SLOT_TTL).in_flight, 0);
     }
 }

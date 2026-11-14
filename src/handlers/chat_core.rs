@@ -884,7 +884,12 @@ pub async fn handle_chat_core(
 
     let creds_val = options.credentials.to_translator_value();
     let upstream_model = strip_thinking_suffix(&options.model).to_string();
-    let mut translated_body = translate_request(
+    let passthrough = options.client_tool.as_deref().is_some_and(|client| {
+        crate::services::client_detector::is_native_passthrough(client, &options.provider)
+    });
+    let mut translated_body = if passthrough {
+        options.body.clone()
+    } else { translate_request(
         &source_format,
         &target_format,
         &upstream_model,
@@ -892,7 +897,7 @@ pub async fn handle_chat_core(
         stream,
         Some(&creds_val),
         Some(&options.provider),
-    );
+    ) };
     if let Some(obj) = translated_body.as_object_mut() {
         obj.insert("model".to_string(), json!(upstream_model));
     }

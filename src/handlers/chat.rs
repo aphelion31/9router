@@ -127,6 +127,27 @@ async fn peek_combo_response(response: Response) -> (Response, bool) {
     (Response::from_parts(parts, Body::from_stream(Replay { head, tail })), empty)
 }
 
+async fn probe_flaky_response(response: Response) -> (Response, bool) {
+    use futures_core::Stream;
+    use std::{collections::VecDeque, pin::Pin, task::{Context, Poll}};
+    struct Replay {
+        head: VecDeque<Result<axum::body::Bytes, axum::Error>>,
+        tail: axum::body::BodyDataStream,
+    }
+    impl Stream for Replay {
+        type Item = Result<axum::body::Bytes, axum::Error>;
+        fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            if let Some(chunk) = self.head.pop_front() { return Poll::Ready(Some(chunk)); }
+            Pin::new(&mut self.tail).poll_next(cx)
+        }
+    }
+    let (parts, body) = response.into_parts();
+    let mut tail = body.into_data_stream();
+    let probe = crate::services::flaky_guard::probe_response(&mut tail, Duration::from_millis(120), 2_000_000).await;
+    let flaky = probe.ended && probe.flaky.is_some();
+    (Response::from_parts(parts, Body::from_stream(Replay { head: probe.buffered.into(), tail })), flaky)
+}
+
 /// Hooks for credential lookup, persistence, and account failover in `handle_chat`.
 pub trait ChatHooks: Send + Sync {
     fn get_credentials<'a>(
@@ -380,6 +401,16 @@ pub async fn handle_chat(
                         }
                         resp
                     } else { resp };
+                    if anti_flaky_enabled && max_flaky_retries > 0 && body["stream"] == true {
+                        let (resp, flaky) = probe_flaky_response(resp).await;
+                        if flaky && flaky_attempts < max_flaky_retries {
+                            flaky_attempts += 1;
+                            last_flaky = Some(resp);
+                            excluded.insert(conn_id);
+                            continue;
+                        }
+                        return resp;
+                    }
                     if anti_flaky_enabled && max_flaky_retries > 0 && body["stream"] != true {
                         let (parts, response_body) = resp.into_parts();
                         match axum::body::to_bytes(response_body, usize::MAX).await {
@@ -480,6 +511,14 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::mpsc;
 
+    #[tokio::test]
+    async fn flaky_stream_probe_replays_finished_body() {
+        let text = "data: {\"choices\":[{\"delta\":{\"content\":\"\"}}]}\n\ndata: [DONE]\n\n";
+        let (response, flaky) = probe_flaky_response(Response::new(Body::from(text))).await;
+        assert!(flaky);
+        assert_eq!(to_bytes(response.into_body(), usize::MAX).await.unwrap(), text);
+    }
+
     struct FakeExecutor {
         calls: Mutex<Vec<ExecutorRequest>>,
         response_fn: Box<
@@ -551,6 +590,20 @@ mod tests {
             access_token: Some("tok-initial".to_string()),
             ..Default::default()
         }
+    }
+
+    #[tokio::test]
+    async fn native_claude_request_preserves_custom_fields() {
+        let executor = FakeExecutor::new(|req, _| {
+            assert_eq!(req.body["custom_native_field"], "preserved");
+            assert_eq!(req.body["model"], "test");
+            Ok(ExecutorResponse { status: 200, headers: vec![], body: ExecutorBody::Json(json!({"type":"message","content":[{"type":"text","text":"ok"}]})), url: None, response_format: None })
+        });
+        let mut headers = HeaderMap::new();
+        headers.insert("user-agent", "claude-cli".parse().unwrap());
+        let hooks: Arc<dyn ChatHooks> = Arc::new(SingleCredHooks { credentials: test_creds("native-test") });
+        let response = handle_chat(json!({"model":"claude/test","stream":false,"custom_native_field":"preserved","messages":[{"role":"user","content":"hello"}]}), &headers, Some("/v1/messages"), &executor, hooks).await;
+        assert_eq!(response.status(), 200);
     }
 
     #[tokio::test]
