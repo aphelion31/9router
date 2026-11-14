@@ -480,14 +480,10 @@ fn build_gemini_core(model: &str, body: &Value, is_cli_or_ag: bool) -> Value {
 
     let mut gen_cfg = Map::new();
     gen_cfg.insert("maxOutputTokens".to_string(), json!(adjust_max_tokens(body)));
-    if model.starts_with("gemini-4-") && model.ends_with("-high") {
-        gen_cfg.insert("maxOutputTokens".to_string(), json!(65535));
-        gen_cfg.insert("thinkingConfig".to_string(), json!({"thinkingLevel":"high","includeThoughts":true}));
-    }
-    if let Some(v) = body.get("temperature") {
+    if !model.starts_with("gemini-4-") && let Some(v) = body.get("temperature") {
         gen_cfg.insert("temperature".to_string(), v.clone());
     }
-    if let Some(v) = body.get("top_p") {
+    if !model.starts_with("gemini-4-") && let Some(v) = body.get("top_p") {
         gen_cfg.insert("topP".to_string(), v.clone());
     }
     if let Some(stop) = body.get("stop") {
