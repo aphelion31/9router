@@ -400,6 +400,47 @@ struct Hooks {
     api_key_id: Option<String>,
 }
 impl ChatHooks for Hooks {
+    fn pair_enabled<'a>(&'a self, name: &'a str) -> BoxFuture<'a, bool> {
+        Box::pin(async move {
+            let Ok(db) = self.state.db.lock() else { return false };
+            let load = |key| crate::db::kv_get(&db, "promptInjections", key).ok().flatten().and_then(|s| serde_json::from_str::<Value>(&s).ok()).unwrap_or_default();
+            let global: Value = load("prompts");
+            let keyed: Value = load("byKeyModel");
+            let entry = if global[name].is_object() { &global[name] } else { &keyed[self.api_key_id.as_deref().unwrap_or("")][name] };
+            entry["enabled"] == true
+        })
+    }
+    fn capacity_connections<'a>(&'a self) -> BoxFuture<'a, Vec<Value>> {
+        Box::pin(async move {
+            let Ok(db) = self.state.db.lock() else { return Vec::new() };
+            let Ok(mut st) = db.prepare("SELECT provider,isActive,data FROM providerConnections") else { return Vec::new() };
+            let Ok(rows) = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?))) else { return Vec::new() };
+            rows.flatten().filter_map(|(provider, active, raw)| {
+                let mut data = crate::crypto::parse_data(&raw)?;
+                data["provider"] = json!(provider);
+                data["isActive"] = json!(active != 0);
+                Some(data)
+            }).collect()
+        })
+    }
+    fn get_pinned_credentials<'a>(&'a self, provider: &'a str, model: &'a str, excluded: &'a HashSet<String>, pin: Option<&'a str>) -> BoxFuture<'a, Option<Credentials>> {
+        Box::pin(async move {
+            if let Some(pin) = pin.filter(|p| !excluded.contains(*p)) {
+                let others = self.state.db.lock().ok().and_then(|db| {
+                    let mut st = db.prepare("SELECT id FROM providerConnections WHERE provider=?1 AND isActive=1 AND id<>?2").ok()?;
+                    let ids = st.query_map(rusqlite::params![provider, pin], |r| r.get::<_, String>(0)).ok()?.flatten().collect::<HashSet<_>>();
+                    Some(ids)
+                });
+                if let Some(mut others) = others {
+                    others.extend(excluded.iter().cloned());
+                    if let Some(creds) = self.get_credentials(provider, model, &others).await {
+                        if creds.connection_id == pin { return Some(creds); }
+                    }
+                }
+            }
+            self.get_credentials(provider, model, excluded).await
+        })
+    }
     fn settings<'a>(&'a self) -> BoxFuture<'a, Value> {
         Box::pin(async move {
             self.state.db.lock().ok().and_then(|db| crate::db::settings_get(&db).ok()).unwrap_or_default()

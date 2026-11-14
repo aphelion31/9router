@@ -16,6 +16,9 @@ use crate::routing::classify::{
 };
 use crate::routing::{self, cooldown::Cooldowns};
 use std::time::{Duration, Instant};
+#[path = "fusion.rs"]
+mod fusion;
+use fusion::fusion_chat;
 
 /// One upstream attempt, written to usage history by the server.
 #[derive(Debug, Clone, Default)]
@@ -157,6 +160,15 @@ pub trait ChatHooks: Send + Sync {
     fn smart_choice<'a>(&'a self, _body: &'a Value) -> BoxFuture<'a, Option<Value>> {
         Box::pin(async { None })
     }
+    fn pair_enabled<'a>(&'a self, _name: &'a str) -> BoxFuture<'a, bool> {
+        Box::pin(async { false })
+    }
+    fn capacity_connections<'a>(&'a self) -> BoxFuture<'a, Vec<Value>> {
+        Box::pin(async { Vec::new() })
+    }
+    fn get_pinned_credentials<'a>(&'a self, provider: &'a str, model: &'a str, excluded: &'a HashSet<String>, _pin: Option<&'a str>) -> BoxFuture<'a, Option<Credentials>> {
+        self.get_credentials(provider, model, excluded)
+    }
     fn get_credentials<'a>(
         &'a self,
         provider: &'a str,
@@ -252,11 +264,18 @@ impl ChatHooks for SingleCredHooks {
 
 /// Handle a chat completion request across OpenAI, Claude, Gemini, and Responses formats.
 pub async fn handle_chat(
-    mut body: Value,
+    body: Value,
     headers: &HeaderMap,
     endpoint_path: Option<&str>,
     executor: &dyn Executor,
     hooks: Arc<dyn ChatHooks>,
+) -> Response {
+    handle_chat_inner(body, headers, endpoint_path, executor, hooks, None).await
+}
+
+async fn handle_chat_inner(
+    mut body: Value, headers: &HeaderMap, endpoint_path: Option<&str>, executor: &dyn Executor,
+    hooks: Arc<dyn ChatHooks>, member_context: Option<(String, Option<String>)>,
 ) -> Response {
     let Some(raw_model) = body.get("model").and_then(|v| v.as_str()).map(str::to_string) else {
         return error_response(400, "Missing model");
@@ -308,10 +327,13 @@ pub async fn handle_chat(
         settings["comboStrategies"][&model_str]["fallbackStrategy"].as_str()
             .filter(|s| *s != "auto")
             .or_else(|| settings["comboStrategy"].as_str().filter(|s| *s != "auto"))
-            .unwrap_or("fallback")
+            .unwrap_or(if original.len() > 1 && hooks.pair_enabled(&model_str).await { "round-robin" } else { "fallback" })
     } else {
         crate::services::capacity_adapter::get_active_adapter_strategy(&required, &settings)
     };
+    if is_combo && strategy == "fusion" {
+        return Box::pin(fusion_chat(&body, &original, &member_targets, &settings, &model_str, headers, endpoint_path, executor, hooks)).await;
+    }
     let mut active_sticky: Option<String> = None;
     let session_id = crate::services::systemone_router::session_id(&headers, &body);
     if is_combo && strategy == "smart" && names.len() > 1 {
@@ -343,7 +365,24 @@ pub async fn handle_chat(
         let limit = settings["comboStickyRoundRobinLimit"].as_u64().or_else(|| settings["comboStickyRoundRobinLimit"].as_str().and_then(|s| s.parse().ok())).unwrap_or(1) as usize;
         if let Ok(mut rotation) = ROTATION.get_or_init(Default::default).lock() { rotation.rotate(&mut names, &model_str, limit); }
     }
-    if !required.is_empty() {
+    if strategy == "capacity" {
+        let connections = hooks.capacity_connections().await;
+        let now = now_ms() as i64;
+        names.sort_by_cached_key(|name| {
+            let target = member_targets.get(name).cloned().or_else(|| parse_model_target(name));
+            let score: i64 = target.map(|target| connections.iter().filter(|c| c["provider"].as_str() == Some(target.provider.as_str()) && c["isActive"] != false).filter(|c| {
+                let lock = &c[format!("modelLock_{}", target.model)];
+                let lock = if lock.is_null() { &c["modelLock___all"] } else { lock };
+                crate::services::usage_shared::reset_epoch_millis(lock).is_none_or(|t| t <= now)
+            }).map(|c| {
+                let failed = c["backoffLevel"].as_f64().unwrap_or(0.0) > 0.0 || c["lastError"].as_str().is_some_and(|s| !s.is_empty());
+                let clean = !failed || crate::services::usage_shared::reset_epoch_millis(&c["lastErrorAt"]).is_some_and(|t| now - t >= 3_600_000);
+                1 + if clean { 100 } else { 0 }
+            }).sum()).unwrap_or(0);
+            -score
+        });
+    }
+    if !required.is_empty() && strategy != "capacity" {
         crate::services::capacity_adapter::reorder_by_capabilities(&mut names, &required, satisfies);
     }
     let ordered_names = names.clone();
@@ -382,12 +421,14 @@ pub async fn handle_chat(
     let (anti_flaky_enabled, max_flaky_retries) = hooks.anti_flaky_config().await;
 
     for target in targets {
-        let member = ordered_names.iter().find(|name| member_targets.get(*name).is_some_and(|t| t.provider == target.provider && t.model == target.model)).cloned().unwrap_or_else(|| format!("{}/{}", target.provider, target.model));
+        let member = member_context.as_ref().map(|c| c.0.clone()).unwrap_or_else(|| ordered_names.iter().find(|name| member_targets.get(*name).is_some_and(|t| t.provider == target.provider && t.model == target.model)).cloned().unwrap_or_else(|| format!("{}/{}", target.provider, target.model)));
         let mut excluded = HashSet::new();
         let mut overload_attempts = 0u32;
         loop {
+            let pin = &settings["comboMemberPins"][&model_str][&member];
+            let pin = member_context.as_ref().and_then(|c| c.1.as_deref()).or_else(|| pin.as_str().or_else(|| pin["id"].as_str()));
             let Some(creds) = hooks
-                .get_credentials(&target.provider, &target.model, &excluded)
+                .get_pinned_credentials(&target.provider, &target.model, &excluded, pin)
                 .await
             else {
                 if excluded.is_empty() && last_status == 503 {
@@ -465,7 +506,7 @@ pub async fn handle_chat(
                 provider_session_id: None,
                 first_response_timeout,
                 token_saver,
-                prompt_injections: hooks.prompt_injections(&member).await,
+                prompt_injections: hooks.prompt_injections(if member_context.is_some() || !member.contains('/') { &member } else { &model_str }).await,
             };
 
             match handle_chat_core(options, executor, &core_hooks).await {
@@ -677,6 +718,51 @@ mod tests {
             access_token: Some("tok-initial".to_string()),
             ..Default::default()
         }
+    }
+
+    struct ComboHooks { strategy: &'static str, pair: bool }
+    impl ChatHooks for ComboHooks {
+        fn get_credentials<'a>(&'a self, _: &'a str, _: &'a str, _: &'a HashSet<String>) -> BoxFuture<'a, Option<Credentials>> { Box::pin(async { Some(test_creds("combo-new-tests")) }) }
+        fn get_pinned_credentials<'a>(&'a self, _: &'a str, _: &'a str, _: &'a HashSet<String>, pin: Option<&'a str>) -> BoxFuture<'a, Option<Credentials>> { Box::pin(async move { assert_eq!(pin, Some("pin-a")); Some(test_creds("combo-new-tests")) }) }
+        fn get_combo_models<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Option<Vec<String>>> { Box::pin(async { Some(vec!["openai/a".into(), "openai/b".into()]) }) }
+        fn settings<'a>(&'a self) -> BoxFuture<'a, Value> { Box::pin(async move { json!({"comboStrategies":{"new-test":{"fallbackStrategy":self.strategy}},"comboMemberPins":{"new-test":{"openai/a":"pin-a","openai/b":{"id":"pin-a"}}}}) }) }
+        fn pair_enabled<'a>(&'a self, _: &'a str) -> BoxFuture<'a, bool> { Box::pin(async move { self.pair }) }
+        fn capacity_connections<'a>(&'a self) -> BoxFuture<'a, Vec<Value>> { Box::pin(async { vec![json!({"provider":"openai","modelLock_a":"2999-01-01T00:00:00Z"})] }) }
+    }
+
+    #[tokio::test]
+    async fn fusion_panel_and_judge_strip_tools_and_keep_pins() {
+        let executor = FakeExecutor::new(|req, _| {
+            let judge = req.body["messages"].as_array().is_some_and(|m| m.iter().any(|x| x["content"].as_str().is_some_and(|s| s.contains("=== PANEL RESPONSES ==="))));
+            if judge { assert!(req.body["tools"].is_array()); } else { assert!(req.body.get("tools").is_none()); assert_eq!(req.body["stream"], false); }
+            Ok(ExecutorResponse { status: 200, headers: vec![], body: ExecutorBody::Json(json!({"id":"test","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":if judge {"judged"} else {"panel"}},"finish_reason":"stop"}]})), url: None, response_format: None })
+        });
+        let response = handle_chat(json!({"model":"new-test","stream":false,"messages":[{"role":"user","content":"hello"}],"tools":[{"type":"function","function":{"name":"test"}}]}), &HeaderMap::new(), Some("/v1/chat/completions"), &executor, Arc::new(ComboHooks { strategy:"fusion", pair:false })).await;
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("judged"));
+        assert_eq!(executor.calls.lock().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn capacity_orders_locked_models_and_forwards_pin() {
+        let executor = FakeExecutor::new(|req, _| {
+            assert_eq!(req.body["model"], "b");
+            Ok(ExecutorResponse { status: 200, headers: vec![], body: ExecutorBody::Json(json!({"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]})), url: None, response_format: None })
+        });
+        let response = handle_chat(json!({"model":"new-test","stream":false,"messages":[{"role":"user","content":"hi"}]}), &HeaderMap::new(), Some("/v1/chat/completions"), &executor, Arc::new(ComboHooks { strategy:"capacity", pair:false })).await;
+        assert_eq!(response.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn pair_auto_rotates_and_explicit_fallback_wins() {
+        let executor = FakeExecutor::new(|_, _| Ok(ExecutorResponse { status: 200, headers: vec![], body: ExecutorBody::Json(json!({"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]})), url: None, response_format: None }));
+        for strategy in ["auto", "auto", "fallback"] {
+            let response = handle_chat(json!({"model":"new-test","stream":false,"messages":[{"role":"user","content":"hi"}]}), &HeaderMap::new(), Some("/v1/chat/completions"), &executor, Arc::new(ComboHooks { strategy, pair:true })).await;
+            assert_eq!(response.status(), 200);
+        }
+        let calls = executor.calls.lock().unwrap();
+        assert_eq!(calls.iter().map(|c| c.body["model"].as_str().unwrap()).collect::<Vec<_>>(), vec!["a", "b", "a"]);
     }
 
     #[tokio::test]
