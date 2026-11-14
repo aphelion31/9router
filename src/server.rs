@@ -913,23 +913,28 @@ impl ChatHooks for Hooks {
             let db = self.state.db.lock().ok()?;
             let settings = crate::db::settings_get(&db).ok()?;
             let token_saver_enabled = true;
-            let rtk_enabled = settings.get("rtkEnabled").and_then(Value::as_bool).unwrap_or(true);
+            let rtk_enabled = settings.get("rtkEnabled").and_then(Value::as_bool).unwrap_or(false);
             let caveman_enabled = settings.get("cavemanEnabled").and_then(Value::as_bool).unwrap_or(false);
-            let caveman_level = settings.get("cavemanLevel").and_then(Value::as_str).map(str::to_owned);
+            let caveman_level = Some(settings.get("cavemanLevel").and_then(Value::as_str).filter(|v| !v.is_empty()).unwrap_or("full").to_owned());
             let ponytail_enabled = settings.get("ponytailEnabled").and_then(Value::as_bool).unwrap_or(false);
-            let ponytail_level = settings.get("ponytailLevel").and_then(Value::as_str).map(str::to_owned);
+            let ponytail_level = Some(settings.get("ponytailLevel").and_then(Value::as_str).filter(|v| !v.is_empty()).unwrap_or("full").to_owned());
 
             let by_model = crate::db::kv_get(&db, "briefMode", "byModel")
                 .ok().flatten().and_then(|s| serde_json::from_str::<Value>(&s).ok())
-                .and_then(|v| v.get(model).and_then(Value::as_str).map(str::to_owned));
+                .and_then(|v| {
+                    let resolved = crate::handlers::chat::parse_model_target(model).map(|t| format!("{}/{}", t.provider, t.model));
+                    [Some(model), resolved.as_deref(), model.split_once('/').map(|(_, m)| m)].into_iter().flatten()
+                        .filter_map(|name| v.get(name).and_then(Value::as_str))
+                        .find(|level| crate::services::rtk_caveman_prompts::get_caveman_prompt(level).is_some()).map(str::to_owned)
+                });
             let by_key = self.api_key_id.as_deref().and_then(|kid| {
                 crate::db::kv_get(&db, "briefMode", "byKey")
                     .ok().flatten().and_then(|s| serde_json::from_str::<Value>(&s).ok())
-                    .and_then(|v| v.get(kid).and_then(Value::as_str).map(str::to_owned))
+                    .and_then(|v| v.get(kid).and_then(Value::as_str).filter(|level| crate::services::rtk_caveman_prompts::get_caveman_prompt(level).is_some()).map(str::to_owned))
             });
             let global_brief = crate::db::kv_get(&db, "briefMode", "global")
                 .ok().flatten().and_then(|s| serde_json::from_str::<Value>(&s).ok())
-                .and_then(|v| v.as_str().map(str::to_owned));
+                .and_then(|v| v.as_str().filter(|level| crate::services::rtk_caveman_prompts::get_caveman_prompt(level).is_some()).map(str::to_owned));
             let brief_level = by_model.or(by_key).or(global_brief);
 
             Some(crate::handlers::chat_core::TokenSaverConfig {

@@ -584,4 +584,21 @@ mod tests {
         );
         assert!(kiro.get("systemPrompt").is_none());
     }
+
+    #[test]
+    fn antigravity_system_and_chat_turns_match_upstream() {
+        let mut body = json!({"request":{"contents":[{"role":"user","parts":[{"text":"pong"}]}]}});
+        inject_system_prompt(&mut body, FORMAT_ANTIGRAVITY, "brief", "append");
+        inject_system_prompt(&mut body, FORMAT_ANTIGRAVITY, "ponytail", "append");
+        inject_system_prompt(&mut body, FORMAT_ANTIGRAVITY, "global", "prepend");
+        inject_system_prompt(&mut body, FORMAT_ANTIGRAVITY, "key model", "append");
+        inject_chat_turns(&mut body, FORMAT_ANTIGRAVITY, &[
+            json!({"role":"user","content":"question"}),
+            json!({"role":"assistant","content":"answer"}),
+        ]);
+        assert_eq!(body["request"], json!({
+            "systemInstruction":{"parts":[{"text":"global"},{"text":"brief"},{"text":"ponytail"},{"text":"key model"}]},
+            "contents":[{"role":"user","parts":[{"text":"question"}]},{"role":"model","parts":[{"text":"answer"}]},{"role":"user","parts":[{"text":"pong"}]}]
+        }));
+    }
 }

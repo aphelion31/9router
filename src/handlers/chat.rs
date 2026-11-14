@@ -555,7 +555,7 @@ async fn handle_chat_nested(
                 provider_session_id: None,
                 first_response_timeout,
                 token_saver,
-                prompt_injections: hooks.prompt_injections(if member_context.is_some() || !member.contains('/') { &member } else { &model_str }).await,
+                prompt_injections: hooks.prompt_injections(&member).await,
             };
 
             match handle_chat_core(options, executor, &core_hooks).await {
