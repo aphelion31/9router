@@ -189,6 +189,10 @@ pub trait ChatHooks: Send + Sync {
         Box::pin(async {})
     }
 
+    fn on_error<'a>(&'a self, _status: u16, _message: &'a str) -> BoxFuture<'a, ()> {
+        Box::pin(async {})
+    }
+
     fn on_request_success<'a>(
         &'a self,
         _connection_id: &'a str,
@@ -491,6 +495,9 @@ pub async fn handle_chat(
                     headers,
                     retry_after,
                 } => {
+                    if status >= 500 {
+                        hooks.on_error(status, &message).await;
+                    }
                     last_status = status;
                     last_error = message.clone();
                     last_headers = headers;

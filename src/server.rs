@@ -228,6 +228,22 @@ async fn dashboard_page_auth(
     }
     next.run(request).await
 }
+
+fn quota_verdict(db: &Connection, key_id: &str, key: &str) -> Option<Value> {
+    let raw = crate::db::kv_get(db, "keyQuotas", key_id).ok()??;
+    let q: Value = serde_json::from_str(&raw).ok()?;
+    if q["enabled"] == false { return None; }
+    let limit = q["limit"].as_i64().filter(|n| *n > 0)?;
+    let hours = q["windowHours"].as_i64().filter(|h| [24, 168, 720].contains(h)).unwrap_or(24);
+    let modifier = format!("-{hours} hours");
+    let (used, cost): (i64, f64) = db.query_row("SELECT COALESCE(SUM(COALESCE(promptTokens,0)+COALESCE(completionTokens,0)),0), COALESCE(SUM(cost),0) FROM usageHistory WHERE (apiKey=?1 OR apiKey=?2) AND timestamp >= strftime('%Y-%m-%dT%H:%M:%fZ','now',?3)", rusqlite::params![key_id, key, modifier], |r| Ok((r.get(0)?, r.get(1)?))).ok()?;
+    let cost_limit = q["costLimit"].as_f64().filter(|n| *n > 0.0);
+    let cost_blocked = used < limit && cost_limit.is_some_and(|n| cost >= n);
+    if used < limit && !cost_blocked { return None; }
+    let name: Option<String> = db.query_row("SELECT name FROM apiKeys WHERE id=?1", [key_id], |r| r.get(0)).ok().flatten();
+    Some(json!({"keyName":name,"used":used,"limit":limit,"windowHours":hours,"costBlocked":cost_blocked,"costUsed":if cost_blocked { Some(cost) } else { None },"costLimit":cost_limit}))
+}
+
 async fn api_auth(
     State(s): State<AppState>,
     request: axum::extract::Request,
@@ -248,20 +264,8 @@ async fn api_auth(
     let Some(key_id) = key.and_then(|key| s.db.lock().ok().and_then(|db| db.query_row("SELECT id FROM apiKeys WHERE key=?1 AND isActive=1 AND (expiresAt IS NULL OR expiresAt > strftime('%Y-%m-%dT%H:%M:%fZ','now')) AND COALESCE(accessRestricted,0)=0", [key], |r| r.get::<_, String>(0)).optional().ok().flatten())) else {
         return unauthorized();
     };
-    let quota = s.db.lock().ok().and_then(|db| {
-        let raw = crate::db::kv_get(&db, "keyQuotas", &key_id).ok()??;
-        let q: Value = serde_json::from_str(&raw).ok()?;
-        if q["enabled"] == false { return None; }
-        let limit = q["limit"].as_i64().filter(|n| *n > 0)?;
-        let hours = q["windowHours"].as_i64().unwrap_or(24).clamp(1, 8760);
-        let modifier = format!("-{hours} hours");
-        let (used, cost): (i64, f64) = db.query_row("SELECT COALESCE(SUM(COALESCE(promptTokens,0)+COALESCE(completionTokens,0)),0), COALESCE(SUM(cost),0) FROM usageHistory WHERE (apiKey=?1 OR apiKey=?2) AND timestamp >= strftime('%Y-%m-%dT%H:%M:%fZ','now',?3)", rusqlite::params![key_id, key.unwrap_or(""), modifier], |r| Ok((r.get(0)?, r.get(1)?))).ok()?;
-        let cost_limit = q["costLimit"].as_f64().filter(|n| *n > 0.0);
-        let cost_blocked = cost_limit.is_some_and(|n| cost >= n);
-        if used < limit && !cost_blocked { return None; }
-        let name: Option<String> = db.query_row("SELECT name FROM apiKeys WHERE id=?1", [&key_id], |r| r.get(0)).ok().flatten();
-        Some(json!({"keyName":name,"used":used,"limit":limit,"windowHours":hours,"costBlocked":cost_blocked,"costUsed":cost,"costLimit":cost_limit}))
-    });
+    let has_quota = s.db.lock().ok().and_then(|db| crate::db::kv_get(&db, "keyQuotas", &key_id).ok().flatten()).and_then(|raw| serde_json::from_str::<Value>(&raw).ok()).is_some_and(|q| q["enabled"] != false && q["limit"].as_i64().is_some_and(|n| n > 0));
+    let quota = s.db.lock().ok().and_then(|db| quota_verdict(&db, &key_id, key.unwrap_or("")));
     if let Some(quota) = quota {
         crate::services::notify::emit(s.db.clone(), "quota", quota);
         return (StatusCode::TOO_MANY_REQUESTS, Json(json!({"error":"API key quota exceeded"}))).into_response();
@@ -309,15 +313,28 @@ async fn api_auth(
         }
         None => None,
     };
+    let raw_key = key.unwrap_or("").to_owned();
     let response = next.run(request).await;
-    if response.status().is_client_error() || response.status().is_server_error() {
-        crate::services::notify::emit(s.db.clone(), "error", json!({"status": response.status().as_u16()}));
-    }
-    let Some(slot) = slot else { return response };
     let (parts, body) = response.into_parts();
     struct GuardedBody {
         stream: axum::body::BodyDataStream,
         slot: Option<crate::services::key_rate_limiter::Slot>,
+        recheck: Option<(Arc<Mutex<Connection>>, String, String)>,
+    }
+    impl Drop for GuardedBody {
+        fn drop(&mut self) {
+            if let Some((db, key_id, key)) = self.recheck.take() {
+                tokio::spawn(async move {
+                    let verdict = db.lock().ok().and_then(|db| quota_verdict(&db, &key_id, &key));
+                    if let Some(mut verdict) = verdict {
+                        verdict.as_object_mut().unwrap().remove("costUsed");
+                        verdict.as_object_mut().unwrap().remove("costLimit");
+                        verdict["crossedMidRequest"] = json!(true);
+                        crate::services::notify::emit(db, "quota", verdict);
+                    }
+                });
+            }
+        }
     }
     impl futures_core::Stream for GuardedBody {
         type Item = Result<axum::body::Bytes, axum::Error>;
@@ -329,7 +346,8 @@ async fn api_auth(
             result
         }
     }
-    Response::from_parts(parts, axum::body::Body::from_stream(GuardedBody { stream: body.into_data_stream(), slot: Some(slot) }))
+    if slot.is_none() && !has_quota { return Response::from_parts(parts, body); }
+    Response::from_parts(parts, axum::body::Body::from_stream(GuardedBody { stream: body.into_data_stream(), slot, recheck: has_quota.then_some((s.db.clone(), key_id, raw_key)) }))
 }
 /// Usage totals for the last `days` (default 7, max 366).
 async fn usage(State(s): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
@@ -443,6 +461,11 @@ impl ChatHooks for Hooks {
                 .collect();
             found.sort_by_key(|(rank, _)| *rank);
             found.into_iter().next().map(|(_, id)| id)
+        })
+    }
+    fn on_error<'a>(&'a self, status: u16, message: &'a str) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            crate::services::notify::emit(self.state.db.clone(), "error", json!({"status":status,"error":message.chars().take(500).collect::<String>()}));
         })
     }
     fn on_usage_record<'a>(&'a self, r: UsageRecord) -> BoxFuture<'a, ()> {
@@ -877,6 +900,58 @@ mod tests {
         )
         .unwrap();
         make_router_with_db(Arc::new(Mutex::new(db)), Some(b"test-secret".to_vec()))
+    }
+
+    async fn mock_webhooks() -> (String, tokio::sync::mpsc::UnboundedReceiver<Value>) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let app = Router::new().route("/", post(move |Json(value): Json<Value>| {
+            let tx = tx.clone();
+            async move { tx.send(value).unwrap(); }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (url, rx)
+    }
+
+    async fn event(rx: &mut tokio::sync::mpsc::UnboundedReceiver<Value>, expected: Value) {
+        let actual = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await.unwrap().unwrap();
+        let timestamp = actual["timestamp"].as_str().unwrap();
+        assert!(timestamp.ends_with('Z'));
+        assert_eq!(actual, json!({"event":expected["event"],"timestamp":timestamp,"data":expected["data"]}));
+    }
+
+    #[tokio::test]
+    async fn error_webhook_matches_upstream_payload() {
+        let (url, mut rx) = mock_webhooks().await;
+        let upstream = Router::new().route("/v1/chat/completions", post(|| async { (StatusCode::BAD_GATEWAY, Json(json!({"error":{"message":"upstream failed"}}))) }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = format!("http://{}/v1/chat/completions", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+        let (app, db) = e2e_router(&address);
+        crate::db::kv_set(&db.lock().unwrap(), "notify", "config", &json!({"webhook":{"enabled":true,"url":url},"webhookEvents":{"error":true}}).to_string()).unwrap();
+        let response = app.oneshot(Request::post("/v1/chat/completions").header("authorization", "Bearer sk-test-key").header("content-type", "application/json").body(Body::from(json!({"model":"openai/gpt-test","messages":[{"role":"user","content":"hi"}]}).to_string())).unwrap()).await.unwrap();
+        assert_eq!(response.status(), 502);
+        event(&mut rx, json!({"event":"error","data":{"status":502,"error":"upstream failed"}})).await;
+    }
+
+    #[tokio::test]
+    async fn completion_rechecks_quota_and_blocks_next_request() {
+        let upstream = mock_upstream().await;
+        let (url, mut rx) = mock_webhooks().await;
+        let (app, db) = e2e_router(&upstream);
+        {
+            let db = db.lock().unwrap();
+            crate::db::kv_set(&db, "keyQuotas", "k1", &json!({"enabled":true,"limit":10,"windowHours":24}).to_string()).unwrap();
+            crate::db::kv_set(&db, "notify", "config", &json!({"webhook":{"enabled":true,"url":url},"webhookEvents":{"quota":true}}).to_string()).unwrap();
+        }
+        let request = || Request::post("/v1/chat/completions").header("authorization", "Bearer sk-test-key").header("content-type", "application/json").body(Body::from(json!({"model":"openai/gpt-test","stream":true,"messages":[{"role":"user","content":"hi"}]}).to_string())).unwrap();
+        let response = app.clone().oneshot(request()).await.unwrap();
+        assert_eq!(response.status(), 200);
+        to_bytes(response.into_body(), 100_000).await.unwrap();
+        event(&mut rx, json!({"event":"quota","data":{"keyName":"t","used":10,"limit":10,"windowHours":24,"costBlocked":false,"crossedMidRequest":true}})).await;
+        assert_eq!(app.oneshot(request()).await.unwrap().status(), 429);
+        event(&mut rx, json!({"event":"quota","data":{"keyName":"t","used":10,"limit":10,"windowHours":24,"costBlocked":false,"costUsed":null,"costLimit":null}})).await;
     }
 
     #[tokio::test]
