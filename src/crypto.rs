@@ -6,7 +6,7 @@ use ring::rand::{SecureRandom, SystemRandom};
 use serde_json::{Value, json};
 
 pub const SENSITIVE_FIELDS: &[&str] =
-    &["apiKey", "accessToken", "refreshToken", "idToken", "secret", "clientSecret", "token"];
+    &["apiKey", "accessToken", "refreshToken", "idToken", "secret", "clientSecret", "token", "copilotToken"];
 
 pub fn key() -> Option<[u8; 32]> {
     let raw = std::env::var("PRO_CREDENTIAL_KEY").ok()?;

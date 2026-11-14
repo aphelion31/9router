@@ -1,4 +1,5 @@
 pub mod antigravity_ide_version;
+pub mod antigravity_quota;
 pub mod auto_routing;
 pub mod aws_event_stream;
 pub mod capacity_adapter;

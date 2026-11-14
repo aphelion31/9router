@@ -602,9 +602,12 @@ impl ChatHooks for Hooks {
     fn get_credentials<'a>(
         &'a self,
         provider: &'a str,
-        _: &'a str,
+        model: &'a str,
         excluded: &'a HashSet<String>,
     ) -> BoxFuture<'a, Option<Credentials>> {
+        self.get_credentials_preferred(provider, model, excluded, None)
+    }
+    fn get_credentials_preferred<'a>(&'a self, provider: &'a str, model: &'a str, excluded: &'a HashSet<String>, preferred: Option<&'a str>) -> BoxFuture<'a, Option<Credentials>> {
         Box::pin(async move {
             if matches!(provider, "opencode" | "mimo-free") {
                 if excluded.contains("noauth") { return None; }
@@ -644,13 +647,38 @@ impl ChatHooks for Hooks {
                 let rows = st
                     .query_map([provider], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?)))
                     .ok()?;
-                rows.flatten().find(|row| !excluded.contains(&row.0))?
+                let mut candidates: Vec<_> = rows.flatten().filter(|row| {
+                    if excluded.contains(&row.0) { return false; }
+                    if provider == "antigravity" && crate::services::antigravity_quota::blocked(&row.0, model) { return false; }
+                    let Some(data) = crate::crypto::parse_data(&row.2) else { return false };
+                    [format!("modelLock_{model}"), "modelLock___all".into()].iter().all(|key| {
+                        data[key].as_str().is_none_or(|expiry| db.query_row("SELECT julianday(?1) > julianday('now')", [expiry], |r| r.get::<_, Option<bool>>(0)).ok().flatten() != Some(true))
+                    })
+                }).collect();
+                let settings = crate::db::settings_get(&db).unwrap_or_default();
+                let strategy = settings["providerStrategies"][provider]["fallbackStrategy"].as_str().or_else(|| settings["fallbackStrategy"].as_str()).unwrap_or("balanced");
+                if strategy == "balanced" {
+                    candidates.sort_by_key(|row| {
+                        let data = crate::crypto::parse_data(&row.2).unwrap_or_default();
+                        (data["lastError"].as_str().is_some(), data["lastUsedAt"].as_str().unwrap_or("").to_owned())
+                    });
+                }
+                candidates.sort_by_key(|row| preferred != Some(row.0.as_str()));
+                if preferred.is_none_or(|id| !candidates.iter().any(|c| c.0 == id)) && strategy == "balanced" && let Some(row) = candidates.first_mut() {
+                    if let Ok(mut data) = serde_json::from_str::<Value>(&row.2) {
+                        if let Ok(now) = db.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')", [], |r| r.get::<_, String>(0)) {
+                            data["lastUsedAt"] = json!(now);
+                            if db.execute("UPDATE providerConnections SET data=?1 WHERE id=?2 AND data=?3", rusqlite::params![data.to_string(), row.0, row.2]).ok() == Some(1) { row.2 = data.to_string(); }
+                        }
+                    }
+                }
+                candidates.into_iter().next()?
             };
             let mut data: Value = crate::crypto::parse_data(&candidate.2)?;
             // Proactive refresh like upstream checkAndRefreshToken. On failure keep the old token
             // so the request still reaches upstream and the 401 fallback path can run.
             if data["refreshToken"].is_string()
-                && data["expiresAt"].is_string()
+                && (data["expiresAt"].is_string() || data["tokenExpiresAt"].is_string())
                 && crate::oauth::provider(provider).is_some()
                 && let Ok(path) = crate::db::data_file()
             {
@@ -660,7 +688,15 @@ impl ChatHooks for Hooks {
                     Err(e) => tracing::warn!("oauth refresh for {} failed: {e}", candidate.0),
                 }
             }
+            if provider == "github" && let Ok(path) = crate::db::data_file() {
+                let conn = crate::oauth::Connection { id: candidate.0.clone(), provider: provider.to_owned(), data: data.clone(), db_path: path };
+                match crate::oauth::refresh_copilot(conn, "https://api.github.com/copilot_internal/v2/token").await {
+                    Ok(c) => data = c.data,
+                    Err(e) => tracing::warn!("Copilot exchange for {} failed: {e}", candidate.0),
+                }
+            }
             let mut specific = data["providerSpecificData"].as_object().cloned().unwrap_or_default();
+            if let Some(project) = data.get("projectId").filter(|p| p.is_string()) { specific.entry("projectId").or_insert_with(|| project.clone()); }
             let pool_id = specific.get("proxyPoolId").and_then(Value::as_str).unwrap_or("").to_owned();
             if !pool_id.is_empty() && pool_id != "__none__" {
                 let pool = self.state.db.lock().map_err(|_| ()).and_then(|db| {
@@ -678,13 +714,91 @@ impl ChatHooks for Hooks {
             Some(Credentials {
                 connection_id: candidate.0,
                 connection_name: candidate.1,
-                access_token: data["accessToken"].as_str().map(str::to_owned),
+                access_token: if provider == "github" { data["providerSpecificData"]["copilotToken"].as_str().or_else(|| data["accessToken"].as_str()) } else { data["accessToken"].as_str() }.map(str::to_owned),
                 refresh_token: data["refreshToken"].as_str().map(str::to_owned),
                 api_key: data["apiKey"].as_str().map(str::to_owned),
                 expires_at: data["expiresAt"].as_str().map(str::to_owned),
                 provider_specific_data: Value::Object(specific),
                 ..Default::default()
             })
+        })
+    }
+    fn on_account_error<'a>(&'a self, connection_id: &'a str, model: &'a str, status: u16, message: &'a str) -> BoxFuture<'a, bool> {
+        Box::pin(async move {
+            let antigravity_token = self.state.db.lock().ok().and_then(|db| db.query_row("SELECT provider,data FROM providerConnections WHERE id=?1", [connection_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).ok()).and_then(|(p, raw)| (p == "antigravity" && matches!(status, 409 | 429)).then(|| crate::crypto::parse_data(&raw)?.get("accessToken")?.as_str().map(str::to_owned)).flatten());
+            if let Some(token) = antigravity_token { crate::services::antigravity_quota::on_error(connection_id, model, &token).await; }
+            let fallback = matches!(status, 401..=404 | 408 | 409 | 429 | 500..=599);
+            if fallback && let Ok(db) = self.state.db.lock() {
+                let result = (|| -> rusqlite::Result<()> {
+                    let (raw, provider): (String, String) = db.query_row("SELECT data,provider FROM providerConnections WHERE id=?1", [connection_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                    let mut data: Value = serde_json::from_str(&raw).map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?;
+                    let level = data["backoffLevel"].as_u64().unwrap_or(0).min(15);
+                    let verdict = crate::routing::classify::classify(&provider, status, message, crate::routing::classify::now_ms());
+                    let seconds = if provider == "antigravity" && let Some(reset) = crate::services::antigravity_quota::reset_seconds(connection_id, model) { reset.max(2_u64.saturating_mul(1_u64 << level.min(14)).min(300)) } else if provider == "codex" && message.to_ascii_lowercase().contains("model is not supported when using codex with a chatgpt account") { 1800 } else if message.to_ascii_lowercase().contains("request not allowed") { 5 } else { match verdict {
+                        crate::routing::classify::Verdict::Backoff => {
+                            let next = (level + 1).min(15);
+                            data["backoffLevel"] = json!(next);
+                            (2_u64.saturating_mul(1_u64 << (next - 1))).min(300)
+                        }
+                        crate::routing::classify::Verdict::Fixed(d) => d.as_secs(),
+                        crate::routing::classify::Verdict::Quota { reset_ms } => reset_ms.saturating_sub(crate::routing::classify::now_ms()).div_ceil(1000).min(1800),
+                        _ => 30,
+                    }};
+                    let until: String = db.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now',printf('+%d seconds',?1))", [seconds as i64], |r| r.get(0))?;
+                    data[format!("modelLock_{model}")] = json!(until);
+                    data["lastError"] = json!(message.chars().take(200).collect::<String>());
+                    data["errorCode"] = json!(status);
+                    data["lastErrorAt"] = json!(db.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')", [], |r| r.get::<_, String>(0))?);
+                    if seconds >= 60 { data["testStatus"] = json!("unavailable"); }
+                    let mut quarantine = false;
+                    if matches!(status, 401 | 403) {
+                        static FAILURES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::collections::HashMap<String, std::time::Instant>>>> = std::sync::OnceLock::new();
+                        if let Ok(mut failures) = FAILURES.get_or_init(Default::default).lock() {
+                            let entries = failures.entry(provider).or_default();
+                            entries.retain(|_, at| at.elapsed() <= std::time::Duration::from_secs(600));
+                            entries.insert(connection_id.to_owned(), std::time::Instant::now());
+                            if entries.len() < 5 {
+                                let count = data["consecutiveAuthFailures"].as_u64().unwrap_or(0).saturating_add(1);
+                                data["consecutiveAuthFailures"] = json!(count);
+                                if count >= 5 {
+                                    data["testStatus"] = json!("unavailable");
+                                    data["quarantinedAt"] = data["lastErrorAt"].clone();
+                                    data["quarantineReason"] = json!(format!("Auto-quarantined after {count} consecutive auth failures (last: {status})"));
+                                    data["lastError"] = data["quarantineReason"].clone();
+                                    quarantine = true;
+                                }
+                            }
+                        }
+                    }
+                    db.execute("UPDATE providerConnections SET data=?1, isActive=CASE WHEN ?4 THEN 0 ELSE isActive END WHERE id=?2 AND data=?3", rusqlite::params![data.to_string(), connection_id, raw, quarantine])?;
+                    Ok(())
+                })();
+                if let Err(e) = result { tracing::warn!("account lock persistence failed: {e}"); }
+            }
+            fallback
+        })
+    }
+    fn on_request_success<'a>(&'a self, connection_id: &'a str, model: &'a str) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            crate::services::antigravity_quota::clear(connection_id, model);
+            if let Ok(db) = self.state.db.lock() {
+                let result = (|| -> rusqlite::Result<()> {
+                    let raw: String = db.query_row("SELECT data FROM providerConnections WHERE id=?1", [connection_id], |r| r.get(0))?;
+                    let mut data: Value = serde_json::from_str(&raw).map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?;
+                    if let Some(obj) = data.as_object_mut() {
+                        obj.retain(|k, v| !k.starts_with("modelLock_") || (k != &format!("modelLock_{model}") && k != "modelLock___all" && v.as_str().is_some_and(|s| db.query_row("SELECT julianday(?1) > julianday('now')", [s], |r| r.get::<_, Option<bool>>(0)).ok().flatten() == Some(true))));
+                        if !obj.keys().any(|k| k.starts_with("modelLock_")) {
+                            obj.insert("testStatus".into(), json!("active"));
+                            for k in ["lastError", "errorCode", "lastErrorAt"] { obj.insert(k.into(), Value::Null); }
+                            obj.insert("backoffLevel".into(), json!(0));
+                        }
+                        obj.insert("consecutiveAuthFailures".into(), json!(0));
+                    }
+                    db.execute("UPDATE providerConnections SET data=?1 WHERE id=?2 AND data=?3", rusqlite::params![data.to_string(), connection_id, raw])?;
+                    Ok(())
+                })();
+                if let Err(e) = result { tracing::warn!("account success persistence failed: {e}"); }
+            }
         })
     }
     fn get_token_saver_config<'a>(&'a self, model: &'a str) -> BoxFuture<'a, Option<crate::handlers::chat_core::TokenSaverConfig>> {
@@ -862,6 +976,64 @@ mod tests {
         assert_eq!(crate::services::auto_routing::parse_auto_target("auto:unknown"), None);
     }
     use tower::ServiceExt;
+    #[tokio::test]
+    async fn cooldown_backoff_and_auth_quarantine() {
+        let db = Connection::open_in_memory().unwrap(); crate::db::migrate(&db).unwrap();
+        db.execute("INSERT INTO providerConnections(id,provider,authType,isActive,priority,data,createdAt,updatedAt) VALUES('failure','cooldown-test','apikey',1,1,?1,'now','now')", [json!({"apiKey":"secret"}).to_string()]).unwrap();
+        let hooks = Hooks { state: AppState { db: Arc::new(Mutex::new(db)), executor: Arc::new(HttpExecutor(reqwest::Client::new())), jwt_secret: None }, api_key_id: None };
+        hooks.on_account_error("failure", "m", 429, "rate limit").await;
+        hooks.on_account_error("failure", "m", 429, "rate limit").await;
+        {
+            let db = hooks.state.db.lock().unwrap(); let raw: String = db.query_row("SELECT data FROM providerConnections WHERE id='failure'", [], |r| r.get(0)).unwrap();
+            let data: Value = serde_json::from_str(&raw).unwrap(); assert_eq!(data["backoffLevel"], 2); assert!(data["testStatus"].is_null());
+        }
+        for _ in 0..5 { hooks.on_account_error("failure", "m", 401, "invalid").await; }
+        let db = hooks.state.db.lock().unwrap();
+        let (active, raw): (bool, String) = db.query_row("SELECT isActive,data FROM providerConnections WHERE id='failure'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        let data: Value = serde_json::from_str(&raw).unwrap(); assert!(!active); assert_eq!(data["consecutiveAuthFailures"], 5); assert_eq!(data["testStatus"], "unavailable");
+    }
+    #[tokio::test]
+    async fn preferred_connection_respects_locks_and_exclusions() {
+        let db = Connection::open_in_memory().unwrap(); crate::db::migrate(&db).unwrap();
+        for (id, priority) in [("a", 1), ("b", 2)] {
+            db.execute("INSERT INTO providerConnections(id,provider,authType,isActive,priority,data,createdAt,updatedAt) VALUES(?1,'test','apikey',1,?2,?3,'now','now')", params![id, priority, json!({"apiKey":"secret"}).to_string()]).unwrap();
+        }
+        let hooks = Hooks { state: AppState { db: Arc::new(Mutex::new(db)), executor: Arc::new(HttpExecutor(reqwest::Client::new())), jwt_secret: None }, api_key_id: None };
+        let mut excluded = HashSet::new();
+        assert_eq!(hooks.get_credentials_preferred("test", "m", &excluded, Some("b")).await.unwrap().connection_id, "b");
+        excluded.insert("b".into());
+        assert_eq!(hooks.get_credentials_preferred("test", "m", &excluded, Some("b")).await.unwrap().connection_id, "a");
+        excluded.clear(); hooks.on_account_error("b", "m", 429, "limited").await;
+        assert_eq!(hooks.get_credentials_preferred("test", "m", &excluded, Some("b")).await.unwrap().connection_id, "a");
+    }
+    #[tokio::test]
+    async fn account_model_locks_persist_expire_and_clear_on_success() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&db).unwrap();
+        db.execute("INSERT INTO providerConnections(id,provider,authType,isActive,priority,data,createdAt,updatedAt) VALUES('a','test','apikey',1,1,?1,'now','now')", [json!({"apiKey":"secret"}).to_string()]).unwrap();
+        let state = AppState { db: Arc::new(Mutex::new(db)), executor: Arc::new(HttpExecutor(reqwest::Client::new())), jwt_secret: None };
+        let hooks = Hooks { state, api_key_id: None };
+        let excluded = HashSet::new();
+        assert!(hooks.on_account_error("a", "model", 429, "limited").await);
+        assert!(hooks.get_credentials("test", "model", &excluded).await.is_none());
+        assert!(hooks.get_credentials("test", "other", &excluded).await.is_some());
+        {
+            let db = hooks.state.db.lock().unwrap();
+            let raw: String = db.query_row("SELECT data FROM providerConnections WHERE id='a'", [], |r| r.get(0)).unwrap();
+            let mut data: Value = serde_json::from_str(&raw).unwrap();
+            assert_eq!(data["lastError"], "limited");
+            data["modelLock_model"] = json!("2000-01-01T00:00:00Z");
+            db.execute("UPDATE providerConnections SET data=?1 WHERE id='a'", [data.to_string()]).unwrap();
+        }
+        assert!(hooks.get_credentials("test", "model", &excluded).await.is_some());
+        hooks.on_request_success("a", "model").await;
+        let db = hooks.state.db.lock().unwrap();
+        let raw: String = db.query_row("SELECT data FROM providerConnections WHERE id='a'", [], |r| r.get(0)).unwrap();
+        let data: Value = serde_json::from_str(&raw).unwrap();
+        assert!(data.get("modelLock_model").is_none());
+        assert_eq!(data["testStatus"], "active");
+        assert!(data["lastError"].is_null());
+    }
     fn test_router() -> Router {
         let db = Connection::open_in_memory().unwrap();
         crate::db::migrate(&db).unwrap();

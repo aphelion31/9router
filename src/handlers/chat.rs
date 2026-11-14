@@ -179,6 +179,10 @@ pub trait ChatHooks: Send + Sync {
         excluded_connection_ids: &'a HashSet<String>,
     ) -> BoxFuture<'a, Option<Credentials>>;
 
+    fn get_credentials_preferred<'a>(&'a self, provider: &'a str, model: &'a str, excluded: &'a HashSet<String>, _preferred: Option<&'a str>) -> BoxFuture<'a, Option<Credentials>> {
+        self.get_credentials(provider, model, excluded)
+    }
+
     fn get_combo_models<'a>(
         &'a self,
         _combo_name: &'a str,
@@ -235,6 +239,7 @@ pub trait ChatHooks: Send + Sync {
     fn on_account_error<'a>(
         &'a self,
         _connection_id: &'a str,
+        _model: &'a str,
         status: u16,
         _message: &'a str,
     ) -> BoxFuture<'a, bool> {
@@ -599,7 +604,7 @@ async fn handle_chat_inner(
                         retry_after.map(Duration::from_secs),
                         now_ms(),
                     );
-                    if verdict == Verdict::RequestScoped {
+                    if verdict == Verdict::RequestScoped && !(target.provider == "antigravity" && status == 409) {
                         return upstream_error_response(status, &message, &last_headers);
                     }
                     if verdict == Verdict::Overload && overload_attempts < OVERLOAD_MAX_ATTEMPTS {
@@ -609,7 +614,7 @@ async fn handle_chat_inner(
                     }
                     // Upstream auth.js markAccountUnavailable: noauth never falls back or cools down,
                     // otherwise one upstream blip locks every free-provider request.
-                    if conn_id == "noauth" || !hooks.on_account_error(&conn_id, status, &message).await {
+                    if conn_id == "noauth" || !hooks.on_account_error(&conn_id, &target.model, status, &message).await {
                         return upstream_error_response(status, &message, &last_headers);
                     }
                     if (status == 429 || status >= 500) && let Ok(mut b) = crate::services::provider_breaker::global().lock() { b.failure(&target.provider, &conn_id, Some(&target.model), now_ms()); }
@@ -624,7 +629,7 @@ async fn handle_chat_inner(
                             cooldowns.backoff(&conn_id);
                         }
                         Verdict::Overload => cooldowns.set(&conn_id, TRANSIENT_COOLDOWN),
-                        Verdict::RequestScoped => {}
+                        Verdict::RequestScoped => cooldowns.set(&conn_id, TRANSIENT_COOLDOWN),
                     }
                     excluded.insert(conn_id);
                     failures += 1;
