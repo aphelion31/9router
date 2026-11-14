@@ -6,6 +6,12 @@ use std::sync::OnceLock;
 pub struct Provider {
     pub id: String,
     pub alias: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default, rename = "uiAlias")]
+    pub ui_alias: String,
+    #[serde(default, rename = "noAuthFree")]
+    pub no_auth_free: bool,
     pub base_url: Option<String>,
     pub format: Option<String>,
     pub models: Vec<Model>,
@@ -31,7 +37,7 @@ pub fn lookup(id_or_alias: &str) -> Option<&'static Provider> {
     all()
         .iter()
         .find(|p| p.id == id_or_alias)
-        .or_else(|| all().iter().find(|p| p.alias == id_or_alias))
+        .or_else(|| all().iter().find(|p| p.alias == id_or_alias || p.ui_alias == id_or_alias || p.aliases.iter().any(|a| a == id_or_alias)))
 }
 
 #[cfg(test)]
@@ -57,5 +63,17 @@ mod tests {
                 provider.id
             );
         }
+    }
+
+    #[test]
+    fn upstream_aliases_resolve_with_id_precedence() {
+        for provider in all() {
+            for alias in provider.aliases.iter().chain(std::iter::once(&provider.ui_alias)).filter(|a| !a.is_empty()) {
+                let expected = all().iter().find(|p| p.id == *alias).or_else(|| all().iter().find(|p| p.alias == *alias || p.ui_alias == *alias || p.aliases.contains(alias))).unwrap();
+                assert_eq!(lookup(alias).unwrap().id, expected.id, "{alias}");
+                assert_eq!(crate::handlers::chat::parse_model_target(&format!("{alias}/model")).unwrap().provider, expected.id);
+            }
+        }
+        assert_eq!(lookup("cmc").unwrap().id, "commandcode");
     }
 }

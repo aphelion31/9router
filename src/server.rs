@@ -411,7 +411,7 @@ pub(crate) struct ApiKeyId(pub String);
 
 async fn build_models_list(state: &AppState, access: Option<crate::services::key_access::KeyAccess>) -> Value {
     let connections: Vec<(String, Value)> = state.db.lock().ok().and_then(|db| {
-        let mut stmt = db.prepare("SELECT id,provider,data FROM providerConnections WHERE isActive=1 ORDER BY priority ASC").ok()?;
+        let mut stmt = db.prepare("SELECT id,provider,data FROM providerConnections WHERE isActive IS NULL OR isActive<>0 ORDER BY CASE WHEN priority IS NULL OR priority=0 THEN 999 ELSE priority END ASC").ok()?;
         let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))).ok()?;
         Some(rows.flatten().filter_map(|(id, provider, raw)| {
             let mut data: Value = crate::crypto::parse_data(&raw)?;
@@ -420,29 +420,91 @@ async fn build_models_list(state: &AppState, access: Option<crate::services::key
             Some((provider, data))
         }).collect())
     }).unwrap_or_default();
-    let mut live = HashMap::new();
-    for (provider, conn) in connections {
-        if !live.contains_key(&provider) {
-            if let Some(models) = crate::api::routes::mgmt_providers::live_models(&provider, &conn, false).await.filter(|m| !m.is_empty()) {
-                live.insert(provider, models);
-            }
-        }
-    }
     let mut data = Vec::new();
-    for p in crate::providers::all() {
-        if let Some(models) = live.remove(&p.id) {
-            data.extend(models.iter().filter_map(|m| m["id"].as_str()).map(|id| json!({"id":format!("{}/{}",p.id,id),"object":"model","owned_by":p.id})));
-        } else {
-            data.extend(p.models.iter().map(|m| json!({"id":format!("{}/{}",p.id,m.id),"object":"model","owned_by":p.id})));
+    let (combos, custom, aliases, disabled, variants) = if let Ok(db) = state.db.lock() {
+        let read = |scope: &str| -> Vec<Value> {
+            let Ok(mut st) = db.prepare("SELECT value FROM kv WHERE scope=?1") else { return vec![] };
+            let Ok(rows) = st.query_map([scope], |r| r.get::<_, String>(0)) else { return vec![] };
+            rows.flatten().filter_map(|s| serde_json::from_str(&s).ok()).collect()
+        };
+        let combos = db.prepare("SELECT name,kind,models FROM combos ORDER BY createdAt ASC").ok().and_then(|mut st| {
+            Some(st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?))).ok()?.flatten().collect::<Vec<_>>())
+        }).unwrap_or_default();
+        let disabled = db.prepare("SELECT key,value FROM kv WHERE scope='disabledModels'").ok().and_then(|mut st| {
+            Some(st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).ok()?.flatten().filter_map(|(k,v)| Some((k,serde_json::from_str::<Vec<String>>(&v).ok()?))).collect::<HashMap<_,_>>())
+        }).unwrap_or_default();
+        let variants = crate::db::kv_get(&db, "promptInjections", "variants").ok().flatten().and_then(|v| serde_json::from_str::<Value>(&v).ok()).unwrap_or_default();
+        (combos, read("customModels"), read("modelAliases"), disabled, variants)
+    } else { (vec![], vec![], vec![], HashMap::new(), Value::Null) };
+    let no_auth_seat = |seat: &str| seat.split_once('/').is_some_and(|(alias, _)| crate::providers::all().iter().any(|p| p.no_auth_free && (p.id == alias || p.alias == alias || p.ui_alias == alias)));
+    let has_connections = !connections.is_empty();
+    let mut combo_names = HashSet::new();
+    for (name, kind, seats) in combos {
+        combo_names.insert(name.clone());
+        if kind.as_deref().is_some_and(|k| k != "llm" && !k.is_empty()) { continue; }
+        let seats: Vec<String> = serde_json::from_str(&seats).unwrap_or_default();
+        if has_connections || (!seats.is_empty() && seats.iter().all(|s| no_auth_seat(s))) {
+            data.push(json!({"id":name,"object":"model","owned_by":"combo"}));
         }
     }
-    if let Ok(db) = state.db.lock() {
-        if let Ok(mut stmt) = db.prepare("SELECT name FROM combos ORDER BY name") {
-            if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
-                data.extend(rows.flatten().map(|name| json!({"id":name,"object":"model","owned_by":"combo"})));
+    if let Some(variants) = variants.as_object() {
+        for (name, entry) in variants {
+            let Some(model) = entry["model"].as_str().filter(|s| s.contains('/')) else { continue };
+            if !combo_names.contains(name) && (has_connections || no_auth_seat(model)) {
+                data.push(json!({"id":name,"object":"model","owned_by":"variant"}));
             }
         }
     }
+    if has_connections {
+        for intent in crate::services::auto_routing::AUTO_INTENTS {
+            data.push(json!({"id":format!("auto:{intent}"),"object":"model","owned_by":"auto"}));
+        }
+    }
+    let mut active = Vec::new();
+    let mut seen_providers = HashSet::new();
+    for (provider, conn) in connections {
+        if seen_providers.insert(provider.clone()) { active.push((provider, conn)); }
+    }
+    for p in crate::providers::all().iter().filter(|p| p.no_auth_free) {
+        if seen_providers.insert(p.id.clone()) { active.push((p.id.clone(), json!({}))); }
+    }
+    for (provider, conn) in active {
+        let p = crate::providers::all().iter().find(|p| p.id == provider);
+        let static_alias = p.map(|p| p.alias.as_str()).unwrap_or(&provider);
+        let output_alias = conn["providerSpecificData"]["prefix"].as_str().filter(|s| !s.is_empty()).unwrap_or_else(|| p.map(|p| p.ui_alias.as_str()).filter(|s| !s.is_empty()).unwrap_or(static_alias)).trim();
+        let enabled = conn["providerSpecificData"]["enabledModels"].as_array().filter(|a| !a.is_empty());
+        let mut ids: Vec<String> = if let Some(enabled) = enabled {
+            enabled.iter().filter_map(Value::as_str).filter(|s| !s.trim().is_empty()).map(str::to_owned).collect()
+        } else if let Some(live) = crate::api::routes::mgmt_providers::live_models(&provider, &conn, false).await.filter(|m| !m.is_empty()) {
+            live.iter().filter_map(|m| m["id"].as_str().map(str::to_owned)).collect()
+        } else {
+            p.map(|p| p.models.iter().filter(|m| !matches!(m.metadata.get("kind").or_else(|| m.metadata.get("type")).and_then(Value::as_str), Some("image" | "tts" | "embedding" | "stt" | "video" | "imageToText"))).map(|m| m.id.clone()).collect()).unwrap_or_default()
+        };
+        for id in &mut ids {
+            for prefix in [output_alias, static_alias, provider.as_str()] {
+                if let Some(rest) = id.strip_prefix(&format!("{prefix}/")) { *id = rest.to_owned(); break; }
+            }
+        }
+        for m in &custom {
+            if [output_alias, static_alias, provider.as_str()].contains(&m["providerAlias"].as_str().unwrap_or("")) && matches!(m["kind"].as_str().or_else(|| m["type"].as_str()).unwrap_or("llm"), "llm" | "imageToText") {
+                if let Some(id) = m["id"].as_str().map(str::trim).filter(|s| !s.is_empty()) { ids.push(id.to_owned()); }
+            }
+        }
+        for alias in &aliases {
+            if let Some(full) = alias.as_str() {
+                for prefix in [output_alias, static_alias, provider.as_str()] {
+                    if let Some(id) = full.strip_prefix(&format!("{prefix}/")) { ids.push(id.to_owned()); break; }
+                }
+            }
+        }
+        let mut seen = HashSet::new();
+        for id in ids {
+            if id.trim().is_empty() || !seen.insert(id.clone()) || [output_alias, static_alias, provider.as_str()].iter().any(|a| disabled.get(*a).is_some_and(|list| list.contains(&id))) { continue; }
+            data.push(json!({"id":format!("{output_alias}/{id}"),"object":"model","owned_by":output_alias}));
+        }
+    }
+    let mut seen = HashSet::new();
+    data.retain(|entry| entry["id"].as_str().is_some_and(|id| seen.insert(id.to_owned())));
     if let Some(access) = access {
         if let Ok(db) = state.db.lock() { data.retain(|entry| access.allows_entry(&db, entry)); } else { data.clear(); }
     }
@@ -1062,6 +1124,36 @@ mod tests {
     use super::*;
     use axum::{body::{Body, to_bytes}, http::Request};
     use rusqlite::params;
+
+    #[tokio::test]
+    async fn models_list_active_aliases_custom_disabled_and_variants() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&db).unwrap();
+        db.execute("INSERT INTO providerConnections(id,provider,authType,priority,isActive,data,createdAt,updatedAt) VALUES('a','commandcode','apikey',1,1,?1,'now','now'),('b','groq','apikey',1,0,'{}','now','now')", [json!({"providerSpecificData":{"enabledModels":["cmc/first","second","first"]}}).to_string()]).unwrap();
+        crate::db::kv_set(&db, "customModels", "a", &json!({"providerAlias":"cmc","id":"custom","type":"llm"}).to_string()).unwrap();
+        crate::db::kv_set(&db, "modelAliases", "alias", &json!("cmc/alias-model").to_string()).unwrap();
+        crate::db::kv_set(&db, "disabledModels", "cmc", &json!(["second"]).to_string()).unwrap();
+        crate::db::kv_set(&db, "promptInjections", "variants", &json!({"direct":{"model":"cmc/first"}}).to_string()).unwrap();
+        let state = AppState { db: Arc::new(Mutex::new(db)), executor: Arc::new(HttpExecutor(reqwest::Client::new())), jwt_secret: None };
+        let body = build_models_list(&state, None).await;
+        let ids: Vec<&str> = body["data"].as_array().unwrap().iter().filter_map(|m| m["id"].as_str()).collect();
+        assert_eq!(&ids[..5], ["direct", "auto:coding", "auto:fast", "auto:cheap", "auto:headroom"]);
+        assert!(ids.contains(&"cmc/first") && ids.contains(&"cmc/custom") && ids.contains(&"cmc/alias-model"));
+        assert!(!ids.contains(&"cmc/second") && !ids.iter().any(|id| id.starts_with("groq/")));
+        assert_eq!(ids.iter().filter(|id| **id == "cmc/first").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn empty_connections_only_list_no_auth_models_and_seats() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::db::migrate(&db).unwrap();
+        db.execute("INSERT INTO combos(id,name,models,createdAt,updatedAt) VALUES('a','free',?1,'now','now'),('b','paid',?2,'now','now')", params![json!(["oc/jev-1.13-free"]).to_string(),json!(["openai/gpt-4"]).to_string()]).unwrap();
+        let state = AppState { db: Arc::new(Mutex::new(db)), executor: Arc::new(HttpExecutor(reqwest::Client::new())), jwt_secret: None };
+        let body = build_models_list(&state, None).await;
+        let ids: Vec<&str> = body["data"].as_array().unwrap().iter().filter_map(|m| m["id"].as_str()).collect();
+        assert!(ids.contains(&"free") && ids.iter().any(|id| id.starts_with("oc/")));
+        assert!(!ids.contains(&"paid") && !ids.contains(&"auto:coding"));
+    }
 
     #[tokio::test]
     async fn restricted_access_denies_combo_alias_and_prefix_bypasses() {

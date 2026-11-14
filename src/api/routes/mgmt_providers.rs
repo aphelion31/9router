@@ -765,12 +765,31 @@ async fn provider_models(State(s): State<AppState>, Path(id): Path<String>) -> R
 
 pub(crate) async fn live_models(provider: &str, conn: &Value, force: bool) -> Option<Vec<Value>> {
     use crate::services::{clinepass_models, copilot_models, cursor_models, grok_cli_models, kimchi_models, kiro_models, qoder_models};
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(5)).build().ok()?;
     let psd = &conn["providerSpecificData"];
     let access = conn["accessToken"].as_str().filter(|s| !s.is_empty()).unwrap_or("");
     let api_key = conn["apiKey"].as_str().filter(|s| !s.is_empty()).unwrap_or("");
     let token = if access.is_empty() { api_key } else { access };
     match provider {
+        "zed" => {
+            let user = psd["userId"].as_str().or_else(|| conn["userId"].as_str())?;
+            if access.is_empty() { return None; }
+            let auth = format!("{user} {access}");
+            let system = psd["systemId"].as_str().unwrap_or("");
+            let mut org = psd["organizationId"].as_str().or_else(|| psd["defaultOrganizationId"].as_str()).unwrap_or("").to_owned();
+            if org.is_empty() {
+                let user: Value = serde_json::from_str(&client.get("https://cloud.zed.dev/client/users/me").header("Authorization", &auth).header("x-zed-system-id", system).send().await.ok()?.error_for_status().ok()?.text().await.ok()?).ok()?;
+                org = user["default_organization_id"].as_str().or_else(|| user["defaultOrganizationId"].as_str()).or_else(|| user["organizations"][0]["id"].as_str()).unwrap_or("").to_owned();
+            }
+            if org.is_empty() { return None; }
+            let response: Value = serde_json::from_str(&client.post("https://cloud.zed.dev/client/llm_tokens").header("Authorization", auth).header("x-zed-system-id", system).header("content-type", "application/json").body(json!({"organization_id":org}).to_string()).send().await.ok()?.error_for_status().ok()?.text().await.ok()?).ok()?;
+            let token = response["token"].as_str().or_else(|| response["token"][0].as_str()).or_else(|| response["token"]["value"].as_str())?;
+            let payload: Value = serde_json::from_str(&client.get("https://cloud.zed.dev/models").bearer_auth(token).header("x-zed-client-supports-x-ai", "true").send().await.ok()?.error_for_status().ok()?.text().await.ok()?).ok()?;
+            Some(payload["models"].as_array()?.iter().filter(|m| m["is_disabled"] != true).filter_map(|m| {
+                let id = m["id"].as_str().or_else(|| m["id"][0].as_str()).or_else(|| m["id"]["id"].as_str())?;
+                Some(json!({"id":id}))
+            }).collect())
+        }
         "nous" => {
             let response = client.get(crate::services::nous::NOUS_MODELS_URL).send().await.ok()?;
             if !response.status().is_success() { return None; }
