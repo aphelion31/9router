@@ -164,6 +164,34 @@ pub async fn app_js() -> Response {
         .into_response()
 }
 
+mod icons;
+
+/// GET /providers/{file}: upstream public/providers icons (embedded, public, cacheable).
+pub async fn provider_icon(axum::extract::Path(file): axum::extract::Path<String>) -> Response {
+    let Some((_, bytes)) = icons::PROVIDER_ICONS.iter().find(|(name, _)| *name == file) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let ctype = if file.ends_with(".svg") { "image/svg+xml" } else { "image/png" };
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, HeaderValue::from_static(ctype)),
+            (header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=86400")),
+        ],
+        *bytes,
+    )
+        .into_response()
+}
+
+pub async fn favicon() -> Response {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, HeaderValue::from_static("image/svg+xml"))],
+        include_str!("../../assets/public/favicon.svg"),
+    )
+        .into_response()
+}
+
 pub fn issue_auth_token(secret: &[u8]) -> String {
     let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"HS256","typ":"JWT"}"#);
     let exp = SystemTime::now()

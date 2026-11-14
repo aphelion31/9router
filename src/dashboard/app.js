@@ -258,7 +258,7 @@
     var results = await Promise.allSettled([
       apiFetch("/api/health"),
       apiFetch("/api/keys"),
-      apiFetch("/api/providers"),
+      apiFetch("/api/providers?lite=1"),
       apiFetch("/api/combos"),
     ]);
     if (healthEl) {
@@ -417,11 +417,26 @@
     await loadKeys();
   }
 
+  // Upstream shared/utils/providerIcon.js: /providers/<id>.png with brand aliases;
+  // custom compatible nodes have no bundled icon. Broken images hide themselves.
+  var ICON_ALIASES = { "perplexity-agent": "perplexity", "gitlab-duo": "gitlab", "vercel-ai-gateway": "vercel",
+    "ollama-search": "ollama", "minimax-code": "minimax", "minimax-code-global": "minimax", "opencode-zen": "opencode",
+    "deepseek-web": "deepseek", "muse-web": "muse", "gemini-web": "gemini", "chatgpt-web": "openai" };
+  function providerIcon(id) {
+    id = String(id || "").trim().toLowerCase();
+    if (!id || /-compatible-/.test(id)) return "";
+    var file = ICON_ALIASES[id] || id;
+    return '<img class="provider-icon" alt="" width="20" height="20" loading="lazy" src="/providers/' +
+      encodeURIComponent(file) + '.png" onerror="this.remove()">';
+  }
+  window.__NR = window.__NR || {};
+  window.__NR.providerIcon = providerIcon;
+
   async function initProviders() {
     var tbody = document.getElementById("providers-tbody");
     if (!tbody) return;
     try {
-      var data = await apiFetch("/api/providers");
+      var data = await apiFetch("/api/providers?lite=1");
       var list = Array.isArray(data.connections) ? data.connections : [];
       if (list.length === 0) {
         tbody.innerHTML = '<tr><td colspan="4">No provider connections configured.</td></tr>';
@@ -432,8 +447,8 @@
         var tr = document.createElement("tr");
         var active = c && c.isActive !== false;
         tr.innerHTML =
-          '<td class="mono">' + escapeHtml((c && c.provider) || "-") + "</td>" +
-          "<td>" + escapeHtml((c && c.name) || "(unnamed)") + "</td>" +
+          '<td class="mono"><span class="provider-cell">' + providerIcon(c && c.provider) + escapeHtml((c && c.provider) || "-") + "</span></td>" +
+          "<td>" + escapeHtml((c && c.name) || (c && c.email) || "(unnamed)") + "</td>" +
           '<td class="mono">' + escapeHtml((c && c.id) || "-") + "</td>" +
           '<td><span class="badge ' + (active ? "badge-ok" : "badge-off") + '">' + (active ? "Active" : "Inactive") + "</span></td>";
         tbody.appendChild(tr);
