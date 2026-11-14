@@ -4,6 +4,115 @@
 //! Without it Anthropic answers OAuth claude calls with a 429 `{"message":"Error"}`.
 use ring::digest::{SHA256, digest};
 use serde_json::{Value, json};
+use std::collections::HashMap;
+
+const DECOYS: &[&str] = &["Task", "TaskOutput", "TaskStop", "TaskCreate", "TaskGet", "TaskUpdate", "TaskList", "Bash", "Glob", "Grep", "Read", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "AskUserQuestion", "Skill", "EnterPlanMode", "ExitPlanMode"];
+
+pub type ToolNameMap = HashMap<String, String>;
+
+pub fn cloak_tools_on_oauth(body: &mut Value, provider: &str, token: Option<&str>) -> Option<ToolNameMap> {
+    if provider == "claude" && token.is_some_and(is_oauth_token) {
+        Some(cloak_tools(body))
+    } else {
+        None
+    }
+}
+
+pub fn cloak_tools(body: &mut Value) -> ToolNameMap {
+    let mut map = ToolNameMap::new();
+    let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) else { return map };
+    if tools.is_empty() { return map; }
+    for tool in tools.iter_mut() {
+        if tool.get("type").is_some_and(|v| !v.is_null() && v != "" && v != false) { continue; }
+        if let Some(name) = tool.get("name").and_then(Value::as_str).map(str::to_owned) {
+            let cloaked = format!("{name}_ide");
+            map.insert(cloaked.clone(), name);
+            tool["name"] = json!(cloaked);
+        }
+    }
+    tools.extend(DECOYS.iter().map(|name| json!({"name": name, "description": "This tool is currently unavailable.", "input_schema": {"type":"object", "properties":{}}})));
+    if let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) {
+        for block in messages.iter_mut().filter_map(|m| m.get_mut("content").and_then(Value::as_array_mut)).flatten() {
+            if block["type"] == "tool_use" && let Some(name) = block.get("name").and_then(Value::as_str) {
+                block["name"] = json!(format!("{name}_ide"));
+            } else if block["type"] == "tool_result" && let Some(name) = block.get("name").and_then(Value::as_str) {
+                let cloaked = format!("{name}_ide");
+                if map.contains_key(&cloaked) { block["name"] = json!(cloaked); }
+            }
+        }
+    }
+    if body["tool_choice"]["type"] == "tool" && let Some(name) = body["tool_choice"]["name"].as_str() {
+        let cloaked = format!("{name}_ide");
+        if map.contains_key(&cloaked) { body["tool_choice"]["name"] = json!(cloaked); }
+    }
+    map
+}
+
+fn decloak_block(block: &mut Value, map: &ToolNameMap) {
+    if block["type"] != "tool_use" { return; }
+    if let Some(name) = block.get("name").and_then(Value::as_str) {
+        let original = map.get(name).map(String::as_str).or_else(|| {
+            if DECOYS.contains(&name) { None } else { name.strip_suffix("_ide").filter(|s| !s.is_empty()) }
+        });
+        if let Some(original) = original { block["name"] = json!(original); }
+    }
+}
+
+pub fn decloak_tool_names(body: &mut Value, map: &ToolNameMap) {
+    if let Some(content) = body.get_mut("content").and_then(Value::as_array_mut) {
+        for block in content { decloak_block(block, map); }
+    }
+}
+
+pub fn decloak_stream_chunk(chunk: &mut Value, map: &ToolNameMap) {
+    if chunk["type"] == "content_block_start" && let Some(block) = chunk.get_mut("content_block") {
+        decloak_block(block, map);
+    }
+}
+
+#[cfg(test)]
+mod tool_tests {
+    use super::*;
+
+    #[test]
+    fn cloak_tools_matches_upstream() {
+        let mut body = json!({"tools":[{"name":"Read"},{"name":"web_search","type":"web_search_20250305"}],"tool_choice":{"type":"tool","name":"Read"},"messages":[{"content":[{"type":"tool_use","name":"Read"},{"type":"tool_result","name":"Read"}]}]});
+        let map = cloak_tools(&mut body);
+        assert_eq!(map.get("Read_ide").unwrap(), "Read");
+        assert_eq!(body["tools"][0]["name"], "Read_ide");
+        assert_eq!(body["tools"][1]["name"], "web_search");
+        assert_eq!(body["tools"].as_array().unwrap().len(), 22);
+        assert_eq!(body["tool_choice"]["name"], "Read_ide");
+        assert_eq!(body["messages"][0]["content"][0]["name"], "Read_ide");
+        assert_eq!(body["messages"][0]["content"][1]["name"], "Read_ide");
+    }
+
+    #[test]
+    fn decloak_responses_and_fallback() {
+        let map = ToolNameMap::from([("Read_ide".into(), "Read".into())]);
+        let mut body = json!({"content":[{"type":"tool_use","name":"Read_ide"},{"type":"tool_use","name":"other_ide"},{"type":"tool_use","name":"Bash"}]});
+        decloak_tool_names(&mut body, &map);
+        assert_eq!(body["content"][0]["name"], "Read");
+        assert_eq!(body["content"][1]["name"], "other");
+        assert_eq!(body["content"][2]["name"], "Bash");
+        let mut chunk = json!({"type":"content_block_start","content_block":{"type":"tool_use","name":"Read_ide"}});
+        decloak_stream_chunk(&mut chunk, &map);
+        assert_eq!(chunk["content_block"]["name"], "Read");
+    }
+
+    #[test]
+    fn api_key_and_other_providers_are_untouched() {
+        let original = json!({"tools":[{"name":"Read"}]});
+        for (provider, token) in [("claude", "sk-ant-api03-SYNTHETIC"), ("other", "sk-ant-oat-SYNTHETIC")] {
+            let mut body = original.clone();
+            assert!(cloak_tools_on_oauth(&mut body, provider, Some(token)).is_none());
+            assert_eq!(body, original);
+        }
+        let mut body = original;
+        assert!(cloak_tools_on_oauth(&mut body, "claude", Some("sk-ant-oat-SYNTHETIC")).is_some());
+        assert_eq!(body["tools"][0]["name"], "Read_ide");
+    }
+}
 
 pub const CLAUDE_CLI_VERSION: &str = "2.1.280";
 const CC_ENTRYPOINT: &str = "sdk-cli";

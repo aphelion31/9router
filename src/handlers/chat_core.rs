@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-use crate::handlers::sse::{SseLine, parse_sse_line, translate_sse_to_body};
+use crate::handlers::sse::{SseLine, parse_sse_line};
 use crate::handlers::{
     BoxFuture, Credentials, Executor, ExecutorBody, ExecutorRequest, ExecutorResponse,
     RefreshedCredentials,
@@ -999,6 +999,11 @@ pub async fn handle_chat_core(
     if let Some(obj) = translated_body.as_object_mut() {
         obj.insert("model".to_string(), json!(upstream_model));
     }
+    let tool_name_map = crate::services::claude_cloak::cloak_tools_on_oauth(
+        &mut translated_body,
+        &options.provider,
+        options.credentials.access_token.as_deref().filter(|s| !s.is_empty()).or(options.credentials.api_key.as_deref()),
+    );
     if options.provider == "claude"
         && !passthrough
         && let Some(token) = options.credentials.access_token.as_deref()
@@ -1223,6 +1228,10 @@ pub async fn handle_chat_core(
             }
         };
 
+        let mut raw_json = raw_json;
+        if let Some(map) = &tool_name_map {
+            crate::services::claude_cloak::decloak_tool_names(&mut raw_json, map);
+        }
         let usage = hooks.on_usage.as_ref().map(|_| usage_counts_from_body(&raw_json).unwrap_or_default());
         let mut translated = if needs_translation(&resp_format, &source_format) {
             translate_non_streaming_response(&raw_json, &resp_format, &source_format)
@@ -1268,7 +1277,7 @@ pub async fn handle_chat_core(
         Some(hook) => tap_usage(rx, hook.clone()),
         None => rx,
     };
-    let body = translate_sse_to_body(rx, resp_format, source_format);
+    let body = crate::handlers::sse::translate_sse_with_cloaking(rx, resp_format, source_format, tool_name_map);
     ChatCoreResult::Success(build_sse_response(&provider_resp.headers, body))
 }
 

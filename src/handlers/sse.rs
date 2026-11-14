@@ -67,9 +67,18 @@ impl Stream for MpscByteStream {
 
 /// Stream provider SSE bytes through `translate_response` and return an axum `Body`.
 pub fn translate_sse_to_body(
+    upstream_rx: mpsc::Receiver<Result<Vec<u8>, String>>,
+    target_format: String,
+    source_format: String,
+) -> Body {
+    translate_sse_with_cloaking(upstream_rx, target_format, source_format, None)
+}
+
+pub fn translate_sse_with_cloaking(
     mut upstream_rx: mpsc::Receiver<Result<Vec<u8>, String>>,
     target_format: String,
     source_format: String,
+    tool_name_map: Option<crate::services::claude_cloak::ToolNameMap>,
 ) -> Body {
     let (tx, rx) = mpsc::channel::<Result<Bytes, std::io::Error>>(64);
 
@@ -141,6 +150,9 @@ pub fn translate_sse_to_body(
                                     return;
                                 }
                                 SseLine::Json(mut val) => {
+                                    if let Some(map) = &tool_name_map {
+                                        crate::services::claude_cloak::decloak_stream_chunk(&mut val, map);
+                                    }
                                     if responses_passthrough {
                                         responses_terminal |= crate::services::responses_stream_helpers::is_openai_responses_terminal_event(Some(&event_name), &val);
                                         event_name.clear();
@@ -191,7 +203,10 @@ pub fn translate_sse_to_body(
         // Process any remaining buffered line without trailing newline
         if !raw_buf.is_empty() {
             let line = String::from_utf8_lossy(&raw_buf);
-            if let Some(SseLine::Json(val)) = parse_sse_line(&line) {
+            if let Some(SseLine::Json(mut val)) = parse_sse_line(&line) {
+                if let Some(map) = &tool_name_map {
+                    crate::services::claude_cloak::decloak_stream_chunk(&mut val, map);
+                }
                 if responses_passthrough {
                     responses_terminal |= crate::services::responses_stream_helpers::is_openai_responses_terminal_event(Some(&event_name), &val);
                 }
@@ -227,6 +242,19 @@ pub fn translate_sse_to_body(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn claude_stream_restores_cloaked_tool_name() {
+        let (tx, rx) = mpsc::channel(1);
+        tx.send(Ok(b"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"tool_use\",\"name\":\"Read_ide\"}}\n\n".to_vec())).await.unwrap();
+        drop(tx);
+        let map = [("Read_ide".to_owned(), "Read".to_owned())].into_iter().collect();
+        let body = translate_sse_with_cloaking(rx, FORMAT_CLAUDE.into(), FORMAT_CLAUDE.into(), Some(map));
+        let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        let output = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(output.contains("\"name\":\"Read\""));
+        assert!(!output.contains("Read_ide"));
+    }
 
     #[tokio::test]
     async fn incomplete_responses_stream_emits_failure() {
