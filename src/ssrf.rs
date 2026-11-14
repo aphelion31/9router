@@ -38,6 +38,23 @@ fn ip_literal(host: &str) -> Option<IpAddr> {
     host.trim_start_matches('[').trim_end_matches(']').parse().ok()
 }
 
+/// Upstream `dashboardGuard.isLocalRequest`: loopback TCP peer, no forwarding headers,
+/// and a loopback Origin when one is sent. Missing peer info (tests) is never local.
+pub fn is_local_request(peer: Option<std::net::SocketAddr>, headers: &axum::http::HeaderMap) -> bool {
+    let loopback = |ip: IpAddr| ip.is_loopback() || matches!(ip, IpAddr::V6(v6) if v6.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback()));
+    if !peer.is_some_and(|p| loopback(p.ip())) {
+        return false;
+    }
+    if headers.contains_key("x-forwarded-for") || headers.contains_key("x-real-ip") {
+        return false;
+    }
+    match headers.get("origin").map(|o| o.to_str().ok().and_then(|o| reqwest::Url::parse(o).ok())) {
+        None => true,
+        Some(Some(u)) => u.host_str().is_some_and(|h| h == "localhost" || ip_literal(h).is_some_and(loopback)),
+        Some(None) => false,
+    }
+}
+
 /// Literal check: scheme, blocked hostnames and IP literals. No DNS.
 pub fn literal_ok(url: &reqwest::Url) -> bool {
     if !matches!(url.scheme(), "http" | "https") {
@@ -71,6 +88,19 @@ pub async fn url_is_public(raw: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_request_rules() {
+        let lo: std::net::SocketAddr = "127.0.0.1:5".parse().unwrap();
+        let pub_: std::net::SocketAddr = "203.0.113.1:5".parse().unwrap();
+        let h = |k: &str, v: &str| { let mut m = axum::http::HeaderMap::new(); m.insert(axum::http::HeaderName::from_bytes(k.as_bytes()).unwrap(), v.parse().unwrap()); m };
+        assert!(is_local_request(Some(lo), &Default::default()));
+        assert!(is_local_request(Some(lo), &h("origin", "http://localhost:20128")));
+        assert!(!is_local_request(Some(lo), &h("origin", "https://evil.example")));
+        assert!(!is_local_request(Some(lo), &h("x-forwarded-for", "1.2.3.4")));
+        assert!(!is_local_request(Some(pub_), &Default::default()));
+        assert!(!is_local_request(None, &Default::default()));
+    }
 
     #[tokio::test]
     async fn blocks_internal_forms() {

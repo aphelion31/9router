@@ -831,7 +831,12 @@ async fn cowork_mcp_registry(State(s): State<AppState>) -> Response {
     }
 }
 
-async fn cowork_mcp_tools(State(s): State<AppState>, Json(body): Json<Value>) -> Response {
+async fn cowork_mcp_tools(
+    State(s): State<AppState>,
+    peer: Option<axum::Extension<axum::extract::ConnectInfo<std::net::SocketAddr>>>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
     let Some(url) = body["url"].as_str().filter(|u| !u.is_empty()) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -846,9 +851,9 @@ async fn cowork_mcp_tools(State(s): State<AppState>, Json(body): Json<Value>) ->
         )
             .into_response();
     };
-    // ponytail: upstream exempts loopback dashboard requests; we lack the peer address
-    // here, so internal hosts are always refused. Add a ConnectInfo check if local MCP probing is needed.
-    if !crate::ssrf::literal_ok(&parsed) {
+    // Upstream lets local dashboard requests probe internal MCP servers; remote ones are SSRF-guarded.
+    let local = crate::ssrf::is_local_request(peer.map(|p| p.0.0), &headers);
+    if !matches!(parsed.scheme(), "http" | "https") || (!local && !crate::ssrf::literal_ok(&parsed)) {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "URL not allowed" })),
